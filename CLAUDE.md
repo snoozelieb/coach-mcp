@@ -54,6 +54,15 @@ python daily_loop.py --llm
 | `get_weekly_plan()` | Current 7-day plan | JSON object |
 | `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
 
+### Race Management Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `list_races()` | View all races with days_until | JSON array |
+| `add_race(name, date, priority, ...)` | Add new A/B/C race | Confirmation |
+| `remove_race(name)` | Remove race by name | Confirmation |
+| `update_race(name, ...)` | Update any race field | Confirmation |
+| `research_race(name or url)` | Fetch race info for training context | JSON with course/elevation/terrain |
+
 ### Suggestion Tools
 | Tool | Purpose | Returns |
 |------|---------|---------|
@@ -96,7 +105,7 @@ Defined in `data/training_config.json`:
 - **Strength:** strength_training, indoor_cardio, functional_strength
 - **Mobility:** yoga, pilates, stretching, breathwork
 - **Long Effort:** 60+ min running, cycling, swimming
-- **Hard:** ultimate_disc, hiit, interval_training, or avg_hr > 150
+  - **Hard:** ultimate_disc, hiit, interval_training, or avg_hr > 150
 
 ## Garmin API Response Structures
 
@@ -175,3 +184,30 @@ The LLM coach persona (defined in `daily_loop.py`):
 - Evidence-based - always cite the data
 - Supportive but firm - care about the athlete's goals
 - Action-oriented - every message should guide the next step
+
+## When to Suggest New Tools
+
+The AI coach should proactively identify when a new tool would improve coaching capability. Before implementing features, ask: **"Should this be a tool?"**
+
+### Signs a new tool is needed:
+1. **Repeated manual work** - If the LLM keeps doing the same data gathering/transformation
+2. **Missing context** - Can't make good decisions without information that could be fetched
+3. **User friction** - User has to manually provide data that could be automated
+4. **Pattern emerges** - Same type of request comes up multiple times
+
+### Tool proposal process:
+1. Identify the gap in current tooling
+2. Describe what the tool would do and what it returns
+3. Explain how it improves coaching decisions
+4. Use `propose_suggestion(type='new_tool', ...)` to formally suggest it
+
+### Examples of good tool suggestions:
+- "I notice I can't see your sleep trends. A `get_sleep_history(days)` tool would help me correlate recovery with training load."
+- "You keep asking about weather for race day. A `get_race_weather(name)` tool could fetch forecasts automatically."
+- "Your injury history isn't tracked. An `add_injury(type, date, notes)` tool would help me adjust training safely."
+
+### Tool design principles:
+- **Single responsibility** - One tool, one job
+- **Return JSON** - Structured data the LLM can reason about
+- **Fail gracefully** - Return `{'error': ...}` not exceptions
+- **Include context** - Return enough info for decisions, not just raw data

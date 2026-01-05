@@ -618,6 +618,149 @@ def reject_suggestion(suggestion_id: str, reason: str = None) -> str:
 
 
 @mcp.tool()
+def research_race(name: str = None, url: str = None) -> str:
+    """
+    Research a race/event to gather training-relevant context.
+
+    Fetches information like course profile, elevation, difficulty,
+    typical conditions, and training recommendations.
+
+    Args:
+        name: Name of a configured race (will use its URL if available)
+        url: Direct URL to research (overrides name lookup)
+
+    Returns JSON with:
+        - course_info: Distance, elevation, terrain
+        - difficulty: Technical/physical demands
+        - conditions: Typical weather, altitude
+        - recommendations: Training focus areas
+    """
+    import requests
+
+    try:
+        # Get URL from race config if name provided
+        if name and not url:
+            config = load_training_config()
+            events = config.get('events', [])
+            name_lower = name.lower()
+            for event in events:
+                if name_lower in event.get('name', '').lower():
+                    url = event.get('url')
+                    if not url:
+                        return json.dumps({
+                            'error': f"Race '{event['name']}' has no URL. Provide one or add it with update_race()."
+                        })
+                    break
+            else:
+                return json.dumps({'error': f"No race found matching '{name}'"})
+
+        if not url:
+            return json.dumps({'error': 'Provide either a race name or URL'})
+
+        # Fetch the page
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        # Extract text content (basic HTML stripping)
+        from html.parser import HTMLParser
+        from io import StringIO
+
+        class HTMLStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.reset()
+                self.strict = False
+                self.convert_charrefs = True
+                self.text = StringIO()
+                self.skip = False
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ('script', 'style', 'nav', 'footer', 'header'):
+                    self.skip = True
+
+            def handle_endtag(self, tag):
+                if tag in ('script', 'style', 'nav', 'footer', 'header'):
+                    self.skip = False
+
+            def handle_data(self, data):
+                if not self.skip:
+                    self.text.write(data + ' ')
+
+            def get_text(self):
+                return self.text.getvalue()
+
+        stripper = HTMLStripper()
+        stripper.feed(response.text)
+        page_text = stripper.get_text()
+
+        # Truncate to reasonable size for analysis
+        page_text = page_text[:8000]
+
+        # Build research summary
+        # Look for key patterns in the text
+        text_lower = page_text.lower()
+
+        research = {
+            'url': url,
+            'raw_content_preview': page_text[:500] + '...',
+            'detected_info': {},
+            'training_relevance': []
+        }
+
+        # Detect distance
+        import re
+        distance_match = re.search(r'(\d+)\s*km', text_lower)
+        if distance_match:
+            research['detected_info']['distance_km'] = int(distance_match.group(1))
+
+        # Detect elevation
+        elevation_match = re.search(r'(\d[\d,]*)\s*m.*(?:elevation|climb|ascent)', text_lower)
+        if elevation_match:
+            elev = elevation_match.group(1).replace(',', '')
+            research['detected_info']['elevation_m'] = int(elev)
+            if int(elev) > 1000:
+                research['training_relevance'].append('Significant climbing - include hill training')
+
+        # Detect duration hints
+        if 'stage' in text_lower or 'multi-day' in text_lower or 'day 1' in text_lower:
+            research['detected_info']['multi_day'] = True
+            research['training_relevance'].append('Multi-day event - build back-to-back endurance')
+
+        # Detect terrain type
+        if 'technical' in text_lower or 'singletrack' in text_lower:
+            research['detected_info']['technical_terrain'] = True
+            research['training_relevance'].append('Technical terrain - practice bike handling skills')
+
+        if 'gravel' in text_lower:
+            research['detected_info']['surface'] = 'gravel'
+        elif 'road' in text_lower and 'off-road' not in text_lower:
+            research['detected_info']['surface'] = 'road'
+        elif 'trail' in text_lower or 'mountain' in text_lower:
+            research['detected_info']['surface'] = 'trail/mtb'
+
+        # Detect altitude
+        altitude_match = re.search(r'(\d[\d,]*)\s*m.*(?:altitude|above sea level)', text_lower)
+        if altitude_match:
+            alt = int(altitude_match.group(1).replace(',', ''))
+            if alt > 1500:
+                research['detected_info']['high_altitude'] = True
+                research['training_relevance'].append(f'High altitude ({alt}m) - consider acclimatization')
+
+        # Add general note
+        research['note'] = 'Review raw_content_preview for additional context. Use this info to adjust training focus.'
+
+        return json.dumps(research, indent=2)
+
+    except requests.RequestException as e:
+        return json.dumps({'error': f'Failed to fetch URL: {str(e)}'})
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def list_races() -> str:
     """
     Lists all configured races/events with priority and days until.
@@ -775,13 +918,28 @@ def remove_race(name: str) -> str:
 
 
 @mcp.tool()
-def update_race_priority(name: str, new_priority: str) -> str:
+def update_race(
+    name: str,
+    new_date: str = None,
+    new_priority: str = None,
+    new_name: str = None,
+    target_time: str = None,
+    distance_km: float = None,
+    notes: str = None,
+    url: str = None
+) -> str:
     """
-    Update the priority of an existing race.
+    Update any field of an existing race/event.
 
     Args:
-        name: Name of the event (case-insensitive partial match)
-        new_priority: New priority (A, B, or C)
+        name: Name of the event to update (case-insensitive partial match)
+        new_date: New date in YYYY-MM-DD format (optional)
+        new_priority: New priority A/B/C (optional)
+        new_name: Rename the event (optional)
+        target_time: Target finish time (optional)
+        distance_km: Distance in km (optional)
+        notes: Updated notes (optional)
+        url: Event URL (optional)
 
     Returns confirmation with updated event.
     """
@@ -789,15 +947,52 @@ def update_race_priority(name: str, new_priority: str) -> str:
         config = load_training_config()
         events = config.get('events', [])
 
-        if new_priority.upper() not in ['A', 'B', 'C']:
-            return json.dumps({'error': 'Priority must be A, B, or C'})
-
         # Find matching event
         name_lower = name.lower()
         for event in events:
             if name_lower in event.get('name', '').lower():
-                old_priority = event.get('priority')
-                event['priority'] = new_priority.upper()
+                changes = []
+
+                if new_date:
+                    event['date'] = new_date
+                    changes.append(f"date -> {new_date}")
+                    # Update end_date if multi-day
+                    if event.get('duration_days', 1) > 1:
+                        start = date.fromisoformat(new_date)
+                        end = start + timedelta(days=event['duration_days'] - 1)
+                        event['end_date'] = end.isoformat()
+
+                if new_priority:
+                    if new_priority.upper() not in ['A', 'B', 'C']:
+                        return json.dumps({'error': 'Priority must be A, B, or C'})
+                    event['priority'] = new_priority.upper()
+                    changes.append(f"priority -> {new_priority.upper()}")
+
+                if new_name:
+                    event['name'] = new_name
+                    changes.append(f"name -> {new_name}")
+
+                if target_time:
+                    event['target_time'] = target_time
+                    changes.append(f"target_time -> {target_time}")
+
+                if distance_km:
+                    event['distance_km'] = distance_km
+                    changes.append(f"distance -> {distance_km}km")
+
+                if notes:
+                    event['notes'] = notes
+                    changes.append("notes updated")
+
+                if url:
+                    event['url'] = url
+                    changes.append("url updated")
+
+                if not changes:
+                    return json.dumps({'error': 'No updates provided'})
+
+                # Re-sort by date
+                events.sort(key=lambda e: e.get('date', ''))
 
                 # Save back
                 config['events'] = events
@@ -806,7 +1001,7 @@ def update_race_priority(name: str, new_priority: str) -> str:
 
                 return json.dumps({
                     'status': 'success',
-                    'message': f"Updated {event['name']}: {old_priority} -> {new_priority.upper()}",
+                    'message': f"Updated {event['name']}: {', '.join(changes)}",
                     'event': event
                 }, indent=2)
 
