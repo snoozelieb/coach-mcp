@@ -12,12 +12,26 @@ logger = logging.getLogger(__name__)
 # Garth requires a directory, not a file
 TOKEN_DIR = "./.garth"
 
+# Cache the client instance to avoid repeated logins
+_cached_client: Garmin = None
 
-def get_garmin_client() -> Garmin:
+
+def get_garmin_client(force_refresh: bool = False) -> Garmin:
     """
     Authenticates with Garmin using the new 'Garth' backend.
     Returns an authenticated Garmin client.
+
+    Uses a cached instance to avoid repeated logins within the same session.
+
+    Args:
+        force_refresh: If True, forces a fresh login even if cached.
     """
+    global _cached_client
+
+    # Return cached client if available and not forcing refresh
+    if _cached_client is not None and not force_refresh:
+        return _cached_client
+
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
 
@@ -32,6 +46,7 @@ def get_garmin_client() -> Garmin:
             # Verify the session is valid by trying a lightweight call
             client.get_user_summary(date.today().isoformat())
             logger.info("Session loaded successfully!")
+            _cached_client = client
             return client
     except Exception as e:
         logger.warning(f"Session invalid or expired: {e}. Logging in fresh...")
@@ -51,4 +66,5 @@ def get_garmin_client() -> Garmin:
         logger.error(f"Login failed! Check credentials. Error: {e}")
         raise
 
+    _cached_client = client
     return client
