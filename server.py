@@ -618,6 +618,205 @@ def reject_suggestion(suggestion_id: str, reason: str = None) -> str:
 
 
 @mcp.tool()
+def list_races() -> str:
+    """
+    Lists all configured races/events with priority and days until.
+
+    Returns JSON array of events sorted by date with:
+    - name, date, priority (A/B/C), type, distance, days_until
+    """
+    try:
+        config = load_training_config()
+        events = config.get('events', [])
+        today = date.today()
+
+        result = []
+        for event in events:
+            event_copy = event.copy()
+            try:
+                event_date = date.fromisoformat(event.get('date', ''))
+                event_copy['days_until'] = (event_date - today).days
+            except ValueError:
+                event_copy['days_until'] = None
+            result.append(event_copy)
+
+        # Sort by date
+        result.sort(key=lambda e: e.get('date', ''))
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def add_race(
+    name: str,
+    race_date: str,
+    priority: str,
+    race_type: str = None,
+    distance_km: float = None,
+    duration_days: int = 1,
+    target_time: str = None,
+    url: str = None,
+    notes: str = None
+) -> str:
+    """
+    Add a new race/event to the training calendar.
+
+    Args:
+        name: Event name (e.g., "Cape Town Cycle Tour")
+        race_date: Start date in YYYY-MM-DD format
+        priority: A (goal race), B (important), or C (training race)
+        race_type: Type of event (e.g., "road_cycling", "mtb", "running", "tournament")
+        distance_km: Distance in kilometers (if applicable)
+        duration_days: Number of days (default 1, use >1 for stage races/tournaments)
+        target_time: Target finish time (optional)
+        url: Event website URL (optional)
+        notes: Additional notes (optional)
+
+    Returns confirmation with updated event list.
+    """
+    try:
+        config = load_training_config()
+        events = config.get('events', [])
+
+        # Validate priority
+        if priority.upper() not in ['A', 'B', 'C']:
+            return json.dumps({'error': 'Priority must be A, B, or C'})
+
+        # Build new event
+        new_event = {
+            'date': race_date,
+            'name': name,
+            'priority': priority.upper(),
+        }
+
+        if race_type:
+            new_event['type'] = race_type
+        if distance_km:
+            new_event['distance_km'] = distance_km
+        if duration_days > 1:
+            new_event['duration_days'] = duration_days
+            # Calculate end date
+            start = date.fromisoformat(race_date)
+            end = start + timedelta(days=duration_days - 1)
+            new_event['end_date'] = end.isoformat()
+        if target_time:
+            new_event['target_time'] = target_time
+        if url:
+            new_event['url'] = url
+        if notes:
+            new_event['notes'] = notes
+
+        events.append(new_event)
+
+        # Sort by date
+        events.sort(key=lambda e: e.get('date', ''))
+
+        # Save back
+        config['events'] = events
+        from planner import save_json_file
+        save_json_file('training_config.json', config)
+
+        return json.dumps({
+            'status': 'success',
+            'message': f"Added {priority.upper()}-race: {name} on {race_date}",
+            'event': new_event
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def remove_race(name: str) -> str:
+    """
+    Remove a race/event from the training calendar.
+
+    Args:
+        name: Name of the event to remove (case-insensitive partial match)
+
+    Returns confirmation or error if not found.
+    """
+    try:
+        config = load_training_config()
+        events = config.get('events', [])
+
+        # Find matching event
+        name_lower = name.lower()
+        matching = [e for e in events if name_lower in e.get('name', '').lower()]
+
+        if not matching:
+            return json.dumps({'error': f"No event found matching '{name}'"})
+
+        if len(matching) > 1:
+            names = [e.get('name') for e in matching]
+            return json.dumps({
+                'error': f"Multiple matches found: {names}. Be more specific."
+            })
+
+        removed = matching[0]
+        events.remove(removed)
+
+        # Save back
+        config['events'] = events
+        from planner import save_json_file
+        save_json_file('training_config.json', config)
+
+        return json.dumps({
+            'status': 'success',
+            'message': f"Removed: {removed.get('name')}",
+            'removed_event': removed
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def update_race_priority(name: str, new_priority: str) -> str:
+    """
+    Update the priority of an existing race.
+
+    Args:
+        name: Name of the event (case-insensitive partial match)
+        new_priority: New priority (A, B, or C)
+
+    Returns confirmation with updated event.
+    """
+    try:
+        config = load_training_config()
+        events = config.get('events', [])
+
+        if new_priority.upper() not in ['A', 'B', 'C']:
+            return json.dumps({'error': 'Priority must be A, B, or C'})
+
+        # Find matching event
+        name_lower = name.lower()
+        for event in events:
+            if name_lower in event.get('name', '').lower():
+                old_priority = event.get('priority')
+                event['priority'] = new_priority.upper()
+
+                # Save back
+                config['events'] = events
+                from planner import save_json_file
+                save_json_file('training_config.json', config)
+
+                return json.dumps({
+                    'status': 'success',
+                    'message': f"Updated {event['name']}: {old_priority} -> {new_priority.upper()}",
+                    'event': event
+                }, indent=2)
+
+        return json.dumps({'error': f"No event found matching '{name}'"})
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_compliance_report(days: int = 7) -> str:
     """
     Generates weekly pillar compliance report.
