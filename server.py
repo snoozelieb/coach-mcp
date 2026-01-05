@@ -828,6 +828,15 @@ def add_race(
         if priority.upper() not in ['A', 'B', 'C']:
             return json.dumps({'error': 'Priority must be A, B, or C'})
 
+        # Check for duplicate priority (only 1 race per priority allowed)
+        existing_with_priority = [e for e in events if e.get('priority') == priority.upper()]
+        if existing_with_priority:
+            existing_name = existing_with_priority[0].get('name', 'Unknown')
+            return json.dumps({
+                'error': f"Priority {priority.upper()} already assigned to '{existing_name}'. "
+                         f"Only one race per priority allowed. Update or remove the existing race first."
+            })
+
         # Build new event
         new_event = {
             'date': race_date,
@@ -965,6 +974,16 @@ def update_race(
                 if new_priority:
                     if new_priority.upper() not in ['A', 'B', 'C']:
                         return json.dumps({'error': 'Priority must be A, B, or C'})
+                    # Check for duplicate priority (only 1 race per priority allowed)
+                    # Exclude current event from check
+                    other_events = [e for e in events if e.get('name') != event.get('name')]
+                    existing_with_priority = [e for e in other_events if e.get('priority') == new_priority.upper()]
+                    if existing_with_priority:
+                        existing_name = existing_with_priority[0].get('name', 'Unknown')
+                        return json.dumps({
+                            'error': f"Priority {new_priority.upper()} already assigned to '{existing_name}'. "
+                                     f"Only one race per priority allowed."
+                        })
                     event['priority'] = new_priority.upper()
                     changes.append(f"priority -> {new_priority.upper()}")
 

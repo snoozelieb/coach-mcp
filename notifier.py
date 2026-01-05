@@ -1,12 +1,17 @@
 """
 Notification system for training briefs.
 
-Phase 1: Console/log output (current)
-Phase 2: Telegram bot
-Phase 3: Google Calendar integration
+Supported channels:
+- Console: Print to terminal
+- Log: Save to file
+- Email: SMTP (Gmail, Outlook, etc.)
+- Telegram: Bot API
 """
 import os
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import date
 from typing import Optional
 
@@ -67,6 +72,100 @@ class LogNotifier(Notifier):
             return False
 
 
+class EmailNotifier(Notifier):
+    """
+    Email notifier via SMTP.
+
+    Requires in .env:
+    - EMAIL_SMTP_SERVER: SMTP server (e.g., smtp.gmail.com)
+    - EMAIL_SMTP_PORT: SMTP port (587 for TLS, 465 for SSL)
+    - EMAIL_ADDRESS: Your email address (sender)
+    - EMAIL_PASSWORD: App password (NOT your regular password for Gmail)
+    - EMAIL_TO: Recipient email (can be same as EMAIL_ADDRESS)
+
+    For Gmail:
+    1. Enable 2FA on your Google account
+    2. Go to Google Account > Security > App passwords
+    3. Generate an app password for "Mail"
+    4. Use that password in EMAIL_PASSWORD
+    """
+
+    def __init__(self):
+        self.smtp_server = os.getenv('EMAIL_SMTP_SERVER', 'smtp.gmail.com')
+        self.smtp_port = int(os.getenv('EMAIL_SMTP_PORT', '587'))
+        self.email_address = os.getenv('EMAIL_ADDRESS')
+        self.email_password = os.getenv('EMAIL_PASSWORD')
+        self.email_to = os.getenv('EMAIL_TO') or self.email_address
+
+    def send(self, message: str, title: str = None) -> bool:
+        if not self.email_address or not self.email_password:
+            logger.warning("Email not configured. Set EMAIL_ADDRESS and EMAIL_PASSWORD in .env")
+            return False
+
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = title or f"Training Brief - {date.today().strftime('%A, %B %d')}"
+            msg['From'] = self.email_address
+            msg['To'] = self.email_to
+
+            # Plain text version
+            text_part = MIMEText(message, 'plain')
+            msg.attach(text_part)
+
+            # HTML version (convert markdown-ish to basic HTML)
+            html_message = self._to_html(message, title)
+            html_part = MIMEText(html_message, 'html')
+            msg.attach(html_part)
+
+            # Send
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.email_address, self.email_password)
+                server.send_message(msg)
+
+            logger.info(f"Email sent to {self.email_to}")
+            return True
+
+        except smtplib.SMTPAuthenticationError:
+            logger.error("Email auth failed. For Gmail, use an App Password (not your regular password)")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            return False
+
+    def _to_html(self, message: str, title: str = None) -> str:
+        """Convert message to basic HTML."""
+        html = ['<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">']
+
+        if title:
+            html.append(f'<h2 style="color: #333;">{title}</h2>')
+
+        # Convert markdown-ish formatting
+        lines = message.split('\n')
+        for line in lines:
+            if line.startswith('## '):
+                html.append(f'<h3 style="color: #444; margin-top: 20px;">{line[3:]}</h3>')
+            elif line.startswith('**') and line.endswith('**'):
+                html.append(f'<p><strong>{line[2:-2]}</strong></p>')
+            elif line.startswith('**'):
+                # Bold at start of line
+                parts = line.split('**')
+                if len(parts) >= 3:
+                    html.append(f'<p><strong>{parts[1]}</strong>{parts[2]}</p>')
+                else:
+                    html.append(f'<p>{line}</p>')
+            elif line.startswith('  - '):
+                html.append(f'<li style="margin-left: 20px;">{line[4:]}</li>')
+            elif line.startswith('- '):
+                html.append(f'<li>{line[2:]}</li>')
+            elif line.strip():
+                html.append(f'<p>{line}</p>')
+
+        html.append('</body></html>')
+        return '\n'.join(html)
+
+
 class TelegramNotifier(Notifier):
     """
     Telegram bot notifier.
@@ -117,7 +216,7 @@ def get_notifier(notifier_type: str = None) -> Notifier:
     Get the appropriate notifier based on configuration.
 
     Args:
-        notifier_type: Override type ('console', 'log', 'telegram')
+        notifier_type: Override type ('console', 'log', 'email', 'telegram')
                       If None, auto-detects based on environment
 
     Returns:
@@ -126,13 +225,17 @@ def get_notifier(notifier_type: str = None) -> Notifier:
     if notifier_type:
         notifier_type = notifier_type.lower()
     else:
-        # Auto-detect based on environment
-        if os.getenv('TELEGRAM_BOT_TOKEN'):
+        # Auto-detect based on environment (priority: email > telegram > console)
+        if os.getenv('EMAIL_ADDRESS') and os.getenv('EMAIL_PASSWORD'):
+            notifier_type = 'email'
+        elif os.getenv('TELEGRAM_BOT_TOKEN'):
             notifier_type = 'telegram'
         else:
             notifier_type = 'console'
 
-    if notifier_type == 'telegram':
+    if notifier_type == 'email':
+        return EmailNotifier()
+    elif notifier_type == 'telegram':
         return TelegramNotifier()
     elif notifier_type == 'log':
         return LogNotifier()

@@ -31,6 +31,52 @@ def save_json_file(filename: str, data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2)
 
 
+def _get_a_race_requirements(
+    upcoming_events: list[dict[str, Any]],
+    training_config: dict[str, Any]
+) -> dict[str, Any] | None:
+    """
+    Get training requirements for the A-race based on its type.
+
+    Returns race requirements with key sessions and phase guidance,
+    or None if no A-race or requirements not defined.
+    """
+    # Find A-race
+    a_race = next(
+        (e for e in upcoming_events if e.get('priority') == 'A'),
+        None
+    )
+    if not a_race:
+        return None
+
+    race_type = a_race.get('type')
+    if not race_type:
+        return None
+
+    # Get requirements for this race type
+    race_requirements = training_config.get('race_requirements', {})
+    requirements = race_requirements.get(race_type)
+
+    if not requirements:
+        return None
+
+    # Get current phase for phase-specific guidance
+    current_block = training_config.get('current_block', {})
+    current_phase = current_block.get('phase', 'base')
+    phase_guidance = requirements.get('phase_guidance', {})
+
+    return {
+        'race_name': a_race.get('name'),
+        'race_type': race_type,
+        'days_until': a_race.get('days_until'),
+        'description': requirements.get('description'),
+        'key_sessions': requirements.get('key_sessions', []),
+        'current_phase': current_phase,
+        'current_phase_guidance': phase_guidance.get(current_phase, ''),
+        'all_phase_guidance': phase_guidance,
+    }
+
+
 def build_planning_context(
     athlete_profile: dict[str, Any],
     training_config: dict[str, Any],
@@ -62,14 +108,14 @@ def build_planning_context(
     """
     today = date.today()
 
-    # Extract upcoming events (next 8 weeks)
+    # Extract ALL upcoming events (for periodization context)
     events = training_config.get('events', [])
     upcoming_events = []
     for event in events:
         try:
             event_date = date.fromisoformat(event.get('date', ''))
             days_until = (event_date - today).days
-            if 0 <= days_until <= 56:
+            if days_until >= 0:  # Include all future events
                 event_copy = event.copy()
                 event_copy['days_until'] = days_until
                 upcoming_events.append(event_copy)
@@ -101,6 +147,9 @@ def build_planning_context(
             (e for e in upcoming_events if e.get('priority') == 'A'),
             None
         ),
+
+        # A-race specific training requirements
+        'a_race_requirements': _get_a_race_requirements(upcoming_events, training_config),
 
         # Recent history
         'recent_activities': recent_activities,

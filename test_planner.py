@@ -55,7 +55,7 @@ class TestBuildPlanningContext:
         assert len(context['activities_last_7_days']) == 1
         assert context['activities_last_7_days'][0]['type'] == 'running'
 
-    def test_extracts_upcoming_events_within_56_days(self):
+    def test_extracts_all_future_events_excludes_past(self):
         today = date.today()
         config = {
             'events': [
@@ -73,9 +73,12 @@ class TestBuildPlanningContext:
             today_recovery={},
         )
 
-        assert len(context['upcoming_events']) == 1
+        # All future events included, past excluded, sorted by days_until
+        assert len(context['upcoming_events']) == 2
         assert context['upcoming_events'][0]['name'] == 'Near Event'
         assert context['upcoming_events'][0]['days_until'] == 30
+        assert context['upcoming_events'][1]['name'] == 'Far Event'
+        assert context['upcoming_events'][1]['days_until'] == 100
 
     def test_identifies_next_a_race(self):
         today = date.today()
