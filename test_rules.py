@@ -1,9 +1,7 @@
 """
 Tests for training rule engine.
 """
-import json
 import pytest
-from pathlib import Path
 from unittest.mock import patch
 from rules import (
     classify_activity,

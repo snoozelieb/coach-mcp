@@ -7,11 +7,10 @@ The LLM is the brain that generates plans. This module provides:
 - Suggestion management (read/write suggestions.json)
 """
 import json
-from pathlib import Path
 from datetime import date, timedelta
 from typing import Any, Optional
 
-DATA_DIR = Path(__file__).parent / "data"
+from config import DATA_DIR
 
 
 def load_json_file(filename: str) -> dict[str, Any]:

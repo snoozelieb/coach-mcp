@@ -12,14 +12,20 @@ from planner import (
     create_empty_week_template,
     load_json_file,
 )
+from config import (
+    DATA_DIR,
+    PROFILE_HISTORY_DAYS,
+    RECENT_ACTIVITY_DAYS,
+    HTTP_TIMEOUT_SECONDS,
+    PAGE_TEXT_MAX_CHARS,
+    ELEVATION_SIGNIFICANCE_THRESHOLD,
+    HIGH_ALTITUDE_THRESHOLD,
+    VALID_PRIORITIES,
+)
 from datetime import date, timedelta
 from typing import Any, Union
-from pathlib import Path
 from collections import defaultdict
 import json
-
-# Data directory for persistent storage
-DATA_DIR = Path(__file__).parent / "data"
 
 # Initialize the MCP Server
 mcp = FastMCP("My Coach")
@@ -239,7 +245,7 @@ def refresh_athlete_profile() -> str:
     try:
         client = get_garmin_client()
         today = date.today()
-        six_months_ago = today - timedelta(days=180)
+        six_months_ago = today - timedelta(days=PROFILE_HISTORY_DAYS)
 
         # Pull 6 months of activities
         raw_activities = client.get_activities_by_date(
@@ -414,7 +420,7 @@ def get_planning_context() -> str:
         training_config = load_training_config()
 
         # Get recent activities (14 days)
-        start_14_days = today - timedelta(days=14)
+        start_14_days = today - timedelta(days=RECENT_ACTIVITY_DAYS)
         raw_activities = client.get_activities_by_date(
             start_14_days.isoformat(),
             today.isoformat()
@@ -661,7 +667,7 @@ def research_race(name: str = None, url: str = None) -> str:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
         response.raise_for_status()
 
         # Extract text content (basic HTML stripping)
@@ -697,7 +703,7 @@ def research_race(name: str = None, url: str = None) -> str:
         page_text = stripper.get_text()
 
         # Truncate to reasonable size for analysis
-        page_text = page_text[:8000]
+        page_text = page_text[:PAGE_TEXT_MAX_CHARS]
 
         # Build research summary
         # Look for key patterns in the text
@@ -721,7 +727,7 @@ def research_race(name: str = None, url: str = None) -> str:
         if elevation_match:
             elev = elevation_match.group(1).replace(',', '')
             research['detected_info']['elevation_m'] = int(elev)
-            if int(elev) > 1000:
+            if int(elev) > ELEVATION_SIGNIFICANCE_THRESHOLD:
                 research['training_relevance'].append('Significant climbing - include hill training')
 
         # Detect duration hints
@@ -745,7 +751,7 @@ def research_race(name: str = None, url: str = None) -> str:
         altitude_match = re.search(r'(\d[\d,]*)\s*m.*(?:altitude|above sea level)', text_lower)
         if altitude_match:
             alt = int(altitude_match.group(1).replace(',', ''))
-            if alt > 1500:
+            if alt > HIGH_ALTITUDE_THRESHOLD:
                 research['detected_info']['high_altitude'] = True
                 research['training_relevance'].append(f'High altitude ({alt}m) - consider acclimatization')
 
@@ -825,7 +831,7 @@ def add_race(
         events = config.get('events', [])
 
         # Validate priority
-        if priority.upper() not in ['A', 'B', 'C']:
+        if priority.upper() not in VALID_PRIORITIES:
             return json.dumps({'error': 'Priority must be A, B, or C'})
 
         # Check for duplicate priority (only 1 race per priority allowed)
@@ -972,7 +978,7 @@ def update_race(
                         event['end_date'] = end.isoformat()
 
                 if new_priority:
-                    if new_priority.upper() not in ['A', 'B', 'C']:
+                    if new_priority.upper() not in VALID_PRIORITIES:
                         return json.dumps({'error': 'Priority must be A, B, or C'})
                     # Check for duplicate priority (only 1 race per priority allowed)
                     # Exclude current event from check

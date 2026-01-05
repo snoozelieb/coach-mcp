@@ -14,7 +14,6 @@ import os
 import json
 import logging
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -50,7 +49,6 @@ from planner import (
     load_json_file,
     save_json_file,
 )
-from rules import check_weekly_compliance, check_safety_rules
 
 # The Enforcer's personality
 ENFORCER_SYSTEM_PROMPT = """You are The Enforcer - a no-nonsense training coach.

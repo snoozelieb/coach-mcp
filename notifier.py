@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class Notifier:
     """Base notifier class."""
 
-    def send(self, message: str, title: str = None) -> bool:
+    def send(self, message: str, title: Optional[str] = None) -> bool:
         """
         Send a notification.
 
@@ -41,7 +41,7 @@ class Notifier:
 class ConsoleNotifier(Notifier):
     """Simple console output notifier."""
 
-    def send(self, message: str, title: str = None) -> bool:
+    def send(self, message: str, title: Optional[str] = None) -> bool:
         if title:
             print(f"\n{'=' * 50}")
             print(f"  {title}")
@@ -56,7 +56,7 @@ class LogNotifier(Notifier):
     def __init__(self, log_file: str = "morning_briefs.log"):
         self.log_file = log_file
 
-    def send(self, message: str, title: str = None) -> bool:
+    def send(self, message: str, title: Optional[str] = None) -> bool:
         try:
             with open(self.log_file, 'a') as f:
                 f.write(f"\n{'=' * 50}\n")
@@ -97,7 +97,7 @@ class EmailNotifier(Notifier):
         self.email_password = os.getenv('EMAIL_PASSWORD')
         self.email_to = os.getenv('EMAIL_TO') or self.email_address
 
-    def send(self, message: str, title: str = None) -> bool:
+    def send(self, message: str, title: Optional[str] = None) -> bool:
         if not self.email_address or not self.email_password:
             logger.warning("Email not configured. Set EMAIL_ADDRESS and EMAIL_PASSWORD in .env")
             return False
@@ -134,7 +134,7 @@ class EmailNotifier(Notifier):
             logger.error(f"Failed to send email: {e}")
             return False
 
-    def _to_html(self, message: str, title: str = None) -> str:
+    def _to_html(self, message: str, title: Optional[str] = None) -> str:
         """Convert message to basic HTML."""
         html = ['<html><body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">']
 
@@ -179,7 +179,7 @@ class TelegramNotifier(Notifier):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
 
-    def send(self, message: str, title: str = None) -> bool:
+    def send(self, message: str, title: Optional[str] = None) -> bool:
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
             return False
@@ -211,7 +211,7 @@ class TelegramNotifier(Notifier):
             return False
 
 
-def get_notifier(notifier_type: str = None) -> Notifier:
+def get_notifier(notifier_type: Optional[str] = None) -> Notifier:
     """
     Get the appropriate notifier based on configuration.
 

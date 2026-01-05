@@ -4,11 +4,16 @@ Rule engine for training compliance and safety checks.
 Pure Python logic - no LLM needed for validation.
 """
 import json
-from pathlib import Path
 from datetime import date, timedelta
 from typing import Any
 
-DATA_DIR = Path(__file__).parent / "data"
+from config import (
+    DATA_DIR,
+    LONG_EFFORT_MIN_MINS,
+    HARD_HR_AVG_THRESHOLD,
+    HARD_HR_MAX_THRESHOLD,
+    VOLUME_COMPLIANCE_MIN_PERCENT,
+)
 
 
 def load_training_config() -> dict[str, Any]:
@@ -39,7 +44,7 @@ def classify_activity(activity: dict[str, Any]) -> dict[str, bool]:
 
     # Long effort (60+ mins of cardio)
     cardio_types = {'running', 'cycling', 'swimming', 'trail_running', 'open_water_swimming'}
-    is_long_effort = activity_type in cardio_types and duration_mins >= 60
+    is_long_effort = activity_type in cardio_types and duration_mins >= LONG_EFFORT_MIN_MINS
 
     # High intensity detection
     high_intensity_types = {'ultimate_disc', 'hiit', 'interval_training', 'track_running'}
@@ -49,8 +54,8 @@ def classify_activity(activity: dict[str, Any]) -> dict[str, bool]:
     # Activity is "hard" if it's a high-intensity type OR has elevated HR
     is_hard = (
         activity_type in high_intensity_types or
-        avg_hr > 150 or
-        max_hr > 175
+        avg_hr > HARD_HR_AVG_THRESHOLD or
+        max_hr > HARD_HR_MAX_THRESHOLD
     )
 
     return {
@@ -139,7 +144,7 @@ def check_weekly_compliance(
             'target_hrs': volume_target,
             'actual_hrs': total_volume_hrs,
             'percent': volume_percent,
-            'compliant': volume_percent >= 80,  # 80% of target is acceptable
+            'compliant': volume_percent >= VOLUME_COMPLIANCE_MIN_PERCENT,
         },
     }
 

@@ -1,16 +1,14 @@
 import os
 import logging
-from datetime import date
 from garminconnect import Garmin
 from dotenv import load_dotenv
+
+from config import TOKEN_DIR
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Garth requires a directory, not a file
-TOKEN_DIR = "./.garth"
 
 # Cache the client instance to avoid repeated logins
 _cached_client: Garmin = None
