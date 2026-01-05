@@ -2,6 +2,9 @@
 .env
 .garth/
 
+# Log files
+*.log
+
 # Test fixtures (contains personal health data)
 test_fixtures.json
 
