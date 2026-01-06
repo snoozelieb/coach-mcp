@@ -491,10 +491,10 @@ class TestCalculateBaseline:
         assert result['weeks_analyzed'] == 1
 
 
-class TestRefreshAthleteProfileIntegration:
+class TestRefreshAthleteBaselineIntegration:
     @patch('server.get_garmin_client')
     def test_returns_success_summary(self, mock_get_client, tmp_path):
-        from server import refresh_athlete_profile, DATA_DIR
+        from server import refresh_athlete_baseline, DATA_DIR
         import server
 
         # Temporarily redirect DATA_DIR to tmp_path
@@ -510,7 +510,7 @@ class TestRefreshAthleteProfileIntegration:
             mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
             mock_get_client.return_value = mock_client
 
-            result = refresh_athlete_profile()
+            result = refresh_athlete_baseline()
             parsed = json.loads(result)
 
             assert parsed['status'] == 'success'
@@ -521,8 +521,8 @@ class TestRefreshAthleteProfileIntegration:
             server.DATA_DIR = original_data_dir
 
     @patch('server.get_garmin_client')
-    def test_creates_profile_file(self, mock_get_client, tmp_path):
-        from server import refresh_athlete_profile
+    def test_creates_baseline_file(self, mock_get_client, tmp_path):
+        from server import refresh_athlete_baseline
         import server
 
         original_data_dir = server.DATA_DIR
@@ -534,9 +534,10 @@ class TestRefreshAthleteProfileIntegration:
             mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
             mock_get_client.return_value = mock_client
 
-            refresh_athlete_profile()
+            refresh_athlete_baseline()
 
-            profile_path = tmp_path / 'athlete_profile.json'
+            # Now saves to athlete_baseline.json instead of athlete_profile.json
+            profile_path = tmp_path / 'athlete_baseline.json'
             assert profile_path.exists()
 
             with open(profile_path) as f:
@@ -544,17 +545,16 @@ class TestRefreshAthleteProfileIntegration:
 
             assert 'baseline' in profile
             assert 'personal_records' in profile
-            assert 'manual' in profile
-            assert 'last_updated' in profile
+            assert 'last_refreshed' in profile
         finally:
             server.DATA_DIR = original_data_dir
 
     @patch('server.get_garmin_client')
     def test_handles_api_error(self, mock_get_client):
-        from server import refresh_athlete_profile
+        from server import refresh_athlete_baseline
 
         mock_get_client.side_effect = Exception("Auth failed")
-        result = refresh_athlete_profile()
+        result = refresh_athlete_baseline()
         parsed = json.loads(result)
 
         assert 'error' in parsed

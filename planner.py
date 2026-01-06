@@ -10,7 +10,12 @@ import json
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from config import DATA_DIR
+from config import (
+    DATA_DIR,
+    ATHLETE_FILE,
+    ATHLETE_BASELINE_FILE,
+    METHODOLOGY_FILE,
+)
 
 
 def load_json_file(filename: str) -> dict[str, Any]:
@@ -30,9 +35,42 @@ def save_json_file(filename: str, data: dict[str, Any]) -> None:
         json.dump(data, f, indent=2)
 
 
+def load_athlete() -> dict[str, Any]:
+    """
+    Load athlete profile (WHO the athlete is).
+
+    Returns merged data from:
+    - athlete.json: personal info, life constraints, injury history, preferences
+    - athlete_baseline.json: Garmin-derived capacity (auto-generated)
+    """
+    athlete = load_json_file(ATHLETE_FILE)
+    baseline = load_json_file(ATHLETE_BASELINE_FILE)
+
+    # Merge baseline into athlete data
+    if baseline:
+        athlete['baseline'] = baseline.get('baseline', {})
+        athlete['personal_records'] = baseline.get('personal_records', [])
+        athlete['baseline_last_refreshed'] = baseline.get('last_refreshed')
+
+    return athlete
+
+
+def load_methodology() -> dict[str, Any]:
+    """
+    Load training methodology (HOW to train).
+
+    Returns:
+    - pillars: weekly requirements (strength 2x, mobility 90min, etc)
+    - safety_constraints: max consecutive hard days, rest after race, etc
+    - race_templates: key sessions and phase guidance by race type
+    """
+    return load_json_file(METHODOLOGY_FILE)
+
+
 def _get_a_race_requirements(
     upcoming_events: list[dict[str, Any]],
-    training_config: dict[str, Any]
+    training_config: dict[str, Any],
+    methodology: dict[str, Any]
 ) -> dict[str, Any] | None:
     """
     Get training requirements for the A-race based on its type.
@@ -52,9 +90,9 @@ def _get_a_race_requirements(
     if not race_type:
         return None
 
-    # Get requirements for this race type
-    race_requirements = training_config.get('race_requirements', {})
-    requirements = race_requirements.get(race_type)
+    # Get requirements for this race type from methodology
+    race_templates = methodology.get('race_templates', {})
+    requirements = race_templates.get(race_type)
 
     if not requirements:
         return None
@@ -83,29 +121,36 @@ def build_planning_context(
     compliance_status: dict[str, Any],
     today_recovery: dict[str, Any],
     pending_suggestions: list[dict[str, Any]] = None,
+    methodology: dict[str, Any] = None,
 ) -> dict[str, Any]:
     """
     Assemble full context for LLM planning decisions.
 
     This context gives the LLM everything it needs to:
-    - Understand the athlete's capacity and history
-    - Know the current training phase and targets
+    - Understand WHO the athlete is (personal, life constraints, preferences)
+    - Know WHAT they're training for (events, current phase)
+    - Understand HOW to train (pillars, safety rules, race templates)
     - See what's been done vs what's required
     - Factor in recovery status for today's decisions
     - Consider any pending suggestions
 
     Args:
-        athlete_profile: Baseline, PRs, constraints from athlete_profile.json
-        training_config: Events, current block, pillars from training_config.json
+        athlete_profile: Athlete data from athlete.json + athlete_baseline.json
+        training_config: Events, current block from training_config.json
         recent_activities: Last 14 days of parsed activities
         compliance_status: Current week's pillar compliance from rules.py
         today_recovery: Today's body battery, HRV, readiness
         pending_suggestions: Optional list of LLM's prior suggestions
+        methodology: Pillars, constraints, race_templates from methodology.json
 
     Returns:
         Complete context dict ready for LLM consumption
     """
     today = date.today()
+
+    # Load methodology if not provided
+    if methodology is None:
+        methodology = load_methodology()
 
     # Extract ALL upcoming events (for periodization context)
     events = training_config.get('events', [])
@@ -127,18 +172,23 @@ def build_planning_context(
         'today': today.isoformat(),
         'day_of_week': today.strftime('%A'),
 
-        # Athlete capacity and history
+        # WHO - Athlete profile (personal + Garmin-derived)
         'athlete_profile': {
+            'personal': athlete_profile.get('personal', {}),
+            'life_constraints': athlete_profile.get('life_constraints', {}),
+            'injury_history': athlete_profile.get('injury_history', []),
+            'preferences': athlete_profile.get('preferences', {}),
+            'coaching_notes': athlete_profile.get('coaching_notes', ''),
             'baseline': athlete_profile.get('baseline', {}),
             'personal_records': athlete_profile.get('personal_records', []),
-            'constraints': athlete_profile.get('manual', {}).get('constraints', []),
-            'injury_history': athlete_profile.get('manual', {}).get('injury_history', []),
         },
 
-        # Current training phase
+        # WHAT - Current training phase and goals
         'current_block': training_config.get('current_block', {}),
-        'pillars': training_config.get('pillars', {}),
-        'safety_constraints': training_config.get('constraints', {}),
+
+        # HOW - Training methodology
+        'pillars': methodology.get('pillars', {}),
+        'safety_constraints': methodology.get('safety_constraints', {}),
 
         # Upcoming goals
         'upcoming_events': upcoming_events,
@@ -148,7 +198,9 @@ def build_planning_context(
         ),
 
         # A-race specific training requirements
-        'a_race_requirements': _get_a_race_requirements(upcoming_events, training_config),
+        'a_race_requirements': _get_a_race_requirements(
+            upcoming_events, training_config, methodology
+        ),
 
         # Recent history
         'recent_activities': recent_activities,

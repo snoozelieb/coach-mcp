@@ -11,6 +11,8 @@ from planner import (
     reject_suggestion as reject_sug,
     create_empty_week_template,
     load_json_file,
+    load_athlete,
+    load_methodology,
 )
 from config import (
     DATA_DIR,
@@ -21,6 +23,7 @@ from config import (
     ELEVATION_SIGNIFICANCE_THRESHOLD,
     HIGH_ALTITUDE_THRESHOLD,
     VALID_PRIORITIES,
+    ATHLETE_BASELINE_FILE,
 )
 from datetime import date, timedelta
 from typing import Any, Union
@@ -232,15 +235,18 @@ def parse_personal_records(pr_data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def refresh_athlete_profile() -> str:
+def refresh_athlete_baseline() -> str:
     """
-    Generates/refreshes athlete profile from 6 months of Garmin history.
+    Generates/refreshes athlete baseline from 6 months of Garmin history.
 
     Pulls activities, personal records, and calculates baseline metrics.
-    Saves to data/athlete_profile.json.
+    Saves to data/athlete_baseline.json (auto-generated Garmin data).
+
+    For personal info, life constraints, injury history, and preferences,
+    edit data/athlete.json directly.
 
     Returns:
-        JSON summary of the generated profile.
+        JSON summary of the generated baseline.
     """
     try:
         client = get_garmin_client()
@@ -261,30 +267,25 @@ def refresh_athlete_profile() -> str:
         # Calculate baseline from activities
         baseline = calculate_baseline(activities)
 
-        # Build the profile
+        # Build the baseline profile (Garmin-derived only)
         profile = {
-            'last_updated': today.isoformat(),
+            'last_refreshed': today.isoformat(),
             'baseline': baseline,
             'personal_records': personal_records,
-            'manual': {
-                'injury_history': [],
-                'constraints': [],
-                'notes': ''
-            }
         }
 
         # Ensure data directory exists
         DATA_DIR.mkdir(exist_ok=True)
 
-        # Save to file
-        profile_path = DATA_DIR / 'athlete_profile.json'
+        # Save to athlete_baseline.json
+        profile_path = DATA_DIR / ATHLETE_BASELINE_FILE
         with open(profile_path, 'w') as f:
             json.dump(profile, f, indent=2)
 
         # Return summary
         summary = {
             'status': 'success',
-            'last_updated': profile['last_updated'],
+            'last_refreshed': profile['last_refreshed'],
             'activities_analyzed': baseline['total_activities'],
             'weeks_analyzed': baseline['weeks_analyzed'],
             'avg_weekly_volume_hrs': baseline['avg_weekly_volume_hrs'],
@@ -396,17 +397,41 @@ def get_daily_metrics() -> str:
 
 
 @mcp.tool()
+def get_athlete() -> str:
+    """
+    Returns the complete athlete profile.
+
+    Includes:
+    - personal: name, age, HR zones, FTP, weight
+    - life_constraints: recurring commitments, preferred times, work schedule
+    - injury_history: past injuries with status and notes
+    - preferences: likes, dislikes, equipment, notes
+    - coaching_notes: free-form notes about the athlete
+    - baseline: Garmin-derived training capacity (from athlete_baseline.json)
+    - personal_records: PRs from Garmin
+
+    Edit data/athlete.json directly to update personal info.
+    Use refresh_athlete_baseline() to update Garmin-derived data.
+    """
+    try:
+        athlete = load_athlete()
+        return json.dumps(athlete, indent=2)
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_planning_context() -> str:
     """
     Assembles complete context for LLM training planning.
 
     Returns comprehensive data including:
-    - Athlete profile (baseline, PRs, constraints)
-    - Current training block and pillars
-    - Recent activities (last 14 days)
+    - WHO: Athlete profile (personal, life constraints, preferences, baseline)
+    - WHAT: Current training block and upcoming events
+    - HOW: Training methodology (pillars, safety constraints)
+    - Recent activities (last 5 weeks)
     - Current week's compliance status
     - Today's recovery metrics
-    - Upcoming events
     - Any pending suggestions
 
     Use this before generating or adjusting training plans.
@@ -415,9 +440,10 @@ def get_planning_context() -> str:
         client = get_garmin_client()
         today = date.today()
 
-        # Load configurations
-        athlete_profile = load_json_file('athlete_profile.json')
+        # Load configurations from new file structure
+        athlete_profile = load_athlete()
         training_config = load_training_config()
+        methodology = load_methodology()
 
         # Get recent activities (14 days)
         start_14_days = today - timedelta(days=RECENT_ACTIVITY_DAYS)
@@ -449,7 +475,7 @@ def get_planning_context() -> str:
         # Get pending suggestions
         pending = get_suggestions()
 
-        # Build full context
+        # Build full context with new file structure
         context = build_planning_context(
             athlete_profile=athlete_profile,
             training_config=training_config,
@@ -457,6 +483,7 @@ def get_planning_context() -> str:
             compliance_status=compliance,
             today_recovery=today_recovery,
             pending_suggestions=pending,
+            methodology=methodology,
         )
 
         return json.dumps(context, indent=2, default=str)

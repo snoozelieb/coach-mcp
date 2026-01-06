@@ -10,6 +10,14 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent / "data"
 TOKEN_DIR = str(Path(__file__).parent / ".garth")  # String for garth compatibility
 
+# Data file names
+ATHLETE_FILE = "athlete.json"
+ATHLETE_BASELINE_FILE = "athlete_baseline.json"
+TRAINING_CONFIG_FILE = "training_config.json"
+METHODOLOGY_FILE = "methodology.json"
+WEEKLY_PLAN_FILE = "weekly_plan.json"
+SUGGESTIONS_FILE = "suggestions.json"
+
 # Activity classification thresholds
 LONG_EFFORT_MIN_MINS = 60
 HARD_HR_AVG_THRESHOLD = 150
@@ -23,7 +31,7 @@ HTTP_TIMEOUT_SECONDS = 15
 
 # Data retention (days)
 PROFILE_HISTORY_DAYS = 180
-RECENT_ACTIVITY_DAYS = 14
+RECENT_ACTIVITY_DAYS = 35  # 5 weeks to view current week within 4-week block context
 
 # Web scraping limits
 PAGE_TEXT_MAX_CHARS = 8000

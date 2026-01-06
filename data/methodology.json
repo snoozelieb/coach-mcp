@@ -1,0 +1,131 @@
+{
+  "pillars": {
+    "strength_sessions_per_week": 2,
+    "mobility_minutes_per_week": 90,
+    "long_effort_per_week": 1,
+    "long_effort_min_duration_mins": 60
+  },
+  "safety_constraints": {
+    "max_consecutive_hard_days": 2,
+    "mandatory_rest_after_race_days": 1,
+    "max_weekly_volume_increase_percent": 10
+  },
+  "race_templates": {
+    "trail_ultra": {
+      "description": "Ultra-distance trail running (50km+). Demands time on feet, climbing strength, and mental resilience.",
+      "key_sessions": [
+        {
+          "type": "long_trail_run",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build to 3-4 hours by peak. Mimic race terrain - technical trails, elevation"
+        },
+        {
+          "type": "back_to_back_long",
+          "frequency": "monthly",
+          "priority": "high",
+          "notes": "Long Saturday + medium-long Sunday. Teaches running on tired legs"
+        },
+        {
+          "type": "vertical_work",
+          "frequency": "weekly",
+          "priority": "high",
+          "notes": "Hill repeats, stair climbing, or sustained climbs. Build climbing economy"
+        },
+        {
+          "type": "strength",
+          "frequency": "2x/week",
+          "priority": "critical",
+          "notes": "Single-leg work, eccentric loading for downhills, core stability"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Focus on aerobic volume. Easy long runs building duration. Strength foundation.",
+        "build": "Add vertical gain. Increase long run terrain difficulty. Back-to-back weekends.",
+        "peak": "Race-simulation efforts. Nutrition/hydration practice. Course-specific prep.",
+        "taper": "Reduce volume 40-60%. Keep short sharp efforts. Rest legs for race day."
+      }
+    },
+    "multi_day_mtb": {
+      "description": "Multi-day mountain bike stage race. Requires endurance, bike handling, and recovery between stages.",
+      "key_sessions": [
+        {
+          "type": "long_mtb_ride",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build to 3-4 hours. Include climbs and technical sections"
+        },
+        {
+          "type": "back_to_back_rides",
+          "frequency": "monthly",
+          "priority": "high",
+          "notes": "Consecutive day riding to simulate stage race fatigue"
+        },
+        {
+          "type": "tempo_climbs",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Sustained climbing at race pace. Build climbing endurance"
+        },
+        {
+          "type": "strength",
+          "frequency": "2x/week",
+          "priority": "high",
+          "notes": "Core, lower back, shoulders for bike position. Single-leg power"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build saddle time. Easy long rides. Strength and mobility focus.",
+        "build": "Add intensity on climbs. Increase ride duration. Technical skills.",
+        "peak": "Race-pace efforts. Equipment dialed. Practice nutrition strategy.",
+        "taper": "Short sharp rides. Keep legs fresh. Mental preparation."
+      }
+    },
+    "road_cycling": {
+      "description": "Road cycling events. Sustained aerobic effort with group dynamics.",
+      "key_sessions": [
+        {
+          "type": "long_ride",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build endurance base. Include varied terrain"
+        },
+        {
+          "type": "tempo_intervals",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Sustained efforts at race pace"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build aerobic base with volume. Easy spinning.",
+        "build": "Add tempo and threshold work. Group rides.",
+        "peak": "Race-specific intensity. Sharpen.",
+        "taper": "Reduce volume, maintain intensity."
+      }
+    },
+    "tournament": {
+      "description": "Multi-game tournament (Ultimate, Padel). High intensity with short recovery between games.",
+      "key_sessions": [
+        {
+          "type": "interval_training",
+          "frequency": "2x/week",
+          "priority": "high",
+          "notes": "Short sharp efforts mimicking game demands"
+        },
+        {
+          "type": "agility_work",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Change of direction, acceleration, deceleration"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build aerobic base to support repeated efforts.",
+        "build": "Add game-specific intervals. Practice skills.",
+        "peak": "Sharpen speed. Team tactics.",
+        "taper": "Fresh legs. Light technical work only."
+      }
+    }
+  }
+}

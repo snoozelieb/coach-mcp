@@ -13,16 +13,37 @@ from config import (
     HARD_HR_AVG_THRESHOLD,
     HARD_HR_MAX_THRESHOLD,
     VOLUME_COMPLIANCE_MIN_PERCENT,
+    TRAINING_CONFIG_FILE,
+    METHODOLOGY_FILE,
 )
 
 
 def load_training_config() -> dict[str, Any]:
-    """Load training configuration from JSON file."""
-    config_path = DATA_DIR / "training_config.json"
-    if not config_path.exists():
-        return {}
-    with open(config_path) as f:
-        return json.load(f)
+    """
+    Load training configuration merged with methodology.
+
+    Returns training_config.json data (events, current_block) merged with
+    methodology.json data (pillars, constraints, race_templates).
+    """
+    # Load training config
+    config_path = DATA_DIR / TRAINING_CONFIG_FILE
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+    else:
+        config = {}
+
+    # Load methodology and merge into config for backward compatibility
+    methodology_path = DATA_DIR / METHODOLOGY_FILE
+    if methodology_path.exists():
+        with open(methodology_path) as f:
+            methodology = json.load(f)
+        # Merge methodology into config
+        config['pillars'] = methodology.get('pillars', {})
+        config['constraints'] = methodology.get('safety_constraints', {})
+        config['race_requirements'] = methodology.get('race_templates', {})
+
+    return config
 
 
 def classify_activity(activity: dict[str, Any]) -> dict[str, bool]:
