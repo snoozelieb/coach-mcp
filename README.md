@@ -51,9 +51,11 @@ Edit `data/athlete.json` with your info:
 }
 ```
 
+Or use the `update_athlete()` tool to set up via the MCP interface.
+
 ### 4. Add Your Races
 
-Edit `data/training_config.json`:
+Use the race management tools or edit `data/training_config.json`:
 
 ```json
 {
@@ -89,33 +91,61 @@ python daily_loop.py --llm  # With LLM coaching
 
 | File | Purpose | Edit? |
 |------|---------|-------|
-| `data/athlete.json` | Your personal info, life constraints, preferences | Yes |
+| `data/athlete.json` | Your personal info, life constraints, preferences | Yes (or via tool) |
 | `data/athlete_baseline.json` | Garmin-derived training capacity | Auto-generated |
 | `data/methodology.json` | Training pillars and safety rules | Rarely |
-| `data/training_config.json` | Your race calendar and current phase | Yes |
+| `data/training_config.json` | Your race calendar and current phase | Yes (or via tools) |
 | `data/weekly_plan.json` | Current 7-day rolling plan | Via tools |
 
-## MCP Tools
+## MCP Tools (20 total)
 
-### Data Tools
-- `get_athlete()` - Your full profile
-- `get_daily_metrics()` - Today's RHR, Body Battery, Sleep
-- `get_activities_range(start, end)` - Activity history
-- `get_training_readiness(date)` - Recovery score and HRV
-- `refresh_athlete_baseline()` - Regenerate from 6 months of Garmin data
+### Garmin Data Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_daily_metrics()` | Today's RHR, Body Battery, Sleep | Formatted string |
+| `get_activities_range(start, end)` | Activity history between dates | JSON array |
+| `get_training_readiness(date)` | Recovery score, HRV, acute load | JSON object |
+| `get_personal_records()` | All personal bests from Garmin | JSON array |
+| `refresh_athlete_baseline()` | Regenerate baseline from 6 months data | JSON summary |
+| `get_compliance_report(days)` | Pillar compliance for period | JSON object |
+
+### Athlete Profile Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_athlete()` | Full athlete profile with preferences | JSON object |
+| `update_athlete(section, data)` | Update profile section | Confirmation |
+
+**update_athlete sections:**
+- `personal` - max_hr, resting_hr, hr_zones, ftp, weight_kg
+- `life_constraints` - recurring_commitments, preferred_training_times
+- `preferences` - likes, dislikes, equipment
+- `coaching_notes` - free-form notes
+- `add_commitment` - add a recurring commitment
+- `add_injury` - add to injury history
 
 ### Planning Tools
-- `get_planning_context()` - Full context for LLM planning
-- `get_weekly_plan()` - Current 7-day plan
-- `update_weekly_plan(plan_json)` - Save updated plan
-- `get_compliance_report(days)` - Pillar compliance status
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_planning_context()` | Full context for LLM planning | JSON object |
+| `get_weekly_plan()` | Current 7-day rolling plan | JSON object |
+| `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
 
-### Race Management
-- `list_races()` - View all races with days until
-- `add_race(...)` - Add new race
-- `update_race(...)` - Modify race details
-- `remove_race(name)` - Delete race
-- `research_race(name)` - Fetch race info from URL
+### Race Management Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `list_races()` | View all races with days until | JSON array |
+| `add_race(name, date, priority, ...)` | Add new A/B/C/D race | Confirmation |
+| `update_race(name, ...)` | Update date, priority, notes, URL | Confirmation |
+| `remove_race(name)` | Delete race by name | Confirmation |
+| `research_race(name or url)` | Fetch race info from website | JSON with course details |
+
+### Suggestion Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `propose_suggestion(type, desc, rationale, change)` | LLM proposes config change | Suggestion ID |
+| `list_pending_suggestions()` | View pending suggestions | JSON array |
+| `approve_suggestion(id)` | User approves suggestion | Confirmation |
+| `reject_suggestion(id, reason)` | User rejects with reason | Confirmation |
 
 ## Training Methodology
 

@@ -421,6 +421,108 @@ def get_athlete() -> str:
 
 
 @mcp.tool()
+def update_athlete(
+    section: str,
+    data: str
+) -> str:
+    """
+    Update a section of the athlete profile.
+
+    Args:
+        section: Which section to update. One of:
+            - 'personal': name, age, max_hr, resting_hr, hr_zones, ftp, weight_kg
+            - 'life_constraints': recurring_commitments, preferred_training_times, work_schedule
+            - 'preferences': likes, dislikes, equipment, notes
+            - 'coaching_notes': free-form coaching notes (string, not object)
+            - 'add_commitment': add a recurring commitment
+            - 'add_injury': add an injury to history
+        data: JSON string with the data to update/add
+
+    Examples:
+        update_athlete('personal', '{"max_hr": 185, "weight_kg": 75}')
+        update_athlete('add_commitment', '{"day": "Tuesday", "activity": "swimming", "time": "morning"}')
+        update_athlete('add_injury', '{"date": "2026-01-01", "type": "ankle", "description": "Rolled ankle"}')
+        update_athlete('preferences', '{"likes": ["MTB", "trail running"]}')
+        update_athlete('coaching_notes', '"Responds well to data-driven feedback"')
+
+    Returns confirmation with updated section.
+    """
+    from planner import save_json_file
+    from config import ATHLETE_FILE
+
+    try:
+        athlete = load_athlete()
+        # Remove baseline data before saving (it's from athlete_baseline.json)
+        athlete.pop('baseline', None)
+        athlete.pop('personal_records', None)
+
+        parsed_data = json.loads(data)
+
+        if section == 'personal':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'personal data must be an object'})
+            athlete.setdefault('personal', {}).update(parsed_data)
+            updated = athlete['personal']
+
+        elif section == 'life_constraints':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'life_constraints data must be an object'})
+            athlete.setdefault('life_constraints', {}).update(parsed_data)
+            updated = athlete['life_constraints']
+
+        elif section == 'preferences':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'preferences data must be an object'})
+            athlete.setdefault('preferences', {}).update(parsed_data)
+            updated = athlete['preferences']
+
+        elif section == 'coaching_notes':
+            if not isinstance(parsed_data, str):
+                return json.dumps({'error': 'coaching_notes must be a string'})
+            athlete['coaching_notes'] = parsed_data
+            updated = parsed_data
+
+        elif section == 'add_commitment':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'commitment must be an object with day, activity, time'})
+            required = ['day', 'activity']
+            if not all(k in parsed_data for k in required):
+                return json.dumps({'error': f'commitment requires: {required}'})
+            athlete.setdefault('life_constraints', {}).setdefault('recurring_commitments', [])
+            athlete['life_constraints']['recurring_commitments'].append(parsed_data)
+            updated = parsed_data
+
+        elif section == 'add_injury':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'injury must be an object with date, type, description'})
+            required = ['date', 'type', 'description']
+            if not all(k in parsed_data for k in required):
+                return json.dumps({'error': f'injury requires: {required}'})
+            parsed_data.setdefault('status', 'active')
+            athlete.setdefault('injury_history', []).append(parsed_data)
+            updated = parsed_data
+
+        else:
+            return json.dumps({
+                'error': f"Unknown section '{section}'. Use: personal, life_constraints, preferences, coaching_notes, add_commitment, add_injury"
+            })
+
+        # Save updated athlete profile
+        save_json_file(ATHLETE_FILE, athlete)
+
+        return json.dumps({
+            'status': 'success',
+            'section': section,
+            'updated': updated
+        }, indent=2)
+
+    except json.JSONDecodeError as e:
+        return json.dumps({'error': f'Invalid JSON: {str(e)}'})
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_planning_context() -> str:
     """
     Assembles complete context for LLM training planning.

@@ -41,6 +41,7 @@ python daily_loop.py --llm
 | `get_personal_records()` | All PBs | JSON array |
 | `get_training_readiness(date)` | Recovery score, HRV, load | JSON object |
 | `get_athlete()` | Full athlete profile (personal, constraints, preferences) | JSON object |
+| `update_athlete(section, data)` | Update profile section (personal, preferences, add_injury, etc.) | Confirmation |
 | `refresh_athlete_baseline()` | Generate baseline from 6mo Garmin history | JSON summary |
 
 ### Compliance Tools
