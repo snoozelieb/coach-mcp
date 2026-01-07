@@ -30,8 +30,40 @@ from typing import Any, Union
 from collections import defaultdict
 import json
 
+
+def check_setup() -> bool:
+    """
+    Check if required data files exist.
+
+    Returns True if setup is complete, False if setup wizard needs to run.
+    """
+    required_files = [
+        ("athlete.json", "Athlete profile"),
+        ("training_config.json", "Training configuration"),
+    ]
+
+    missing = []
+    for filename, description in required_files:
+        if not (DATA_DIR / filename).exists():
+            missing.append(f"  - {filename} ({description})")
+
+    if missing:
+        print("\n" + "=" * 50)
+        print("  Setup Required")
+        print("=" * 50)
+        print("\nMissing data files:")
+        print("\n".join(missing))
+        print("\nRun the setup wizard to create them:")
+        print("  python setup_wizard.py")
+        print("\nOr create them manually in the data/ folder.")
+        print("=" * 50 + "\n")
+        return False
+
+    return True
+
+
 # Initialize the MCP Server
-mcp = FastMCP("My Coach")
+mcp = FastMCP("AI Training Coach")
 
 
 def parse_resting_heart_rate(stats: dict[str, Any]) -> Union[int, str]:
@@ -1948,4 +1980,8 @@ def update_injury_status(
 
 
 if __name__ == "__main__":
-    mcp.run()
+    if check_setup():
+        mcp.run()
+    else:
+        import sys
+        sys.exit(1)

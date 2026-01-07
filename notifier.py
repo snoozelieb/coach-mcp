@@ -5,7 +5,6 @@ Supported channels:
 - Console: Print to terminal
 - Log: Save to file
 - Email: SMTP (Gmail, Outlook, etc.)
-- Telegram: Bot API
 """
 import os
 import logging
@@ -166,51 +165,6 @@ class EmailNotifier(Notifier):
         return '\n'.join(html)
 
 
-class TelegramNotifier(Notifier):
-    """
-    Telegram bot notifier.
-
-    Requires:
-    - TELEGRAM_BOT_TOKEN: Your bot token from @BotFather
-    - TELEGRAM_CHAT_ID: Your chat ID (get from @userinfobot)
-    """
-
-    def __init__(self):
-        self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-
-    def send(self, message: str, title: Optional[str] = None) -> bool:
-        if not self.bot_token or not self.chat_id:
-            logger.warning("Telegram not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
-            return False
-
-        try:
-            import requests
-        except ImportError:
-            logger.error("requests package not installed. Run: pip install requests")
-            return False
-
-        full_message = message
-        if title:
-            full_message = f"*{title}*\n\n{message}"
-
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            'chat_id': self.chat_id,
-            'text': full_message,
-            'parse_mode': 'Markdown',
-        }
-
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
-            logger.info("Telegram message sent successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
-
-
 def get_notifier(notifier_type: Optional[str] = None) -> Notifier:
     """
     Get the appropriate notifier based on configuration.
@@ -225,18 +179,14 @@ def get_notifier(notifier_type: Optional[str] = None) -> Notifier:
     if notifier_type:
         notifier_type = notifier_type.lower()
     else:
-        # Auto-detect based on environment (priority: email > telegram > console)
+        # Auto-detect based on environment (priority: email > console)
         if os.getenv('EMAIL_ADDRESS') and os.getenv('EMAIL_PASSWORD'):
             notifier_type = 'email'
-        elif os.getenv('TELEGRAM_BOT_TOKEN'):
-            notifier_type = 'telegram'
         else:
             notifier_type = 'console'
 
     if notifier_type == 'email':
         return EmailNotifier()
-    elif notifier_type == 'telegram':
-        return TelegramNotifier()
     elif notifier_type == 'log':
         return LogNotifier()
     else:

@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**"The Enforcer"** - An AI-driven training coach MCP server that:
+An AI-driven training coach MCP server that:
 - Fetches fitness data from Garmin Connect
 - Maintains a 7-day rolling training plan
-- Enforces training pillars (Strength, Mobility, Long Effort)
+- Tracks training pillars (Strength, Mobility, Long Effort)
 - Provides LLM-driven coaching with daily briefs
 
 **Athlete context:** Running, Cycling, High-intensity games (Ultimate). Injury-prone, needs enforced Mobility + Strength. Multiple target events with A/B/C priority.
@@ -108,7 +108,7 @@ coach-mcp/
 ├── rules.py               # Compliance checker, safety rules
 ├── planner.py             # Context builder, plan/suggestion management
 ├── daily_loop.py          # Morning audit automation
-├── notifier.py            # Notification system (console/telegram)
+├── notifier.py            # Notification system (console/email)
 ├── config.py              # Shared configuration and constants
 ├── data/
 │   ├── athlete.json           # WHO - personal info, life constraints, preferences
@@ -214,7 +214,7 @@ All 4 sprints complete:
 
 ### Sprint 4: Automation
 - [x] `daily_loop.py` - Morning audit script
-- [x] `notifier.py` - Console/Telegram notifications
+- [x] `notifier.py` - Console/Email notifications
 - [x] LLM integration with `--llm` flag
 
 ## Environment
@@ -224,8 +224,6 @@ Requires `.env` with:
 GARMIN_EMAIL=your@email.com
 GARMIN_PASSWORD=yourpassword
 ANTHROPIC_API_KEY=sk-ant-xxx  # For LLM integration
-TELEGRAM_BOT_TOKEN=xxx        # Optional, for notifications
-TELEGRAM_CHAT_ID=xxx          # Optional, for notifications
 ```
 
 ## Testing Pattern
@@ -235,14 +233,6 @@ Tests use real API responses captured in `test_fixtures.json`. When adding new t
 2. Add MCP tool with `@mcp.tool()` decorator
 3. Write tests with sample data matching Garmin structure
 4. Run: `python -m pytest -v`
-
-## The Enforcer Personality
-
-The LLM coach persona (defined in `daily_loop.py`):
-- Direct and honest - no sugar-coating
-- Evidence-based - always cite the data
-- Supportive but firm - care about the athlete's goals
-- Action-oriented - every message should guide the next step
 
 ## When to Suggest New Tools
 

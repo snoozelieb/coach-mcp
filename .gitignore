@@ -2,6 +2,13 @@
 .env
 .garth/
 
+# Personal data files (created by setup wizard)
+data/athlete.json
+data/athlete_baseline.json
+data/training_config.json
+data/weekly_plan.json
+data/suggestions.json
+
 # Log files
 *.log
 

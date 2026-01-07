@@ -1,6 +1,6 @@
-# The Enforcer - AI Training Coach
+# AI Training Coach
 
-An MCP server that connects to Garmin Connect and provides AI-driven training coaching with enforced training pillars.
+An MCP server that connects to Garmin Connect and provides AI-driven training coaching with structured training pillars.
 
 ## Features
 
@@ -29,52 +29,20 @@ GARMIN_PASSWORD=yourpassword
 ANTHROPIC_API_KEY=sk-ant-xxx  # Optional, for LLM features
 ```
 
-### 3. Set Up Your Profile
+### 3. Run Setup Wizard
 
-Edit `data/athlete.json` with your info:
-
-```json
-{
-  "personal": {
-    "max_hr": 184,
-    "hr_zones": {...}
-  },
-  "life_constraints": {
-    "recurring_commitments": [
-      {"day": "Wednesday", "activity": "padel", "time": "afternoon"}
-    ]
-  },
-  "preferences": {
-    "likes": ["outdoor rides", "MTB"],
-    "dislikes": ["treadmill"]
-  }
-}
+```bash
+python setup_wizard.py
 ```
 
-Or use the `update_athlete()` tool to set up via the MCP interface.
+This creates your personal data files:
+- `data/athlete.json` - Your profile, HR zones, preferences
+- `data/training_config.json` - Training phase and race calendar
+- `data/weekly_plan.json` - Your rolling 7-day plan
 
-### 4. Add Your Races
+You can also set up manually or via the MCP tools (`update_athlete()`, `add_race()`).
 
-Use the race management tools or edit `data/training_config.json`:
-
-```json
-{
-  "events": [
-    {
-      "date": "2026-05-07",
-      "name": "My A Race",
-      "priority": "A",
-      "type": "multi_day_mtb"
-    }
-  ],
-  "current_block": {
-    "phase": "base",
-    "weekly_volume_target_hrs": 8.0
-  }
-}
-```
-
-### 5. Run the Server
+### 4. Run the Server
 
 ```bash
 python server.py
@@ -89,13 +57,15 @@ python daily_loop.py --llm  # With LLM coaching
 
 ## Data Files
 
-| File | Purpose | Edit? |
-|------|---------|-------|
-| `data/athlete.json` | Your personal info, life constraints, preferences | Yes (or via tool) |
-| `data/athlete_baseline.json` | Garmin-derived training capacity | Auto-generated |
-| `data/methodology.json` | Training pillars and safety rules | Rarely |
-| `data/training_config.json` | Your race calendar and current phase | Yes (or via tools) |
-| `data/weekly_plan.json` | Current 7-day rolling plan | Via tools |
+| File | Purpose | Git Status |
+|------|---------|------------|
+| `data/methodology.json` | Training pillars and safety rules | Shared (committed) |
+| `data/athlete.json` | Your personal info, preferences | Personal (gitignored) |
+| `data/athlete_baseline.json` | Garmin-derived training capacity | Personal (gitignored) |
+| `data/training_config.json` | Your race calendar and current phase | Personal (gitignored) |
+| `data/weekly_plan.json` | Current 7-day rolling plan | Personal (gitignored) |
+
+Personal data files are created by `setup_wizard.py` and stay on your machine.
 
 ## MCP Tools (22 total)
 
@@ -198,14 +168,6 @@ Pre-configured training guidance for:
 ```bash
 python -m pytest test_server.py test_rules.py test_planner.py -v
 ```
-
-## The Enforcer Persona
-
-The AI coach is direct and evidence-based:
-- No sugar-coating - tells you what you need to hear
-- Always cites the data behind recommendations
-- Supportive but firm about pillars
-- Every message guides your next action
 
 ## License
 
