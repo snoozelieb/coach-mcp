@@ -97,12 +97,12 @@ python daily_loop.py --llm  # With LLM coaching
 | `data/training_config.json` | Your race calendar and current phase | Yes (or via tools) |
 | `data/weekly_plan.json` | Current 7-day rolling plan | Via tools |
 
-## MCP Tools (20 total)
+## MCP Tools (22 total)
 
 ### Garmin Data Tools
 | Tool | Purpose | Returns |
 |------|---------|---------|
-| `get_daily_metrics()` | Today's RHR, Body Battery, Sleep | Formatted string |
+| `get_daily_metrics()` | Today's RHR, Body Battery, Sleep | JSON object |
 | `get_activities_range(start, end)` | Activity history between dates | JSON array |
 | `get_training_readiness(date)` | Recovery score, HRV, acute load | JSON object |
 | `get_personal_records()` | All personal bests from Garmin | JSON array |
@@ -122,6 +122,18 @@ python daily_loop.py --llm  # With LLM coaching
 - `coaching_notes` - free-form notes
 - `add_commitment` - add a recurring commitment
 - `add_injury` - add to injury history
+
+### Methodology Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_methodology()` | View pillars, constraints, race templates | JSON object |
+| `update_methodology(section, data)` | Update training methodology | Confirmation |
+
+**update_methodology sections:**
+- `pillars` - strength_sessions_per_week, mobility_minutes_per_week, etc.
+- `safety_constraints` - max_consecutive_hard_days, rest_after_race, etc.
+- `add_race_template` - add new race type template
+- `update_race_template` - modify existing race template
 
 ### Planning Tools
 | Tool | Purpose | Returns |
@@ -146,6 +158,21 @@ python daily_loop.py --llm  # With LLM coaching
 | `list_pending_suggestions()` | View pending suggestions | JSON array |
 | `approve_suggestion(id)` | User approves suggestion | Confirmation |
 | `reject_suggestion(id, reason)` | User rejects with reason | Confirmation |
+
+### Injury Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `diagnose_injury(location, answers)` | Clinical assessment (two-phase) | Questions or diagnosis |
+| `research_injury(injury_type, severity, url)` | Web research for treatment & recovery | JSON with researched info |
+| `update_injury_status(date, status, notes)` | Track injury progress | Confirmation |
+
+**diagnose_injury two-phase flow:**
+1. Call with just `location` to get clinical assessment questions
+2. Call with `location` + `answers` (JSON) to get diagnosis with possible conditions
+
+**research_injury usage:**
+- Auto-search: `research_injury("shin splints")` - searches Wikipedia/medical sources
+- Direct URL: `research_injury("tendinitis", url="https://...")` - fetches specific resource
 
 ## Training Methodology
 

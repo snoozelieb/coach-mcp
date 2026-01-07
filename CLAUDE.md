@@ -36,13 +36,21 @@ python daily_loop.py --llm
 ### Data Tools
 | Tool | Purpose | Returns |
 |------|---------|---------|
-| `get_daily_metrics()` | RHR, Body Battery, Sleep Score | Formatted string |
+| `get_daily_metrics()` | RHR, Body Battery, Sleep Score | JSON object |
 | `get_activities_range(start, end)` | Activity history | JSON array |
 | `get_personal_records()` | All PBs | JSON array |
 | `get_training_readiness(date)` | Recovery score, HRV, load | JSON object |
 | `get_athlete()` | Full athlete profile (personal, constraints, preferences) | JSON object |
 | `update_athlete(section, data)` | Update profile section (personal, preferences, add_injury, etc.) | Confirmation |
 | `refresh_athlete_baseline()` | Generate baseline from 6mo Garmin history | JSON summary |
+
+### Methodology Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_methodology()` | View pillars, constraints, race templates, activity classifications | JSON object |
+| `update_methodology(section, data)` | Update pillars, constraints, or race templates | Confirmation |
+
+**update_methodology sections:** `pillars`, `safety_constraints`, `add_race_template`, `update_race_template`
 
 ### Compliance Tools
 | Tool | Purpose | Returns |
@@ -72,6 +80,24 @@ python daily_loop.py --llm
 | `list_pending_suggestions()` | See pending suggestions | JSON array |
 | `approve_suggestion(id)` | User approves suggestion | Confirmation |
 | `reject_suggestion(id, reason)` | User rejects suggestion | Confirmation |
+
+### Injury Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `diagnose_injury(location, answers)` | Clinical assessment (two-phase) | Questions then diagnosis |
+| `research_injury(injury_type, severity, url)` | Web research for treatment & recovery | JSON with researched info |
+| `update_injury_status(date, status, notes)` | Track injury progress | Confirmation |
+
+**diagnose_injury workflow:**
+1. Phase 1: Call with `location` only → returns clinical assessment questions
+2. Phase 2: Call with `location` + `answers` (JSON) → returns possible conditions, severity, recommendations
+
+**Supported body regions:** shin, knee, ankle, back, shoulder, hip, foot, calf
+
+**research_injury workflow:**
+- Auto-search: `research_injury("shin splints")` - searches Wikipedia and extracts treatment/rehab info
+- Direct URL: `research_injury("tendinitis", url="https://...")` - fetches and parses specific resource
+- Each injury is researched uniquely from web sources rather than using static protocols
 
 ## Architecture
 

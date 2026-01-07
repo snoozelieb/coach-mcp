@@ -167,6 +167,28 @@ def build_planning_context(
             continue
     upcoming_events.sort(key=lambda e: e['days_until'])
 
+    # Load current weekly plan for context
+    current_plan = get_current_plan()
+
+    # Get race templates for upcoming B/C races (within 8 weeks)
+    race_templates = methodology.get('race_templates', {})
+    relevant_race_templates = {}
+    for event in upcoming_events:
+        if event.get('days_until', 999) <= 56:  # Within 8 weeks
+            race_type = event.get('type')
+            priority = event.get('priority', 'C')
+            if race_type and race_type in race_templates and priority in ['A', 'B', 'C']:
+                if race_type not in relevant_race_templates:
+                    relevant_race_templates[race_type] = {
+                        'template': race_templates[race_type],
+                        'races_using': []
+                    }
+                relevant_race_templates[race_type]['races_using'].append({
+                    'name': event.get('name'),
+                    'days_until': event.get('days_until'),
+                    'priority': priority
+                })
+
     # Build the context
     context = {
         'today': today.isoformat(),
@@ -202,6 +224,12 @@ def build_planning_context(
             upcoming_events, training_config, methodology
         ),
 
+        # All relevant race templates (for B/C races within 8 weeks)
+        'relevant_race_templates': relevant_race_templates,
+
+        # Current weekly plan (for continuity)
+        'current_weekly_plan': current_plan,
+
         # Recent history
         'recent_activities': recent_activities,
         'activities_last_7_days': [
@@ -218,6 +246,29 @@ def build_planning_context(
         # Pending LLM suggestions (if any)
         'pending_suggestions': pending_suggestions or [],
     }
+
+    # Add active injuries with restrictions for easy reference
+    injury_history = athlete_profile.get('injury_history', [])
+    active_injuries = [
+        injury for injury in injury_history
+        if injury.get('status', 'active') == 'active'
+    ]
+
+    if active_injuries:
+        # Collect all restricted activities from active injuries
+        all_restricted = set()
+        all_safe = set()
+        for injury in active_injuries:
+            all_restricted.update(injury.get('restricted_activities', []))
+            all_safe.update(injury.get('safe_activities', []))
+
+        context['active_injuries'] = {
+            'count': len(active_injuries),
+            'injuries': active_injuries,
+            'restricted_activities': list(all_restricted),
+            'safe_activities': list(all_safe),
+            'warning': f"Athlete has {len(active_injuries)} active injury/injuries. Avoid: {', '.join(all_restricted) if all_restricted else 'see individual injuries'}",
+        }
 
     return context
 

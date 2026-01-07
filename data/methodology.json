@@ -127,5 +127,11 @@
         "taper": "Fresh legs. Light technical work only."
       }
     }
+  },
+  "activity_classification": {
+    "strength_types": ["strength_training", "indoor_cardio", "functional_strength"],
+    "mobility_types": ["yoga", "pilates", "stretching", "breathwork"],
+    "cardio_types": ["running", "cycling", "swimming", "trail_running", "open_water_swimming"],
+    "high_intensity_types": ["ultimate_disc", "hiit", "interval_training", "track_running"]
   }
 }

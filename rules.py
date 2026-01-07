@@ -18,6 +18,30 @@ from config import (
 )
 
 
+def get_thresholds() -> dict[str, Any]:
+    """
+    Load thresholds from training_config.json with config.py fallbacks.
+
+    Thresholds control activity classification and compliance checking.
+    Users can customize via training_config.json; config.py provides defaults.
+    """
+    config_path = DATA_DIR / TRAINING_CONFIG_FILE
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        thresholds = config.get('thresholds', {})
+    else:
+        thresholds = {}
+
+    # Return thresholds with config.py defaults as fallbacks
+    return {
+        'hard_hr_avg': thresholds.get('hard_hr_avg', HARD_HR_AVG_THRESHOLD),
+        'hard_hr_max': thresholds.get('hard_hr_max', HARD_HR_MAX_THRESHOLD),
+        'long_effort_min_mins': thresholds.get('long_effort_min_mins', LONG_EFFORT_MIN_MINS),
+        'volume_compliance_percent': thresholds.get('volume_compliance_percent', VOLUME_COMPLIANCE_MIN_PERCENT),
+    }
+
+
 def load_training_config() -> dict[str, Any]:
     """
     Load training configuration merged with methodology.
@@ -46,37 +70,73 @@ def load_training_config() -> dict[str, Any]:
     return config
 
 
-def classify_activity(activity: dict[str, Any]) -> dict[str, bool]:
+def get_activity_classifications() -> dict[str, set]:
+    """
+    Load activity type classifications from methodology.json.
+
+    Returns dict with sets: strength_types, mobility_types, cardio_types, high_intensity_types
+    """
+    methodology_path = DATA_DIR / METHODOLOGY_FILE
+    if methodology_path.exists():
+        with open(methodology_path) as f:
+            methodology = json.load(f)
+        classifications = methodology.get('activity_classification', {})
+    else:
+        classifications = {}
+
+    # Return classifications with hardcoded defaults as fallbacks
+    return {
+        'strength_types': set(classifications.get('strength_types', ['strength_training', 'indoor_cardio', 'functional_strength'])),
+        'mobility_types': set(classifications.get('mobility_types', ['yoga', 'pilates', 'stretching', 'breathwork'])),
+        'cardio_types': set(classifications.get('cardio_types', ['running', 'cycling', 'swimming', 'trail_running', 'open_water_swimming'])),
+        'high_intensity_types': set(classifications.get('high_intensity_types', ['ultimate_disc', 'hiit', 'interval_training', 'track_running'])),
+    }
+
+
+def classify_activity(activity: dict[str, Any], thresholds: dict[str, Any] = None) -> dict[str, bool]:
     """
     Classify an activity by training pillar contribution.
 
+    Args:
+        activity: Parsed activity dict
+        thresholds: Optional thresholds override (loads from config if None)
+
     Returns dict with: is_strength, is_mobility, is_long_effort, is_hard
     """
+    if thresholds is None:
+        thresholds = get_thresholds()
+
+    # Load activity type classifications from methodology
+    classifications = get_activity_classifications()
+    strength_types = classifications['strength_types']
+    mobility_types = classifications['mobility_types']
+    cardio_types = classifications['cardio_types']
+    high_intensity_types = classifications['high_intensity_types']
+
     activity_type = activity.get('type', '').lower()
     duration_mins = activity.get('duration_mins', 0) or 0
 
     # Strength activities
-    strength_types = {'strength_training', 'indoor_cardio', 'functional_strength'}
     is_strength = activity_type in strength_types
 
-    # Mobility activities (yoga, pilates, stretching)
-    mobility_types = {'yoga', 'pilates', 'stretching', 'breathwork'}
+    # Mobility activities
     is_mobility = activity_type in mobility_types
 
-    # Long effort (60+ mins of cardio)
-    cardio_types = {'running', 'cycling', 'swimming', 'trail_running', 'open_water_swimming'}
-    is_long_effort = activity_type in cardio_types and duration_mins >= LONG_EFFORT_MIN_MINS
+    # Long effort (configurable mins of cardio)
+    long_effort_min = thresholds.get('long_effort_min_mins', LONG_EFFORT_MIN_MINS)
+    is_long_effort = activity_type in cardio_types and duration_mins >= long_effort_min
 
     # High intensity detection
-    high_intensity_types = {'ultimate_disc', 'hiit', 'interval_training', 'track_running'}
     avg_hr = activity.get('avg_hr') or 0
     max_hr = activity.get('max_hr') or 0
 
     # Activity is "hard" if it's a high-intensity type OR has elevated HR
+    hard_hr_avg = thresholds.get('hard_hr_avg', HARD_HR_AVG_THRESHOLD)
+    hard_hr_max = thresholds.get('hard_hr_max', HARD_HR_MAX_THRESHOLD)
     is_hard = (
         activity_type in high_intensity_types or
-        avg_hr > HARD_HR_AVG_THRESHOLD or
-        max_hr > HARD_HR_MAX_THRESHOLD
+        avg_hr > hard_hr_avg or
+        max_hr > hard_hr_max
     )
 
     return {
@@ -108,6 +168,10 @@ def check_weekly_compliance(
             deficits: ["strength", "mobility"]
         }
     """
+    # Load thresholds from config
+    thresholds = get_thresholds()
+    volume_compliance_min = thresholds.get('volume_compliance_percent', VOLUME_COMPLIANCE_MIN_PERCENT)
+
     if pillars is None:
         config = load_training_config()
         pillars = config.get('pillars', {})
@@ -165,7 +229,7 @@ def check_weekly_compliance(
             'target_hrs': volume_target,
             'actual_hrs': total_volume_hrs,
             'percent': volume_percent,
-            'compliant': volume_percent >= VOLUME_COMPLIANCE_MIN_PERCENT,
+            'compliant': volume_percent >= volume_compliance_min,
         },
     }
 

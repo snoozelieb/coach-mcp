@@ -87,46 +87,50 @@ class TestParseBodyBatteryWithRealData:
 
 class TestGetDailyMetricsIntegration:
     @patch('server.get_garmin_client')
-    def test_formats_output_correctly_with_real_data(self, mock_get_client):
+    def test_returns_json_with_real_data(self, mock_get_client):
         """Test full integration using real fixture data."""
         from server import get_daily_metrics
+        import json
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = REAL_STATS
         mock_client.get_body_battery.return_value = REAL_BODY_BATTERY
         mock_get_client.return_value = mock_client
 
-        result = get_daily_metrics()
+        result = json.loads(get_daily_metrics())
 
-        assert 'RHR=40bpm' in result
-        assert 'Body Battery=33/100' in result
+        assert result['rhr'] == 40
+        assert result['body_battery'] == 33
         # sleepScore not present in fixture, shows as N/A
-        assert 'Sleep Score=N/A' in result
+        assert result['sleep_score'] == 'N/A'
+        assert 'date' in result
 
     @patch('server.get_garmin_client')
     def test_handles_api_error(self, mock_get_client):
         from server import get_daily_metrics
+        import json
 
         mock_get_client.side_effect = Exception("Connection timeout")
-        result = get_daily_metrics()
+        result = json.loads(get_daily_metrics())
 
-        assert 'Error fetching Garmin data' in result
-        assert 'Connection timeout' in result
+        assert 'error' in result
+        assert 'Connection timeout' in result['error']
 
     @patch('server.get_garmin_client')
     def test_handles_empty_responses(self, mock_get_client):
         from server import get_daily_metrics
+        import json
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = {}
         mock_client.get_body_battery.return_value = []
         mock_get_client.return_value = mock_client
 
-        result = get_daily_metrics()
+        result = json.loads(get_daily_metrics())
 
-        assert 'RHR=N/A' in result
-        assert 'Body Battery=N/A' in result
-        assert 'Sleep Score=N/A' in result
+        assert result['rhr'] == 'N/A'
+        assert result['body_battery'] == 'N/A'
+        assert result['sleep_score'] == 'N/A'
 
 
 # Sample activity data matching Garmin API structure
