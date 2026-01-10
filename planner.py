@@ -15,6 +15,7 @@ from config import (
     ATHLETE_FILE,
     ATHLETE_BASELINE_FILE,
     METHODOLOGY_FILE,
+    COACHING_LOG_FILE,
 )
 
 
@@ -65,6 +66,76 @@ def load_methodology() -> dict[str, Any]:
     - race_templates: key sessions and phase guidance by race type
     """
     return load_json_file(METHODOLOGY_FILE)
+
+
+def load_coaching_log() -> dict[str, Any]:
+    """Load the coaching log with decisions and patterns."""
+    return load_json_file(COACHING_LOG_FILE)
+
+
+def get_coaching_context() -> dict[str, Any]:
+    """
+    Get coaching context for LLM continuity.
+
+    Returns:
+        - active_decisions: Decisions currently influencing planning
+        - pending_approvals: Changes awaiting user approval
+        - response_patterns: Identified athlete adaptation patterns
+        - decisions_due_review: Decisions that should be reviewed
+    """
+    log = load_coaching_log()
+    today = date.today()
+
+    decisions = log.get('decisions', [])
+    pending = log.get('pending_approvals', [])
+    responses = log.get('athlete_responses', [])
+
+    # Get active decisions
+    active_decisions = [d for d in decisions if d.get('status') == 'active']
+
+    # Find decisions due for review
+    due_for_review = []
+    for d in active_decisions:
+        review_date = d.get('review_date')
+        if review_date:
+            try:
+                if date.fromisoformat(review_date) <= today:
+                    due_for_review.append(d['id'])
+            except ValueError:
+                pass
+
+    # Filter out expired pending approvals
+    active_pending = []
+    for p in pending:
+        expires = p.get('expires')
+        if expires:
+            try:
+                if date.fromisoformat(expires) >= today:
+                    active_pending.append(p)
+            except ValueError:
+                active_pending.append(p)
+        else:
+            active_pending.append(p)
+
+    # Extract patterns from responses
+    patterns = {}
+    for r in responses:
+        pattern = r.get('pattern')
+        if pattern:
+            if pattern not in patterns:
+                patterns[pattern] = {'count': 0, 'examples': []}
+            patterns[pattern]['count'] += 1
+            if len(patterns[pattern]['examples']) < 2:
+                patterns[pattern]['examples'].append(r.get('stimulus', ''))
+
+    return {
+        'active_decisions': active_decisions,
+        'decisions_due_review': due_for_review,
+        'pending_approvals': active_pending,
+        'response_patterns': list(patterns.keys()),
+        'pattern_details': patterns,
+        'recent_responses': responses[-5:] if responses else []
+    }
 
 
 def _get_a_race_requirements(
@@ -245,6 +316,9 @@ def build_planning_context(
 
         # Pending LLM suggestions (if any)
         'pending_suggestions': pending_suggestions or [],
+
+        # Coaching continuity (decisions, patterns, approvals)
+        'coaching_context': get_coaching_context(),
     }
 
     # Add active injuries with restrictions for easy reference
@@ -378,11 +452,25 @@ def create_empty_week_template() -> dict[str, Any]:
     {
         'week_start': '2026-01-05',
         'days': {
-            '2026-01-05': {'planned': None, 'actual': None, 'notes': ''},
-            '2026-01-06': {'planned': None, 'actual': None, 'notes': ''},
+            '2026-01-05': {
+                'planned': {
+                    'type': 'long_ride',
+                    'description': 'Long MTB ride',
+                    'duration_mins': 150,
+                    'intensity': 'easy',
+                    'purpose': 'Build aerobic base for sani2c Day 1',
+                    'goal_category': 'race_preparation',
+                    'phase_alignment': 'base'
+                },
+                'actual': None,
+                'notes': ''
+            },
             ...
         }
     }
+
+    Session 'purpose' field is REQUIRED - explains WHY this session matters.
+    Session 'goal_category' is one of: race_preparation, fun_activities, aesthetics
     """
     today = date.today()
     days = {}
@@ -391,7 +479,7 @@ def create_empty_week_template() -> dict[str, Any]:
         day = today + timedelta(days=i)
         days[day.isoformat()] = {
             'day_name': day.strftime('%A'),
-            'planned': None,  # LLM fills this
+            'planned': None,  # LLM fills with: type, description, duration_mins, intensity, purpose, goal_category
             'actual': None,   # Filled by audit
             'status': 'pending',  # pending, completed, missed, modified
             'notes': '',
@@ -399,6 +487,7 @@ def create_empty_week_template() -> dict[str, Any]:
 
     return {
         'week_start': today.isoformat(),
+        'week_end': (today + timedelta(days=6)).isoformat(),
         'days': days,
         'generated_by': 'LLM',
         'last_updated': today.isoformat(),

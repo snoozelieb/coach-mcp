@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import date
 from garminconnect import Garmin
 from dotenv import load_dotenv
 
@@ -66,3 +67,20 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
 
     _cached_client = client
     return client
+
+
+def schedule_workout(client: Garmin, workout_id: int, schedule_date: str) -> dict:
+    """
+    Schedule a workout to a specific date on Garmin Connect calendar.
+
+    Args:
+        client: Authenticated Garmin client
+        workout_id: ID of the workout to schedule (from upload_workout)
+        schedule_date: Date to schedule (YYYY-MM-DD format)
+
+    Returns:
+        API response dict
+    """
+    url = f"{client.garmin_workouts_schedule_url}/{workout_id}"
+    response = client.garth.post("connectapi", url, json={"date": schedule_date})
+    return response

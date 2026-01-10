@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from garmin_client import get_garmin_client
+from garmin_client import get_garmin_client, schedule_workout
 from rules import check_weekly_compliance, check_safety_rules, get_upcoming_events, load_training_config
 from planner import (
     build_planning_context,
@@ -353,6 +353,104 @@ def get_training_readiness(for_date: str = None) -> str:
         parsed = parse_training_readiness(readiness_data)
 
         return json.dumps(parsed, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_load_status() -> str:
+    """
+    Get comprehensive load status for training decisions.
+
+    Uses Garmin's Training Readiness and recent activity data to provide
+    load context and recommendations for today's training intensity.
+
+    Returns:
+        JSON with: readiness (score/level), acute_load, load_trend,
+        recommendation, and any warnings.
+    """
+    try:
+        client = get_garmin_client()
+        today = date.today()
+
+        # Get today's training readiness
+        readiness_data = client.get_training_readiness(today.isoformat())
+        readiness = parse_training_readiness(readiness_data)
+
+        # Get recent activities for load trend
+        week_ago = (today - timedelta(days=7)).isoformat()
+        two_weeks_ago = (today - timedelta(days=14)).isoformat()
+
+        recent_activities = client.get_activities_by_date(week_ago, today.isoformat())
+        prior_activities = client.get_activities_by_date(two_weeks_ago, week_ago)
+
+        # Calculate load trend (simple duration-based)
+        recent_duration_mins = sum(
+            a.get('duration', 0) / 60 for a in recent_activities
+        ) if recent_activities else 0
+        prior_duration_mins = sum(
+            a.get('duration', 0) / 60 for a in prior_activities
+        ) if prior_activities else 0
+
+        # Calculate ACWR-like ratio (simplified)
+        if prior_duration_mins > 0:
+            load_ratio = recent_duration_mins / prior_duration_mins
+        else:
+            load_ratio = 1.0
+
+        # Determine load trend
+        if load_ratio < 0.8:
+            trend = "decreasing"
+        elif load_ratio > 1.15:
+            trend = "increasing"
+        else:
+            trend = "stable"
+
+        # Generate recommendation based on readiness level
+        level = readiness.get('level', 'UNKNOWN')
+        score = readiness.get('score', 0)
+
+        if level == 'PRIME' or score >= 80:
+            recommendation = "Excellent readiness - good day for key sessions or intensity"
+            intensity = "high"
+        elif level == 'HIGH' or score >= 60:
+            recommendation = "Good readiness - proceed with planned training"
+            intensity = "moderate_to_high"
+        elif level == 'MODERATE' or score >= 40:
+            recommendation = "Moderate readiness - consider easier session or reduced volume"
+            intensity = "moderate"
+        elif level == 'LOW' or score >= 20:
+            recommendation = "Low readiness - recommend easy/recovery session only"
+            intensity = "low"
+        else:
+            recommendation = "Very low readiness - rest or very light movement only"
+            intensity = "rest"
+
+        # Build warnings
+        warnings = []
+        if load_ratio > 1.3:
+            warnings.append("Acute load significantly higher than chronic - injury risk elevated")
+        if readiness.get('recovery_time_hrs', 0) > 48:
+            warnings.append(f"Recovery time still {readiness.get('recovery_time_hrs')}hrs - not fully recovered")
+        if readiness.get('hrv_status') in ['UNBALANCED', 'POOR']:
+            warnings.append(f"HRV status is {readiness.get('hrv_status')} - consider extra recovery")
+
+        return json.dumps({
+            'readiness_score': score,
+            'readiness_level': level,
+            'acute_load': readiness.get('acute_load'),
+            'load_ratio': round(load_ratio, 2),
+            'load_trend': trend,
+            'recent_volume_mins': round(recent_duration_mins),
+            'prior_volume_mins': round(prior_duration_mins),
+            'recommended_intensity': intensity,
+            'recommendation': recommendation,
+            'warnings': warnings,
+            'hrv_status': readiness.get('hrv_status'),
+            'recovery_time_hrs': readiness.get('recovery_time_hrs'),
+            'feedback': readiness.get('feedback')
+        }, indent=2)
 
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -720,6 +818,50 @@ def get_planning_context() -> str:
         today_recovery['body_battery'] = parse_body_battery(body_battery)
         today_recovery['sleep_score'] = parse_sleep_score(stats)
 
+        # Calculate load status
+        week_ago = (today - timedelta(days=7)).isoformat()
+        two_weeks_ago = (today - timedelta(days=14)).isoformat()
+
+        recent_load_activities = client.get_activities_by_date(week_ago, today.isoformat())
+        prior_load_activities = client.get_activities_by_date(two_weeks_ago, week_ago)
+
+        recent_duration_mins = sum(
+            a.get('duration', 0) / 60 for a in recent_load_activities
+        ) if recent_load_activities else 0
+        prior_duration_mins = sum(
+            a.get('duration', 0) / 60 for a in prior_load_activities
+        ) if prior_load_activities else 0
+
+        if prior_duration_mins > 0:
+            load_ratio = recent_duration_mins / prior_duration_mins
+        else:
+            load_ratio = 1.0
+
+        readiness_score = today_recovery.get('score', 0)
+        readiness_level = today_recovery.get('level', 'UNKNOWN')
+
+        if readiness_level == 'PRIME' or readiness_score >= 80:
+            load_recommendation = "high"
+        elif readiness_level == 'HIGH' or readiness_score >= 60:
+            load_recommendation = "moderate_to_high"
+        elif readiness_level == 'MODERATE' or readiness_score >= 40:
+            load_recommendation = "moderate"
+        elif readiness_level == 'LOW' or readiness_score >= 20:
+            load_recommendation = "low"
+        else:
+            load_recommendation = "rest"
+
+        load_status = {
+            'readiness_score': readiness_score,
+            'readiness_level': readiness_level,
+            'acute_load': today_recovery.get('acute_load'),
+            'load_ratio': round(load_ratio, 2),
+            'load_trend': 'decreasing' if load_ratio < 0.8 else ('increasing' if load_ratio > 1.15 else 'stable'),
+            'recommended_intensity': load_recommendation,
+            'recent_volume_mins': round(recent_duration_mins),
+            'prior_volume_mins': round(prior_duration_mins),
+        }
+
         # Get pending suggestions
         pending = get_suggestions()
 
@@ -733,6 +875,61 @@ def get_planning_context() -> str:
             pending_suggestions=pending,
             methodology=methodology,
         )
+
+        # Add load status to context
+        context['load_status'] = load_status
+
+        # Calculate goal balance
+        fun_types = ['padel', 'ultimate_disc', 'social_ride', 'tennis', 'squash', 'badminton']
+        strength_types = ['strength_training', 'indoor_cardio', 'functional_strength']
+
+        race_prep_mins = 0
+        fun_mins = 0
+        aesthetics_mins = 0
+        last_fun_date = None
+        strength_count = 0
+
+        for activity in recent_activities:
+            act_type = activity.get('type', '').lower()
+            duration = activity.get('duration_mins', 0)
+            act_date = activity.get('date')
+
+            if any(f in act_type for f in fun_types):
+                fun_mins += duration
+                if last_fun_date is None or (act_date and act_date > last_fun_date):
+                    last_fun_date = act_date
+            elif any(s in act_type for s in strength_types):
+                aesthetics_mins += duration
+                strength_count += 1
+            else:
+                race_prep_mins += duration
+
+        total_mins = race_prep_mins + fun_mins + aesthetics_mins
+        days_since_fun = None
+        if last_fun_date:
+            try:
+                fun_date = date.fromisoformat(last_fun_date)
+                days_since_fun = (today - fun_date).days
+            except ValueError:
+                pass
+
+        context['goal_progress'] = {
+            'race_preparation': {
+                'mins': round(race_prep_mins),
+                'pct': round(race_prep_mins / total_mins * 100) if total_mins > 0 else 0
+            },
+            'fun_activities': {
+                'mins': round(fun_mins),
+                'pct': round(fun_mins / total_mins * 100) if total_mins > 0 else 0,
+                'days_since_last': days_since_fun,
+                'needs_attention': days_since_fun is not None and days_since_fun > 14
+            },
+            'aesthetics': {
+                'mins': round(aesthetics_mins),
+                'strength_sessions': strength_count,
+                'needs_attention': strength_count < 2
+            }
+        }
 
         return json.dumps(context, indent=2, default=str)
 
@@ -794,6 +991,172 @@ def update_weekly_plan(plan_json: str) -> str:
         })
     except json.JSONDecodeError as e:
         return json.dumps({'error': f'Invalid JSON: {str(e)}'})
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def push_plan_to_garmin() -> str:
+    """
+    Push the current 7-day plan to Garmin Connect calendar.
+
+    AUTOMATICALLY DELETES existing workouts created during plan period
+    before pushing to prevent duplicates.
+
+    Converts each session to a Garmin workout (running, cycling, strength, yoga),
+    uploads it, and schedules it to the appropriate date.
+
+    Supported workout types:
+    - Running: timed segments with warmup/main/cooldown
+    - Cycling: timed segments with warmup/main/cooldown
+    - Strength: exercises with sets/reps, rest uses LAP BUTTON
+    - Yoga/Mobility: scheduled as Yoga activity type
+    - Pilates: scheduled as Pilates activity type
+
+    Rest days are skipped.
+
+    Returns:
+        JSON summary with count of pushed workouts, dates, and any errors.
+    """
+    from workout_builder import build_workout, get_workout_type_name
+
+    try:
+        client = get_garmin_client()
+        plan = get_current_plan()
+
+        if not plan or 'days' not in plan:
+            return json.dumps({'error': 'No weekly plan found. Generate a plan first.'})
+
+        # DUPLICATE PREVENTION: Delete existing workouts created during plan period
+        week_start = plan.get('week_start', '2000-01-01')
+        existing_workouts = client.get_workouts()
+        deleted_count = 0
+
+        for workout in existing_workouts:
+            workout_id = workout.get('workoutId')
+            created = workout.get('createdDate', '')[:10]
+
+            # Delete workouts created on or after plan start date (likely ours)
+            if created >= week_start:
+                try:
+                    client.garth.delete('connectapi', f'/workout-service/workout/{workout_id}', api=True)
+                    deleted_count += 1
+                except:
+                    pass
+
+        results = {
+            'status': 'success',
+            'duplicates_deleted': deleted_count,
+            'pushed': [],
+            'skipped': [],
+            'errors': [],
+        }
+
+        for date_str, day_data in plan['days'].items():
+            # Get the planned session(s)
+            planned = day_data.get('planned')
+            if not planned:
+                results['skipped'].append({'date': date_str, 'reason': 'rest day'})
+                continue
+
+            # Handle both single session and list of sessions
+            sessions = planned if isinstance(planned, list) else [planned]
+
+            for session in sessions:
+                workout_type = get_workout_type_name(session)
+
+                if workout_type == 'skipped':
+                    results['skipped'].append({
+                        'date': date_str,
+                        'type': session.get('type'),
+                        'reason': 'rest day - not pushed'
+                    })
+                    continue
+
+                if workout_type == 'unknown':
+                    results['skipped'].append({
+                        'date': date_str,
+                        'type': session.get('type'),
+                        'reason': 'unknown workout type'
+                    })
+                    continue
+
+                # Build the Garmin workout
+                workout = build_workout(session, date_str)
+
+                if not workout:
+                    results['skipped'].append({
+                        'date': date_str,
+                        'type': session.get('type'),
+                        'reason': 'could not convert to workout'
+                    })
+                    continue
+
+                try:
+                    # Upload the workout based on type
+                    if workout_type == 'cycling':
+                        upload_result = client.upload_cycling_workout(workout)
+                        workout_name = workout.workoutName
+                    elif workout_type == 'running':
+                        upload_result = client.upload_running_workout(workout)
+                        workout_name = workout.workoutName
+                    elif workout_type in ['yoga', 'strength']:
+                        # Yoga and strength use generic upload with dict format
+                        upload_result = client.upload_workout(workout)
+                        workout_name = workout.get('workoutName', 'Workout')
+                    else:
+                        results['skipped'].append({
+                            'date': date_str,
+                            'type': workout_type,
+                            'reason': 'upload method not implemented'
+                        })
+                        continue
+
+                    # Get the workout ID from the upload result
+                    workout_id = upload_result.get('workoutId')
+
+                    if not workout_id:
+                        results['errors'].append({
+                            'date': date_str,
+                            'type': workout_type,
+                            'error': 'No workout ID returned from upload'
+                        })
+                        continue
+
+                    # Schedule the workout to the date
+                    schedule_workout(client, workout_id, date_str)
+
+                    result_entry = {
+                        'date': date_str,
+                        'type': workout_type,
+                        'workout_id': workout_id,
+                        'name': workout_name
+                    }
+
+                    # Add exercise count for strength workouts
+                    if workout_type == 'strength' and isinstance(workout, dict):
+                        result_entry['exercise_count'] = workout.get('exercise_count', 0)
+
+                    results['pushed'].append(result_entry)
+
+                except Exception as e:
+                    results['errors'].append({
+                        'date': date_str,
+                        'type': workout_type,
+                        'error': str(e)
+                    })
+
+        # Build summary message
+        pushed_count = len(results['pushed'])
+        if pushed_count > 0:
+            dates = [p['date'] for p in results['pushed']]
+            types_pushed = set(p['type'] for p in results['pushed'])
+            results['summary'] = f"Pushed {pushed_count} workout(s) to Garmin ({', '.join(types_pushed)}): {dates[0]} to {dates[-1]}"
+        else:
+            results['summary'] = "No workouts pushed (all sessions were rest days)"
+
+        return json.dumps(results, indent=2)
+
     except Exception as e:
         return json.dumps({'error': str(e)})
 
@@ -1893,6 +2256,448 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
 
 
 @mcp.tool()
+def list_exercises(
+    category: str = None,
+    muscle: str = None,
+    injury_prevention: str = None,
+    search: str = None,
+    limit: int = 50
+) -> str:
+    """
+    Browse the exercise library with optional filters.
+
+    Args:
+        category: Filter by Garmin category (e.g., "DEADLIFT", "SQUAT", "PLANK")
+        muscle: Filter by muscle group (e.g., "hamstrings", "glutes", "core")
+        injury_prevention: Filter exercises for injury prevention (e.g., "hamstring", "knee", "ankle")
+        search: Text search in exercise names
+        limit: Max results to return (default 50)
+
+    Returns:
+        JSON with matching exercises and available categories/muscles.
+    """
+    try:
+        # Load exercise library
+        exercises_file = DATA_DIR / "exercises.json"
+        if not exercises_file.exists():
+            return json.dumps({
+                "error": "Exercise library not found. Run fetch_exercises.py first.",
+                "hint": "python fetch_exercises.py"
+            })
+
+        with open(exercises_file) as f:
+            library = json.load(f)
+
+        exercises = library.get("exercises", {})
+        categories = library.get("categories", [])
+        injury_mappings = library.get("injury_mappings", {})
+
+        # Build result
+        result = {
+            "filters_applied": {},
+            "matches": [],
+            "total_in_library": len(exercises),
+        }
+
+        # Apply filters
+        matches = []
+        for name, data in exercises.items():
+            include = True
+
+            # Category filter
+            if category:
+                if category.upper() != data.get("garmin_category", "").upper():
+                    include = False
+
+            # Muscle filter
+            if muscle and include:
+                muscles = data.get("muscles", [])
+                if not any(muscle.lower() in m.lower() for m in muscles):
+                    include = False
+
+            # Injury prevention filter
+            if injury_prevention and include:
+                prevention = data.get("injury_prevention", [])
+                if not any(injury_prevention.lower() in p.lower() for p in prevention):
+                    include = False
+
+            # Text search
+            if search and include:
+                if search.lower() not in name.lower():
+                    include = False
+
+            if include:
+                matches.append({
+                    "name": name,
+                    "category": data.get("garmin_category"),
+                    "primary_muscles": data.get("primary_muscles", []),
+                    "secondary_muscles": data.get("secondary_muscles", []),
+                    "injury_prevention": data.get("injury_prevention", []),
+                })
+
+        # Apply limit
+        result["matches"] = matches[:limit]
+        result["match_count"] = len(matches)
+
+        # Record applied filters
+        if category:
+            result["filters_applied"]["category"] = category
+        if muscle:
+            result["filters_applied"]["muscle"] = muscle
+        if injury_prevention:
+            result["filters_applied"]["injury_prevention"] = injury_prevention
+        if search:
+            result["filters_applied"]["search"] = search
+
+        # Include available options if no filters
+        if not any([category, muscle, injury_prevention, search]):
+            result["available_categories"] = categories[:20]
+            result["categories_note"] = f"{len(categories)} total categories"
+            result["injury_prevention_types"] = list(injury_mappings.keys())
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def generate_strength_workout(
+    focus: str = "full_body",
+    duration_mins: int = 45,
+    equipment: str = "gym"
+) -> str:
+    """
+    Generate a smart strength workout based on context.
+
+    Automatically adjusts based on:
+    - Recent activities (avoids legs after long cycle/frisbee/padel)
+    - Injury history (always includes relevant prehab exercises)
+    - Current training load and recovery
+
+    Args:
+        focus: Target area - "upper_body", "lower_body", "full_body", "core"
+               Will be auto-adjusted based on recent activities.
+        duration_mins: Target workout duration (default 45)
+        equipment: "gym", "home", "minimal" (affects exercise selection)
+
+    Returns:
+        JSON with exercises, sets, reps, rationale, and auto-adjustments.
+    """
+    try:
+        client = get_garmin_client()
+        today = date.today()
+
+        # Get today's and recent activities
+        yesterday = today - timedelta(days=1)
+        raw_activities = client.get_activities_by_date(
+            yesterday.isoformat(),
+            today.isoformat()
+        )
+        recent_activities = parse_activities(raw_activities)
+
+        # Get athlete profile for injury history
+        athlete = load_athlete()
+        injury_history = athlete.get("injury_history", [])
+        active_injuries = [i for i in injury_history if i.get("status") == "active"]
+        past_injuries = [i for i in injury_history if i.get("status") in ["resolved", "improving"]]
+
+        # Load exercise library
+        exercises_file = DATA_DIR / "exercises.json"
+        if not exercises_file.exists():
+            return json.dumps({
+                "error": "Exercise library not found. Run fetch_exercises.py first."
+            })
+
+        with open(exercises_file) as f:
+            library = json.load(f)
+
+        exercises = library.get("exercises", {})
+        injury_mappings = library.get("injury_mappings", {})
+
+        # Analyze recent activities for auto-adjustment
+        adjustments = []
+        original_focus = focus
+        avoid_muscle_groups = set()
+        reduce_volume_groups = set()
+
+        for activity in recent_activities:
+            activity_type = activity.get("type", "").lower()
+            duration = activity.get("duration_mins", 0) or 0
+
+            # Long cycle (>60min) today → reduce leg volume
+            if "cycling" in activity_type or "ride" in activity_type:
+                if duration > 60:
+                    reduce_volume_groups.update(["quadriceps", "glutes", "hamstrings", "calves"])
+                    adjustments.append(f"Long cycle ({int(duration)}min) - reducing leg volume")
+                    if focus == "lower_body":
+                        focus = "upper_body"
+                        adjustments.append("Switched focus to upper_body")
+                    elif focus == "full_body":
+                        adjustments.append("Will limit leg exercises in full_body workout")
+
+            # Ultimate/Frisbee/Padel → avoid legs completely
+            if any(sport in activity_type for sport in ["ultimate", "frisbee", "padel", "tennis", "squash"]):
+                avoid_muscle_groups.update(["quadriceps", "glutes", "hamstrings", "calves"])
+                adjustments.append(f"{activity_type.title()} done - avoiding leg exercises")
+                if focus in ["lower_body", "full_body"]:
+                    focus = "upper_body"
+                    adjustments.append("Switched focus to upper_body")
+
+            # Running → reduce calf/quad work
+            if "running" in activity_type or "run" in activity_type:
+                if duration > 30:
+                    reduce_volume_groups.update(["calves", "quadriceps"])
+                    adjustments.append(f"Running done ({int(duration)}min) - reducing calf/quad work")
+
+        # Handle active injuries - avoid affected areas
+        for injury in active_injuries:
+            injury_type = injury.get("type", "").lower()
+            if "ankle" in injury_type or "peroneal" in injury_type:
+                avoid_muscle_groups.update(["calves"])
+                adjustments.append(f"Active {injury_type} - avoiding calf exercises")
+            if "knee" in injury_type:
+                avoid_muscle_groups.update(["quadriceps"])
+                adjustments.append(f"Active {injury_type} - reducing quad exercises")
+            if "shoulder" in injury_type:
+                adjustments.append(f"Active {injury_type} - avoiding overhead pressing")
+            if "back" in injury_type:
+                adjustments.append(f"Active {injury_type} - avoiding heavy spinal loading")
+
+        # Determine prehab exercises from injury history
+        prehab_exercises = []
+        for injury in injury_history:
+            injury_type = injury.get("type", "").lower()
+
+            # Find matching injury prevention exercises
+            for prevention_type, exercise_list in injury_mappings.items():
+                if prevention_type in injury_type or injury_type in prevention_type:
+                    for ex_name in exercise_list:
+                        if ex_name in exercises:
+                            ex_data = exercises[ex_name]
+                            ex_muscles = ex_data.get("muscles", [])
+
+                            # Skip if this exercise targets avoided muscles
+                            if any(m in avoid_muscle_groups for m in ex_muscles):
+                                continue
+
+                            if ex_name not in [p["name"] for p in prehab_exercises]:
+                                prehab_exercises.append({
+                                    "name": ex_name,
+                                    "reason": f"Injury prevention ({injury_type})",
+                                    "sets": 2,
+                                    "reps": 10,
+                                    "rest_secs": 45
+                                })
+                                break  # One exercise per injury type
+
+        # Select main exercises based on focus
+        workout_exercises = []
+
+        # Exercise templates by focus
+        focus_templates = {
+            "upper_body": {
+                "push": ["BENCH_PRESS", "DUMBBELL_BENCH_PRESS", "PUSH_UP", "SHOULDER_PRESS", "DUMBBELL_SHOULDER_PRESS"],
+                "pull": ["BENT_OVER_ROW", "DUMBBELL_ROW", "LAT_PULLDOWN", "SEATED_ROW", "PULL_UP"],
+                "accessory": ["BICEP_CURL", "DUMBBELL_CURL", "TRICEP_EXTENSION", "FACE_PULL", "LATERAL_RAISE"]
+            },
+            "lower_body": {
+                "compound": ["SQUAT", "BARBELL_SQUAT", "LEG_PRESS", "DEADLIFT", "ROMANIAN_DEADLIFT"],
+                "isolation": ["LEG_EXTENSION", "LEG_CURL", "HAMSTRING_CURL", "CALF_RAISE", "HIP_THRUST"],
+                "unilateral": ["LUNGE", "BULGARIAN_SPLIT_SQUAT", "STEP_UP", "SINGLE_LEG_DEADLIFT"]
+            },
+            "full_body": {
+                "upper_push": ["BENCH_PRESS", "PUSH_UP", "SHOULDER_PRESS"],
+                "upper_pull": ["BENT_OVER_ROW", "LAT_PULLDOWN", "PULL_UP"],
+                "lower": ["SQUAT", "DEADLIFT", "LUNGE", "LEG_PRESS"],
+                "core": ["PLANK", "DEAD_BUG", "RUSSIAN_TWIST"]
+            },
+            "core": {
+                "anti_extension": ["PLANK", "DEAD_BUG", "ROLLOUT"],
+                "anti_rotation": ["PALLOF_PRESS", "SIDE_PLANK", "BIRD_DOG"],
+                "flexion": ["CRUNCH", "HANGING_LEG_RAISE", "CABLE_CRUNCH"]
+            }
+        }
+
+        template = focus_templates.get(focus, focus_templates["full_body"])
+
+        # Select exercises from each group
+        for group_name, exercise_list in template.items():
+            # Skip leg exercises if avoiding
+            if avoid_muscle_groups and group_name in ["lower", "compound", "isolation", "unilateral"]:
+                continue
+
+            # Find available exercise from library
+            for ex_name in exercise_list:
+                if ex_name in exercises:
+                    ex_data = exercises[ex_name]
+                    muscles = ex_data.get("muscles", [])
+
+                    # Skip if targets avoided muscles
+                    if any(m in avoid_muscle_groups for m in muscles):
+                        continue
+
+                    # Determine sets/reps based on muscle group and volume adjustment
+                    sets = 3
+                    reps = 10
+                    if any(m in reduce_volume_groups for m in muscles):
+                        sets = 2
+                        reps = 8
+
+                    workout_exercises.append({
+                        "name": ex_name,
+                        "category": ex_data.get("garmin_category"),
+                        "primary_muscles": ex_data.get("primary_muscles", []),
+                        "sets": sets,
+                        "reps": reps,
+                        "rest_secs": 60 if "compound" not in group_name else 90
+                    })
+                    break  # One per group
+
+        # Add prehab exercises at the end (limit to 2)
+        prehab_to_add = prehab_exercises[:2]
+
+        # Calculate estimated duration
+        main_exercise_time = sum(
+            (ex["sets"] * 45 + (ex["sets"] - 1) * ex["rest_secs"])
+            for ex in workout_exercises
+        ) / 60
+
+        prehab_time = sum(
+            (ex["sets"] * 30 + (ex["sets"] - 1) * ex["rest_secs"])
+            for ex in prehab_to_add
+        ) / 60
+
+        warmup_time = 5
+        estimated_duration = warmup_time + main_exercise_time + prehab_time
+
+        # Build result
+        result = {
+            "focus": focus,
+            "original_focus": original_focus if focus != original_focus else None,
+            "auto_adjustments": adjustments if adjustments else ["No adjustments needed"],
+            "exercises": workout_exercises,
+            "prehab_exercises": prehab_to_add,
+            "estimated_duration_mins": round(estimated_duration),
+            "workout_structure": {
+                "warmup": "5 mins dynamic stretching",
+                "main_sets": len(workout_exercises),
+                "prehab_sets": len(prehab_to_add)
+            },
+            "active_injuries": [i.get("type") for i in active_injuries] if active_injuries else None,
+            "avoid_muscles": list(avoid_muscle_groups) if avoid_muscle_groups else None,
+            "note": "Review and adjust exercises based on available equipment and preferences."
+        }
+
+        # Remove None values
+        result = {k: v for k, v in result.items() if v is not None}
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def add_exercise(
+    name: str,
+    category: str,
+    primary_muscles: str,
+    secondary_muscles: str = None,
+    injury_prevention: str = None
+) -> str:
+    """
+    Add a custom exercise to the library.
+
+    Use this when the LLM suggests an exercise not in Garmin's database.
+
+    Args:
+        name: Exercise name in UPPERCASE_WITH_UNDERSCORES (e.g., "NORDIC_CURL")
+        category: Garmin category to group under (e.g., "HAMSTRING_CURL", "CUSTOM")
+        primary_muscles: Comma-separated primary muscles (e.g., "hamstrings,glutes")
+        secondary_muscles: Comma-separated secondary muscles (optional)
+        injury_prevention: Comma-separated injury types this prevents (e.g., "hamstring,knee")
+
+    Returns:
+        Confirmation with the added exercise details.
+
+    Example:
+        add_exercise(
+            name="NORDIC_CURL",
+            category="HAMSTRING_CURL",
+            primary_muscles="hamstrings",
+            injury_prevention="hamstring"
+        )
+    """
+    try:
+        # Load exercise library
+        exercises_file = DATA_DIR / "exercises.json"
+        if not exercises_file.exists():
+            return json.dumps({
+                "error": "Exercise library not found. Run fetch_exercises.py first."
+            })
+
+        with open(exercises_file) as f:
+            library = json.load(f)
+
+        exercises = library.get("exercises", {})
+
+        # Normalize name
+        normalized_name = name.upper().replace(" ", "_").replace("-", "_")
+
+        # Check if already exists
+        if normalized_name in exercises:
+            return json.dumps({
+                "error": f"Exercise '{normalized_name}' already exists",
+                "existing": exercises[normalized_name]
+            })
+
+        # Parse muscle lists
+        primary = [m.strip().lower() for m in primary_muscles.split(",")]
+        secondary = [m.strip().lower() for m in secondary_muscles.split(",")] if secondary_muscles else []
+        prevention = [p.strip().lower() for p in injury_prevention.split(",")] if injury_prevention else []
+
+        # Create exercise entry
+        new_exercise = {
+            "category": category.upper(),
+            "garmin_category": category.upper(),
+            "garmin_name": normalized_name,
+            "muscles": primary + secondary,
+            "primary_muscles": primary,
+            "secondary_muscles": secondary,
+            "injury_prevention": prevention,
+            "custom": True  # Mark as user-added
+        }
+
+        # Add to library
+        exercises[normalized_name] = new_exercise
+
+        # Track in custom_exercises list
+        if "custom_exercises" not in library:
+            library["custom_exercises"] = []
+        if normalized_name not in library["custom_exercises"]:
+            library["custom_exercises"].append(normalized_name)
+
+        # Update metadata
+        library["metadata"]["exercise_count"] = len(exercises)
+
+        # Save
+        with open(exercises_file, 'w') as f:
+            json.dump(library, f, indent=2)
+
+        return json.dumps({
+            "status": "success",
+            "message": f"Added custom exercise: {normalized_name}",
+            "exercise": new_exercise,
+            "total_exercises": len(exercises),
+            "custom_exercises_count": len(library["custom_exercises"])
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 def update_injury_status(
     injury_date: str,
     new_status: str = None,
@@ -1977,6 +2782,608 @@ def update_injury_status(
 
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# =============================================================================
+# GOAL BALANCE TRACKING
+# =============================================================================
+
+@mcp.tool()
+def get_goal_progress(days: int = 14) -> str:
+    """
+    Get progress toward the three goal categories.
+
+    Tracks balance across:
+    - Race Preparation (50%): Training volume and key sessions
+    - Fun Activities (25%): Padel, Ultimate, social activities
+    - Aesthetics (25%): Strength sessions, upper body focus
+
+    Args:
+        days: Number of days to look back (default 14)
+
+    Returns:
+        JSON with progress for each goal category and recommendations.
+    """
+    try:
+        client = get_garmin_client()
+        today = date.today()
+        start = (today - timedelta(days=days)).isoformat()
+
+        # Get activities
+        raw_activities = client.get_activities_by_date(start, today.isoformat())
+        activities = parse_activities(raw_activities)
+
+        # Load training config for goal definitions
+        training_config = load_training_config()
+        goal_balance = training_config.get('goal_balance', {})
+
+        # Categorize activities
+        race_prep_mins = 0
+        fun_mins = 0
+        aesthetics_mins = 0
+        last_fun_date = None
+        strength_count = 0
+
+        fun_types = ['padel', 'ultimate_disc', 'social_ride', 'tennis', 'squash', 'badminton']
+        strength_types = ['strength_training', 'indoor_cardio', 'functional_strength']
+
+        for activity in activities:
+            act_type = activity.get('type', '').lower()
+            duration = activity.get('duration_mins', 0)
+            act_date = activity.get('date')
+
+            # Fun activities
+            if any(f in act_type for f in fun_types):
+                fun_mins += duration
+                if last_fun_date is None or act_date > last_fun_date:
+                    last_fun_date = act_date
+            # Strength/aesthetics
+            elif any(s in act_type for s in strength_types):
+                aesthetics_mins += duration
+                strength_count += 1
+            # All others count as race prep
+            else:
+                race_prep_mins += duration
+
+        total_mins = race_prep_mins + fun_mins + aesthetics_mins
+
+        # Calculate percentages
+        if total_mins > 0:
+            race_prep_pct = round(race_prep_mins / total_mins * 100)
+            fun_pct = round(fun_mins / total_mins * 100)
+            aesthetics_pct = round(aesthetics_mins / total_mins * 100)
+        else:
+            race_prep_pct = fun_pct = aesthetics_pct = 0
+
+        # Calculate days since last fun activity
+        days_since_fun = None
+        if last_fun_date:
+            try:
+                fun_date = date.fromisoformat(last_fun_date)
+                days_since_fun = (today - fun_date).days
+            except ValueError:
+                pass
+
+        # Generate recommendations
+        recommendations = []
+        prompt_fun = goal_balance.get('fun_activities', {}).get('prompt_if_missing_days', 14)
+
+        if days_since_fun is not None and days_since_fun > prompt_fun:
+            recommendations.append(f"Fun activity missing for {days_since_fun} days - schedule Padel or Frisbee soon!")
+        elif days_since_fun is None:
+            recommendations.append("No fun activities found recently - remember to include Padel or Frisbee!")
+
+        if aesthetics_pct < 20 and strength_count < 2:
+            recommendations.append("Upper body/aesthetics underrepresented - add a strength session")
+
+        if race_prep_pct > 80:
+            recommendations.append("Heavy race prep focus - make sure to balance with fun and gym")
+
+        # Target vs actual
+        targets = {
+            'race_preparation': {'target': 50, 'actual': race_prep_pct},
+            'fun_activities': {'target': 25, 'actual': fun_pct},
+            'aesthetics': {'target': 25, 'actual': aesthetics_pct}
+        }
+
+        return json.dumps({
+            'period_days': days,
+            'total_training_mins': round(total_mins),
+            'goal_progress': {
+                'race_preparation': {
+                    'mins': round(race_prep_mins),
+                    'pct': race_prep_pct,
+                    'target_pct': 50,
+                    'status': 'on_track' if race_prep_pct >= 40 else 'low'
+                },
+                'fun_activities': {
+                    'mins': round(fun_mins),
+                    'pct': fun_pct,
+                    'target_pct': 25,
+                    'days_since_last': days_since_fun,
+                    'status': 'on_track' if fun_pct >= 15 else ('missing' if days_since_fun and days_since_fun > prompt_fun else 'low')
+                },
+                'aesthetics': {
+                    'mins': round(aesthetics_mins),
+                    'pct': aesthetics_pct,
+                    'target_pct': 25,
+                    'strength_sessions': strength_count,
+                    'status': 'on_track' if strength_count >= 2 else 'low'
+                }
+            },
+            'recommendations': recommendations,
+            'balance_score': 'good' if len(recommendations) == 0 else ('needs_attention' if len(recommendations) <= 1 else 'rebalance_needed')
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+# =============================================================================
+# COACHING DECISION PERSISTENCE TOOLS
+# =============================================================================
+
+def load_coaching_log() -> dict[str, Any]:
+    """Load the coaching log file."""
+    return load_json_file('coaching_log.json')
+
+
+def save_coaching_log(log: dict[str, Any]) -> None:
+    """Save the coaching log file."""
+    from planner import save_json_file
+    log['metadata']['last_updated'] = date.today().isoformat()
+    save_json_file('coaching_log.json', log)
+
+
+@mcp.tool()
+def log_coaching_decision(
+    decision_type: str,
+    decision: str,
+    rationale: str,
+    review_days: int = 7
+) -> str:
+    """
+    Log a coaching decision for persistence across sessions.
+
+    Use this to record significant coaching decisions that should influence
+    future planning. Examples: volume adjustments, exercise modifications,
+    phase-related changes.
+
+    Args:
+        decision_type: Category of decision (load_adjustment, exercise_selection,
+                       intensity_change, recovery_protocol, injury_accommodation)
+        decision: What was decided
+        rationale: Why this decision was made (cite data)
+        review_days: Days until this decision should be reviewed (default 7)
+
+    Returns:
+        Confirmation with the decision ID.
+    """
+    try:
+        log = load_coaching_log()
+
+        # Ensure structure exists
+        if 'decisions' not in log:
+            log['decisions'] = []
+        if 'metadata' not in log:
+            log['metadata'] = {'created': date.today().isoformat()}
+
+        # Generate ID
+        decision_count = len([d for d in log['decisions'] if d['date'] == date.today().isoformat()])
+        decision_id = f"d_{date.today().strftime('%Y%m%d')}_{decision_count + 1:03d}"
+
+        new_decision = {
+            'id': decision_id,
+            'date': date.today().isoformat(),
+            'type': decision_type,
+            'decision': decision,
+            'rationale': rationale,
+            'status': 'active',
+            'outcome': None,
+            'review_date': (date.today() + timedelta(days=review_days)).isoformat()
+        }
+
+        log['decisions'].append(new_decision)
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'logged',
+            'decision_id': decision_id,
+            'message': f'Decision logged: {decision}',
+            'review_date': new_decision['review_date']
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_active_decisions() -> str:
+    """
+    Get all active coaching decisions.
+
+    Returns decisions that are currently influencing training plans.
+    Use this at the start of planning to maintain continuity.
+
+    Returns:
+        List of active decisions with their rationale and review dates.
+    """
+    try:
+        log = load_coaching_log()
+        decisions = log.get('decisions', [])
+
+        # Filter for active decisions
+        active = [d for d in decisions if d.get('status') == 'active']
+
+        # Also get decisions due for review
+        today = date.today()
+        due_for_review = []
+        for d in active:
+            review_date = d.get('review_date')
+            if review_date:
+                try:
+                    review = date.fromisoformat(review_date)
+                    if review <= today:
+                        due_for_review.append(d['id'])
+                except ValueError:
+                    pass
+
+        return json.dumps({
+            'active_decisions': active,
+            'count': len(active),
+            'due_for_review': due_for_review,
+            'note': 'These decisions should influence current planning'
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def update_decision_status(
+    decision_id: str,
+    new_status: str,
+    outcome: str = None
+) -> str:
+    """
+    Update the status of a coaching decision.
+
+    Args:
+        decision_id: ID of the decision to update
+        new_status: New status (active, completed, superseded, cancelled)
+        outcome: Optional outcome note (what happened as a result)
+
+    Returns:
+        Confirmation of the update.
+    """
+    try:
+        log = load_coaching_log()
+        decisions = log.get('decisions', [])
+
+        valid_statuses = ['active', 'completed', 'superseded', 'cancelled']
+        if new_status not in valid_statuses:
+            return json.dumps({'error': f'Invalid status. Must be one of: {valid_statuses}'})
+
+        for d in decisions:
+            if d.get('id') == decision_id:
+                d['status'] = new_status
+                if outcome:
+                    d['outcome'] = outcome
+                d['status_updated'] = date.today().isoformat()
+
+                save_coaching_log(log)
+                return json.dumps({
+                    'status': 'updated',
+                    'decision_id': decision_id,
+                    'new_status': new_status,
+                    'outcome': outcome
+                }, indent=2)
+
+        return json.dumps({'error': f'Decision {decision_id} not found'})
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def propose_major_change(
+    change_type: str,
+    proposal: str,
+    rationale: str,
+    impact: str = "high"
+) -> str:
+    """
+    Propose a major coaching change that requires user approval.
+
+    Use this for significant changes like phase transitions, large volume
+    adjustments, or goal rebalancing. The user must approve before these
+    become active.
+
+    Args:
+        change_type: Type of change (phase_transition, volume_change_major,
+                     goal_rebalance, skip_session, add_race)
+        proposal: What change is being proposed
+        rationale: Why this change is recommended (cite data)
+        impact: Impact level (high, medium)
+
+    Returns:
+        Proposal ID for user to approve/reject.
+    """
+    from config import MAJOR_DECISION_TYPES
+
+    try:
+        log = load_coaching_log()
+
+        if 'pending_approvals' not in log:
+            log['pending_approvals'] = []
+        if 'metadata' not in log:
+            log['metadata'] = {'created': date.today().isoformat()}
+
+        # Generate ID
+        proposal_count = len(log['pending_approvals'])
+        proposal_id = f"p_{date.today().strftime('%Y%m%d')}_{proposal_count + 1:03d}"
+
+        new_proposal = {
+            'id': proposal_id,
+            'proposed_date': date.today().isoformat(),
+            'type': change_type,
+            'proposal': proposal,
+            'rationale': rationale,
+            'impact': impact,
+            'expires': (date.today() + timedelta(days=3)).isoformat()
+        }
+
+        log['pending_approvals'].append(new_proposal)
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'proposed',
+            'proposal_id': proposal_id,
+            'message': f'Proposal awaiting approval: {proposal}',
+            'expires': new_proposal['expires'],
+            'action_required': 'User must approve or reject this change'
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def list_pending_approvals() -> str:
+    """
+    List all pending coaching change proposals.
+
+    Returns:
+        List of proposals awaiting user approval.
+    """
+    try:
+        log = load_coaching_log()
+        pending = log.get('pending_approvals', [])
+
+        # Filter out expired proposals
+        today = date.today()
+        active_pending = []
+        expired = []
+        for p in pending:
+            expires = p.get('expires')
+            if expires:
+                try:
+                    exp_date = date.fromisoformat(expires)
+                    if exp_date < today:
+                        expired.append(p['id'])
+                        continue
+                except ValueError:
+                    pass
+            active_pending.append(p)
+
+        return json.dumps({
+            'pending_approvals': active_pending,
+            'count': len(active_pending),
+            'expired': expired,
+            'instructions': 'Use approve_coaching_change(id) or reject_coaching_change(id, reason) to act on proposals'
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def approve_coaching_change(proposal_id: str) -> str:
+    """
+    Approve a pending coaching change proposal.
+
+    The approved change becomes an active decision.
+
+    Args:
+        proposal_id: ID of the proposal to approve
+
+    Returns:
+        Confirmation and the new active decision.
+    """
+    try:
+        log = load_coaching_log()
+        pending = log.get('pending_approvals', [])
+        decisions = log.get('decisions', [])
+
+        # Find the proposal
+        found = None
+        for i, p in enumerate(pending):
+            if p.get('id') == proposal_id:
+                found = pending.pop(i)
+                break
+
+        if not found:
+            return json.dumps({'error': f'Proposal {proposal_id} not found'})
+
+        # Convert to active decision
+        decision_count = len([d for d in decisions if d['date'] == date.today().isoformat()])
+        decision_id = f"d_{date.today().strftime('%Y%m%d')}_{decision_count + 1:03d}"
+
+        new_decision = {
+            'id': decision_id,
+            'date': date.today().isoformat(),
+            'type': found['type'],
+            'decision': found['proposal'],
+            'rationale': found['rationale'],
+            'status': 'active',
+            'outcome': None,
+            'review_date': (date.today() + timedelta(days=14)).isoformat(),
+            'approved_from': proposal_id
+        }
+
+        decisions.append(new_decision)
+        log['pending_approvals'] = pending
+        log['decisions'] = decisions
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'approved',
+            'proposal_id': proposal_id,
+            'decision_id': decision_id,
+            'message': f'Approved: {found["proposal"]}',
+            'now_active': True
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
+    """
+    Reject a pending coaching change proposal.
+
+    Args:
+        proposal_id: ID of the proposal to reject
+        reason: Optional reason for rejection (helps LLM learn)
+
+    Returns:
+        Confirmation of rejection.
+    """
+    try:
+        log = load_coaching_log()
+        pending = log.get('pending_approvals', [])
+
+        if 'rejected_proposals' not in log:
+            log['rejected_proposals'] = []
+
+        # Find and remove the proposal
+        found = None
+        for i, p in enumerate(pending):
+            if p.get('id') == proposal_id:
+                found = pending.pop(i)
+                break
+
+        if not found:
+            return json.dumps({'error': f'Proposal {proposal_id} not found'})
+
+        # Archive to rejected
+        found['rejected_date'] = date.today().isoformat()
+        found['rejection_reason'] = reason
+        log['rejected_proposals'].append(found)
+        log['pending_approvals'] = pending
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'rejected',
+            'proposal_id': proposal_id,
+            'reason': reason,
+            'message': f'Rejected: {found["proposal"]}'
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def record_athlete_response(
+    stimulus: str,
+    response: str,
+    pattern: str = None
+) -> str:
+    """
+    Record how the athlete responded to a training stimulus.
+
+    Use this to track adaptation patterns that inform future planning.
+
+    Args:
+        stimulus: What training was done (e.g., "Long ride 2.5hrs Z2")
+        response: How athlete responded (e.g., "Training Readiness 72 next day")
+        pattern: Optional pattern identified (e.g., "Responds well to long Z2")
+
+    Returns:
+        Confirmation of recorded response.
+    """
+    try:
+        log = load_coaching_log()
+
+        if 'athlete_responses' not in log:
+            log['athlete_responses'] = []
+        if 'metadata' not in log:
+            log['metadata'] = {'created': date.today().isoformat()}
+
+        new_response = {
+            'date': date.today().isoformat(),
+            'stimulus': stimulus,
+            'response': response
+        }
+        if pattern:
+            new_response['pattern'] = pattern
+
+        log['athlete_responses'].append(new_response)
+
+        # Keep only last 50 responses
+        log['athlete_responses'] = log['athlete_responses'][-50:]
+
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'recorded',
+            'message': f'Response recorded: {response}',
+            'pattern': pattern
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_response_patterns() -> str:
+    """
+    Get identified athlete response patterns.
+
+    Returns patterns from recorded responses to inform planning.
+
+    Returns:
+        List of patterns and recent responses.
+    """
+    try:
+        log = load_coaching_log()
+        responses = log.get('athlete_responses', [])
+
+        # Extract patterns
+        patterns = {}
+        for r in responses:
+            pattern = r.get('pattern')
+            if pattern:
+                if pattern not in patterns:
+                    patterns[pattern] = {'count': 0, 'last_seen': r['date']}
+                patterns[pattern]['count'] += 1
+                if r['date'] > patterns[pattern]['last_seen']:
+                    patterns[pattern]['last_seen'] = r['date']
+
+        # Get recent responses (last 10)
+        recent = responses[-10:] if responses else []
+
+        return json.dumps({
+            'patterns': patterns,
+            'pattern_count': len(patterns),
+            'recent_responses': recent,
+            'note': 'Use these patterns to inform training decisions'
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
 
 
 if __name__ == "__main__":

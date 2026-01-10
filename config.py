@@ -17,6 +17,10 @@ TRAINING_CONFIG_FILE = "training_config.json"
 METHODOLOGY_FILE = "methodology.json"
 WEEKLY_PLAN_FILE = "weekly_plan.json"
 SUGGESTIONS_FILE = "suggestions.json"
+COACHING_LOG_FILE = "coaching_log.json"
+
+# Coaching decision types that require approval
+MAJOR_DECISION_TYPES = ['phase_transition', 'volume_change_major', 'goal_rebalance', 'skip_session']
 
 # Activity classification thresholds
 LONG_EFFORT_MIN_MINS = 60

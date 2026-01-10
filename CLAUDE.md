@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An AI-driven training coach MCP server that:
+An **adaptive AI training coach** MCP server that:
 - Fetches fitness data from Garmin Connect
-- Maintains a 7-day rolling training plan
-- Tracks training pillars (Strength, Mobility, Long Effort)
-- Provides LLM-driven coaching with daily briefs
+- Maintains a 7-day rolling training plan with PURPOSE for each session
+- Uses **persistent coaching memory** - decisions survive between sessions
+- Tracks **goal balance**: race prep (50%), fun activities (25%), aesthetics (25%)
+- Uses Garmin's load metrics for intensity recommendations
+- Requires user approval for major coaching changes
 
-**Athlete context:** Running, Cycling, High-intensity games (Ultimate). Injury-prone, needs enforced Mobility + Strength. Multiple target events with A/B/C priority.
+**Athlete context:** Running, Cycling, High-intensity games (Ultimate, Padel). Injury-prone, needs Mobility + Strength. Balanced goals: A-race (sani2c), fun activities, upper body aesthetics.
 
 ## Commands
 
@@ -63,6 +65,13 @@ python daily_loop.py --llm
 | `get_planning_context()` | Full context for LLM planning | JSON object |
 | `get_weekly_plan()` | Current 7-day plan | JSON object |
 | `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
+| `push_plan_to_garmin()` | Push running/cycling sessions to Garmin calendar | JSON summary |
+
+**push_plan_to_garmin() workflow:**
+- Converts running/cycling sessions from weekly plan to Garmin workout format
+- Uploads workouts to Garmin Connect and schedules them to the appropriate dates
+- Strength, mobility, and rest days are skipped (not representable as Garmin workouts)
+- Returns summary: pushed count, dates, any errors
 
 ### Race Management Tools
 | Tool | Purpose | Returns |
@@ -80,6 +89,37 @@ python daily_loop.py --llm
 | `list_pending_suggestions()` | See pending suggestions | JSON array |
 | `approve_suggestion(id)` | User approves suggestion | Confirmation |
 | `reject_suggestion(id, reason)` | User rejects suggestion | Confirmation |
+
+### Coaching Decision Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `log_coaching_decision(type, decision, rationale)` | Record significant coaching decisions | Decision ID |
+| `get_active_decisions()` | Get all active coaching decisions | JSON array |
+| `update_decision_status(id, status, outcome)` | Update or close a decision | Confirmation |
+| `propose_major_change(type, proposal, rationale)` | Propose major change requiring approval | Proposal ID |
+| `list_pending_approvals()` | View pending coaching changes | JSON array |
+| `approve_coaching_change(id)` | Approve a pending change | Confirmation |
+| `reject_coaching_change(id, reason)` | Reject a pending change | Confirmation |
+| `record_athlete_response(stimulus, response, pattern)` | Track athlete adaptation patterns | Confirmation |
+| `get_response_patterns()` | Get identified athlete patterns | JSON object |
+
+**Coaching continuity workflow:**
+1. At session start: call `get_active_decisions()` to load previous decisions
+2. During planning: decisions should influence recommendations
+3. When making significant choices: call `log_coaching_decision()` to persist
+4. For major changes (phase transition, >15% volume change): use `propose_major_change()`
+5. After reviewing completed sessions: call `record_athlete_response()` to track patterns
+
+### Load & Goal Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_load_status()` | Training readiness, load ratio, recommendations | JSON object |
+| `get_goal_progress(days)` | Balance across race/fun/aesthetics goals | JSON with percentages |
+
+**Goal Balance (target split):**
+- Race Preparation: 50% (sani2c training)
+- Fun Activities: 25% (Padel, Ultimate Frisbee)
+- Aesthetics: 25% (Upper body strength, gym)
 
 ### Injury Tools
 | Tool | Purpose | Returns |
@@ -105,6 +145,7 @@ python daily_loop.py --llm
 coach-mcp/
 ├── server.py              # MCP server with all tools
 ├── garmin_client.py       # Garmin auth with token caching
+├── workout_builder.py     # Converts plan sessions to Garmin workouts
 ├── rules.py               # Compliance checker, safety rules
 ├── planner.py             # Context builder, plan/suggestion management
 ├── daily_loop.py          # Morning audit automation
@@ -114,8 +155,9 @@ coach-mcp/
 │   ├── athlete.json           # WHO - personal info, life constraints, preferences
 │   ├── athlete_baseline.json  # WHO - Garmin-derived capacity (auto-generated)
 │   ├── methodology.json       # HOW - pillars, safety rules, race templates
-│   ├── training_config.json   # WHAT - events, current training block
-│   ├── weekly_plan.json       # CURRENT - rolling 7-day plan
+│   ├── training_config.json   # WHAT - events, periodization, goal balance
+│   ├── weekly_plan.json       # CURRENT - rolling 7-day plan with session PURPOSE
+│   ├── coaching_log.json      # MEMORY - coaching decisions, patterns, approvals
 │   └── suggestions.json       # Pending LLM suggestions
 ├── test_server.py         # Server tests (46 tests)
 ├── test_rules.py          # Rules tests (23 tests)
@@ -149,6 +191,15 @@ Rarely changes. Contains:
 User-edited for race calendar. Contains:
 - `events`: race calendar with A/B/C/D priorities
 - `current_block`: phase, dates, volume target, focus
+- `periodization`: phase definitions (base/build/peak/taper) with intensity distributions
+- `goal_balance`: weights for race_preparation (50%), fun_activities (25%), aesthetics (25%)
+- `weekly_structure`: preferred long day, strength days, rest rules
+
+### coaching_log.json - LLM MEMORY
+Auto-managed by coaching tools. Contains:
+- `decisions`: logged coaching decisions with rationale and status
+- `pending_approvals`: major changes awaiting user approval
+- `athlete_responses`: tracked adaptation patterns
 
 ## Training Pillars
 
