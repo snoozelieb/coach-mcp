@@ -1062,7 +1062,32 @@ def push_plan_to_garmin() -> str:
             # Handle both single session and list of sessions
             sessions = planned if isinstance(planned, list) else [planned]
 
+            # Expand sessions with nested 'sessions' array into individual sub-sessions
+            expanded_sessions = []
             for session in sessions:
+                if 'sessions' in session and isinstance(session.get('sessions'), list):
+                    # Get parent-level exercises (for strength sessions)
+                    parent_exercises = session.get('exercises', [])
+                    parent_intensity = session.get('intensity', 'easy')
+                    # Extract sub-sessions
+                    for sub in session.get('sessions', []):
+                        # Skip optional sessions like pool_sauna
+                        if sub.get('time') == 'optional':
+                            continue
+                        # Copy parent description if sub doesn't have one
+                        if 'description' not in sub:
+                            sub['description'] = sub.get('notes', session.get('description', ''))
+                        # Copy parent intensity if sub doesn't have one
+                        if 'intensity' not in sub:
+                            sub['intensity'] = parent_intensity
+                        # Copy exercises to strength sub-sessions
+                        if sub.get('type', '').lower() == 'strength' and parent_exercises:
+                            sub['exercises'] = parent_exercises
+                        expanded_sessions.append(sub)
+                else:
+                    expanded_sessions.append(session)
+
+            for session in expanded_sessions:
                 workout_type = get_workout_type_name(session)
 
                 if workout_type == 'skipped':
@@ -1100,8 +1125,8 @@ def push_plan_to_garmin() -> str:
                     elif workout_type == 'running':
                         upload_result = client.upload_running_workout(workout)
                         workout_name = workout.workoutName
-                    elif workout_type in ['yoga', 'strength']:
-                        # Yoga and strength use generic upload with dict format
+                    elif workout_type in ['yoga', 'strength', 'swimming']:
+                        # Yoga, strength, and swimming use generic upload with dict format
                         upload_result = client.upload_workout(workout)
                         workout_name = workout.get('workoutName', 'Workout')
                     else:

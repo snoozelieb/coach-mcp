@@ -4,6 +4,8 @@ Workout Builder - Converts plan sessions to Garmin workout format.
 Uses the garminconnect.workout module to create structured workouts
 that can be uploaded and scheduled to Garmin Connect.
 """
+import json
+from pathlib import Path
 from typing import Any
 
 from garminconnect.workout import (
@@ -49,6 +51,12 @@ PILATES_SPORT = {
     "displayOrder": 8
 }
 
+SWIMMING_SPORT = {
+    "sportTypeId": 4,
+    "sportTypeKey": "swimming",
+    "displayOrder": 4
+}
+
 # Step type definitions
 STEP_WARMUP = {"stepTypeId": 1, "stepTypeKey": "warmup", "displayOrder": 1}
 STEP_COOLDOWN = {"stepTypeId": 2, "stepTypeKey": "cooldown", "displayOrder": 2}
@@ -71,7 +79,7 @@ TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "d
 TARGET_HR = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 2}
 
 # Session types that map to cycling
-CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride"}
+CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride", "ftp_test"}
 
 # Session types that map to running
 RUNNING_TYPES = {"run", "long_run", "easy_run", "running", "trail_run", "interval_run"}
@@ -82,8 +90,50 @@ YOGA_TYPES = {"yoga", "mobility", "stretching", "pilates"}
 # Session types that map to strength
 STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights"}
 
+# Session types that map to swimming
+SWIMMING_TYPES = {"swim", "swimming", "pool"}
+
 # Session types to skip (not pushable to Garmin)
 SKIP_TYPES = {"rest", "rest_or_easy"}
+
+# Intensity to HR zone mapping
+INTENSITY_ZONE_MAP = {
+    "easy": "z2_aerobic",
+    "recovery": "z1_recovery",
+    "tempo": "z3_tempo",
+    "threshold": "z4_threshold",
+    "hard": "z4_threshold",
+    "max_effort": "z5_max",
+    "intervals": "z4_threshold",
+}
+
+
+def get_athlete_hr_zones() -> dict:
+    """Load athlete HR zones from athlete.json."""
+    athlete_path = Path(__file__).parent / "data" / "athlete.json"
+    try:
+        with open(athlete_path) as f:
+            athlete = json.load(f)
+        return athlete.get("personal", {}).get("hr_zones", {})
+    except:
+        # Default zones if file not found
+        return {
+            "z1_recovery": [0, 120],
+            "z2_aerobic": [120, 140],
+            "z3_tempo": [140, 155],
+            "z4_threshold": [155, 170],
+            "z5_max": [170, 184]
+        }
+
+
+def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
+    """Get HR range (low, high) for a given intensity."""
+    hr_zones = get_athlete_hr_zones()
+    zone_key = INTENSITY_ZONE_MAP.get(intensity.lower(), "z2_aerobic")
+    zone_range = hr_zones.get(zone_key)
+    if zone_range and len(zone_range) == 2:
+        return (zone_range[0], zone_range[1])
+    return None
 
 
 def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout | dict | None:
@@ -109,6 +159,8 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
         return build_cycling_workout(session, date)
     elif session_type in RUNNING_TYPES or "run" in session_type:
         return build_running_workout(session, date)
+    elif session_type in SWIMMING_TYPES:
+        return build_swimming_workout(session, date)
     elif session_type in YOGA_TYPES:
         return build_yoga_workout(session, date)
     elif session_type in STRENGTH_TYPES:
@@ -118,7 +170,7 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
 
 
 def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
-    """Build a cycling workout from a plan session."""
+    """Build a cycling workout from a plan session with HR zone targets."""
     duration_mins = session.get("duration_mins", 60)
     description = session.get("description", "Cycling workout")
     intensity = session.get("intensity", "easy")
@@ -132,30 +184,47 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
     # Create workout name from description
     workout_name = description[:40]
 
-    # Build steps
-    steps = [
-        ExecutableStep(
-            stepOrder=1,
-            stepType=STEP_WARMUP,
-            endCondition=END_TIME,
-            endConditionValue=warmup_secs,
-            targetType=TARGET_NONE
-        ),
-        ExecutableStep(
-            stepOrder=2,
-            stepType=STEP_INTERVAL,
-            endCondition=END_TIME,
-            endConditionValue=main_secs,
-            targetType=TARGET_NONE if intensity == "easy" else TARGET_HR
-        ),
-        ExecutableStep(
-            stepOrder=3,
-            stepType=STEP_COOLDOWN,
-            endCondition=END_TIME,
-            endConditionValue=cooldown_secs,
-            targetType=TARGET_NONE
-        )
-    ]
+    # Get HR zone target for the main interval
+    hr_target = get_hr_target_for_intensity(intensity)
+
+    # Build warmup step (Z1 target)
+    warmup_hr = get_hr_target_for_intensity("recovery")
+    warmup_step = ExecutableStep(
+        stepOrder=1,
+        stepType=STEP_WARMUP,
+        endCondition=END_TIME,
+        endConditionValue=warmup_secs,
+        targetType=TARGET_HR if warmup_hr else TARGET_NONE
+    )
+    if warmup_hr:
+        warmup_step.targetValueOne = warmup_hr[0]
+        warmup_step.targetValueTwo = warmup_hr[1]
+
+    # Build main interval step with HR zone
+    main_step = ExecutableStep(
+        stepOrder=2,
+        stepType=STEP_INTERVAL,
+        endCondition=END_TIME,
+        endConditionValue=main_secs,
+        targetType=TARGET_HR if hr_target else TARGET_NONE
+    )
+    if hr_target:
+        main_step.targetValueOne = hr_target[0]
+        main_step.targetValueTwo = hr_target[1]
+
+    # Build cooldown step (Z1 target)
+    cooldown_step = ExecutableStep(
+        stepOrder=3,
+        stepType=STEP_COOLDOWN,
+        endCondition=END_TIME,
+        endConditionValue=cooldown_secs,
+        targetType=TARGET_HR if warmup_hr else TARGET_NONE
+    )
+    if warmup_hr:
+        cooldown_step.targetValueOne = warmup_hr[0]
+        cooldown_step.targetValueTwo = warmup_hr[1]
+
+    steps = [warmup_step, main_step, cooldown_step]
 
     return CyclingWorkout(
         workoutName=workout_name,
@@ -171,7 +240,7 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
 
 def build_running_workout(session: dict, date: str) -> RunningWorkout:
-    """Build a running workout from a plan session."""
+    """Build a running workout from a plan session with HR zone targets."""
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Running workout")
     intensity = session.get("intensity", "easy")
@@ -185,30 +254,47 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     # Create workout name from description
     workout_name = description[:40]
 
-    # Build steps
-    steps = [
-        ExecutableStep(
-            stepOrder=1,
-            stepType=STEP_WARMUP,
-            endCondition=END_TIME,
-            endConditionValue=warmup_secs,
-            targetType=TARGET_NONE
-        ),
-        ExecutableStep(
-            stepOrder=2,
-            stepType=STEP_INTERVAL,
-            endCondition=END_TIME,
-            endConditionValue=main_secs,
-            targetType=TARGET_NONE if intensity == "easy" else TARGET_HR
-        ),
-        ExecutableStep(
-            stepOrder=3,
-            stepType=STEP_COOLDOWN,
-            endCondition=END_TIME,
-            endConditionValue=cooldown_secs,
-            targetType=TARGET_NONE
-        )
-    ]
+    # Get HR zone target for the main interval
+    hr_target = get_hr_target_for_intensity(intensity)
+
+    # Build warmup step (Z1 target)
+    warmup_hr = get_hr_target_for_intensity("recovery")
+    warmup_step = ExecutableStep(
+        stepOrder=1,
+        stepType=STEP_WARMUP,
+        endCondition=END_TIME,
+        endConditionValue=warmup_secs,
+        targetType=TARGET_HR if warmup_hr else TARGET_NONE
+    )
+    if warmup_hr:
+        warmup_step.targetValueOne = warmup_hr[0]
+        warmup_step.targetValueTwo = warmup_hr[1]
+
+    # Build main interval step with HR zone
+    main_step = ExecutableStep(
+        stepOrder=2,
+        stepType=STEP_INTERVAL,
+        endCondition=END_TIME,
+        endConditionValue=main_secs,
+        targetType=TARGET_HR if hr_target else TARGET_NONE
+    )
+    if hr_target:
+        main_step.targetValueOne = hr_target[0]
+        main_step.targetValueTwo = hr_target[1]
+
+    # Build cooldown step (Z1 target)
+    cooldown_step = ExecutableStep(
+        stepOrder=3,
+        stepType=STEP_COOLDOWN,
+        endCondition=END_TIME,
+        endConditionValue=cooldown_secs,
+        targetType=TARGET_HR if warmup_hr else TARGET_NONE
+    )
+    if warmup_hr:
+        cooldown_step.targetValueOne = warmup_hr[0]
+        cooldown_step.targetValueTwo = warmup_hr[1]
+
+    steps = [warmup_step, main_step, cooldown_step]
 
     return RunningWorkout(
         workoutName=workout_name,
@@ -221,6 +307,46 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
             )
         ]
     )
+
+
+def build_swimming_workout(session: dict, date: str) -> dict:
+    """
+    Build a swimming workout from a plan session.
+
+    Swimming workouts use a simple timed structure with 25m pool setting.
+    """
+    duration_mins = session.get("duration_mins", 30)
+    description = session.get("description", "Swimming session")
+
+    total_secs = duration_mins * 60
+    workout_name = description[:40]
+
+    # Simple timed workout for swimming
+    steps = [
+        {
+            "type": "ExecutableStepDTO",
+            "stepOrder": 1,
+            "stepType": STEP_INTERVAL,
+            "endCondition": END_TIME,
+            "endConditionValue": float(total_secs),
+            "targetType": TARGET_NONE,
+        }
+    ]
+
+    return {
+        "workoutName": workout_name,
+        "sportType": SWIMMING_SPORT,
+        "estimatedDurationInSecs": int(total_secs),
+        "poolLength": 25.0,
+        "poolLengthUnit": {"unitKey": "meter"},
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": SWIMMING_SPORT,
+                "workoutSteps": steps
+            }
+        ]
+    }
 
 
 def build_yoga_workout(session: dict, date: str) -> dict:
@@ -422,6 +548,8 @@ def get_workout_type_name(session: dict) -> str:
         return "cycling"
     elif session_type in RUNNING_TYPES or "run" in session_type:
         return "running"
+    elif session_type in SWIMMING_TYPES:
+        return "swimming"
     elif session_type in YOGA_TYPES:
         return "yoga"
     elif session_type in STRENGTH_TYPES:
