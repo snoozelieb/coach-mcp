@@ -39,6 +39,7 @@ This creates your personal data files:
 - `data/athlete.json` - Your profile, HR zones, preferences
 - `data/training_config.json` - Training phase and race calendar
 - `data/weekly_plan.json` - Your rolling 7-day plan
+- `data/coaching_log.json` - LLM coaching memory (decisions, patterns)
 
 You can also set up manually or via the MCP tools (`update_athlete()`, `add_race()`).
 
@@ -60,14 +61,16 @@ python daily_loop.py --llm  # With LLM coaching
 | File | Purpose | Git Status |
 |------|---------|------------|
 | `data/methodology.json` | Training pillars and safety rules | Shared (committed) |
+| `data/exercises.json` | Garmin exercise reference data | Shared (committed) |
 | `data/athlete.json` | Your personal info, preferences | Personal (gitignored) |
 | `data/athlete_baseline.json` | Garmin-derived training capacity | Personal (gitignored) |
 | `data/training_config.json` | Your race calendar and current phase | Personal (gitignored) |
 | `data/weekly_plan.json` | Current 7-day rolling plan | Personal (gitignored) |
+| `data/coaching_log.json` | LLM coaching memory (decisions, patterns) | Personal (gitignored) |
 
 Personal data files are created by `setup_wizard.py` and stay on your machine.
 
-## MCP Tools (22 total)
+## MCP Tools
 
 ### Garmin Data Tools
 | Tool | Purpose | Returns |
@@ -111,6 +114,13 @@ Personal data files are created by `setup_wizard.py` and stay on your machine.
 | `get_planning_context()` | Full context for LLM planning | JSON object |
 | `get_weekly_plan()` | Current 7-day rolling plan | JSON object |
 | `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
+| `push_plan_to_garmin()` | Push workouts to Garmin calendar | JSON summary |
+
+### Performance Testing Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `set_ftp(ftp_watts, test_avg_watts, test_duration_mins)` | Set cycling FTP from test | Power zones |
+| `set_threshold_pace(pace, time_trial_mins, time_trial_distance_km)` | Set running threshold | Pace zones |
 
 ### Race Management Tools
 | Tool | Purpose | Returns |

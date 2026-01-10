@@ -8,6 +8,7 @@ data/athlete_baseline.json
 data/training_config.json
 data/weekly_plan.json
 data/suggestions.json
+data/coaching_log.json
 
 # Log files
 *.log

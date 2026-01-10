@@ -85,6 +85,14 @@ def create_athlete_file() -> dict:
             "resting_hr": resting_hr,
             "hr_zones": zones,
             "ftp": None,
+            "threshold_pace_sec_per_km": None,
+            "pace_zones": {
+                "z1_recovery": None,
+                "z2_easy": None,
+                "z3_tempo": None,
+                "z4_threshold": None,
+                "z5_interval": None
+            },
             "weight_kg": None,
         },
         "life_constraints": {
@@ -97,6 +105,7 @@ def create_athlete_file() -> dict:
             "likes": [x.strip() for x in likes.split(",")],
             "dislikes": [x.strip() for x in dislikes.split(",")],
             "equipment": [],
+            "gym_access": None,
         },
         "coaching_notes": "",
     }
@@ -156,6 +165,20 @@ def create_weekly_plan() -> dict:
     }
 
 
+def create_coaching_log() -> dict:
+    """Create empty coaching_log.json for LLM memory."""
+    return {
+        "decisions": [],
+        "pending_approvals": [],
+        "athlete_responses": [],
+        "metadata": {
+            "created": date.today().isoformat(),
+            "last_updated": date.today().isoformat(),
+            "version": "1.0"
+        }
+    }
+
+
 def check_setup_needed() -> bool:
     """Check if setup is needed (missing required files)."""
     required_files = [
@@ -205,6 +228,12 @@ def run_setup():
     with open(DATA_DIR / "weekly_plan.json", "w") as f:
         json.dump(plan, f, indent=2)
     print(f"Created: {DATA_DIR / 'weekly_plan.json'}")
+
+    # Create empty coaching log (LLM memory)
+    coaching_log = create_coaching_log()
+    with open(DATA_DIR / "coaching_log.json", "w") as f:
+        json.dump(coaching_log, f, indent=2)
+    print(f"Created: {DATA_DIR / 'coaching_log.json'}")
 
     print("\n" + "=" * 50)
     print("  Setup Complete!")
