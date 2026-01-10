@@ -77,6 +77,7 @@ DEFAULT_REST_SECS = 45
 # Target type definitions
 TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1}
 TARGET_HR = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 2}
+TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 
 # Session types that map to cycling
 CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride", "ftp_test"}
@@ -133,6 +134,95 @@ def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
     zone_range = hr_zones.get(zone_key)
     if zone_range and len(zone_range) == 2:
         return (zone_range[0], zone_range[1])
+    return None
+
+
+# Running pace zone mapping (intensity -> pace zone key)
+RUNNING_INTENSITY_PACE_MAP = {
+    "recovery": "z1_recovery",
+    "easy": "z2_easy",
+    "tempo": "z3_tempo",
+    "threshold": "z4_threshold",
+    "hard": "z4_threshold",
+    "intervals": "z5_interval",
+    "max_effort": "z5_interval",
+}
+
+
+def get_athlete_running_zones() -> dict:
+    """
+    Load athlete running zones from athlete.json.
+
+    If threshold_pace is set but pace_zones are null, calculates zones
+    using sports science percentages based on threshold pace.
+
+    Zone calculations (based on Jack Daniels methodology):
+    - Z1 Recovery: 70-75% of threshold pace (25-30% slower)
+    - Z2 Easy: 76-85% of threshold pace (15-24% slower)
+    - Z3 Tempo: 86-95% of threshold pace (5-14% slower)
+    - Z4 Threshold: 96-102% of threshold pace (±2-4%)
+    - Z5 Interval: 103-115% of threshold pace (3-15% faster)
+
+    Returns pace ranges as [slow_sec_per_km, fast_sec_per_km]
+    """
+    athlete_path = Path(__file__).parent / "data" / "athlete.json"
+    try:
+        with open(athlete_path) as f:
+            athlete = json.load(f)
+
+        personal = athlete.get("personal", {})
+        threshold_pace = personal.get("threshold_pace_sec_per_km")
+        pace_zones = personal.get("pace_zones", {})
+
+        # If zones are already set, use them
+        if pace_zones and pace_zones.get("z2_easy"):
+            return pace_zones
+
+        # If no threshold pace, can't calculate zones
+        if not threshold_pace:
+            return {}
+
+        # Calculate zones from threshold pace
+        # Slower pace = higher sec/km, faster = lower sec/km
+        return {
+            "z1_recovery": [int(threshold_pace * 1.25), int(threshold_pace * 1.30)],  # 25-30% slower
+            "z2_easy": [int(threshold_pace * 1.15), int(threshold_pace * 1.24)],      # 15-24% slower
+            "z3_tempo": [int(threshold_pace * 1.05), int(threshold_pace * 1.14)],     # 5-14% slower
+            "z4_threshold": [int(threshold_pace * 0.96), int(threshold_pace * 1.04)], # ±4%
+            "z5_interval": [int(threshold_pace * 0.85), int(threshold_pace * 0.95)],  # 5-15% faster
+        }
+    except:
+        return {}
+
+
+def get_pace_target_for_intensity(intensity: str) -> tuple[float, float] | None:
+    """
+    Get pace range (slow, fast) in m/s for a given intensity.
+
+    Garmin expects pace targets in meters per second.
+    Returns (low_speed_mps, high_speed_mps) - note: low speed = slow pace, high speed = fast pace
+    """
+    pace_zones = get_athlete_running_zones()
+    if not pace_zones:
+        return None
+
+    zone_key = RUNNING_INTENSITY_PACE_MAP.get(intensity.lower(), "z2_easy")
+    zone_range = pace_zones.get(zone_key)
+
+    if zone_range and len(zone_range) == 2:
+        # Convert sec/km to m/s: 1000m / sec_per_km = m/s
+        slow_pace_sec_per_km = zone_range[0]  # Higher number = slower
+        fast_pace_sec_per_km = zone_range[1]  # Lower number = faster (for z5, it's reversed)
+
+        # Handle z5 where fast is first in the array
+        if slow_pace_sec_per_km < fast_pace_sec_per_km:
+            slow_pace_sec_per_km, fast_pace_sec_per_km = fast_pace_sec_per_km, slow_pace_sec_per_km
+
+        slow_speed_mps = 1000.0 / slow_pace_sec_per_km
+        fast_speed_mps = 1000.0 / fast_pace_sec_per_km
+
+        return (slow_speed_mps, fast_speed_mps)
+
     return None
 
 
@@ -240,7 +330,17 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
 
 def build_running_workout(session: dict, date: str) -> RunningWorkout:
-    """Build a running workout from a plan session with HR zone targets."""
+    """
+    Build a running workout from a plan session.
+
+    Uses pace targets if threshold_pace is set in athlete profile,
+    otherwise falls back to HR zone targets.
+
+    Sports science approach:
+    - Pace is more precise for running than HR (less lag, weather-independent)
+    - Zones derived from threshold pace using Jack Daniels methodology
+    - HR used as secondary metric when pace not available
+    """
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Running workout")
     intensity = session.get("intensity", "easy")
@@ -254,45 +354,83 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     # Create workout name from description
     workout_name = description[:40]
 
-    # Get HR zone target for the main interval
+    # Try pace targets first (preferred for running), fall back to HR
+    main_pace = get_pace_target_for_intensity(intensity)
+    warmup_pace = get_pace_target_for_intensity("recovery")
     hr_target = get_hr_target_for_intensity(intensity)
-
-    # Build warmup step (Z1 target)
     warmup_hr = get_hr_target_for_intensity("recovery")
-    warmup_step = ExecutableStep(
-        stepOrder=1,
-        stepType=STEP_WARMUP,
-        endCondition=END_TIME,
-        endConditionValue=warmup_secs,
-        targetType=TARGET_HR if warmup_hr else TARGET_NONE
-    )
-    if warmup_hr:
-        warmup_step.targetValueOne = warmup_hr[0]
-        warmup_step.targetValueTwo = warmup_hr[1]
 
-    # Build main interval step with HR zone
-    main_step = ExecutableStep(
-        stepOrder=2,
-        stepType=STEP_INTERVAL,
-        endCondition=END_TIME,
-        endConditionValue=main_secs,
-        targetType=TARGET_HR if hr_target else TARGET_NONE
-    )
-    if hr_target:
-        main_step.targetValueOne = hr_target[0]
-        main_step.targetValueTwo = hr_target[1]
+    # Determine which target type to use
+    use_pace = main_pace is not None
 
-    # Build cooldown step (Z1 target)
-    cooldown_step = ExecutableStep(
-        stepOrder=3,
-        stepType=STEP_COOLDOWN,
-        endCondition=END_TIME,
-        endConditionValue=cooldown_secs,
-        targetType=TARGET_HR if warmup_hr else TARGET_NONE
-    )
-    if warmup_hr:
-        cooldown_step.targetValueOne = warmup_hr[0]
-        cooldown_step.targetValueTwo = warmup_hr[1]
+    # Build warmup step
+    if use_pace and warmup_pace:
+        warmup_step = ExecutableStep(
+            stepOrder=1,
+            stepType=STEP_WARMUP,
+            endCondition=END_TIME,
+            endConditionValue=warmup_secs,
+            targetType=TARGET_PACE
+        )
+        warmup_step.targetValueOne = warmup_pace[0]  # slow speed m/s
+        warmup_step.targetValueTwo = warmup_pace[1]  # fast speed m/s
+    else:
+        warmup_step = ExecutableStep(
+            stepOrder=1,
+            stepType=STEP_WARMUP,
+            endCondition=END_TIME,
+            endConditionValue=warmup_secs,
+            targetType=TARGET_HR if warmup_hr else TARGET_NONE
+        )
+        if warmup_hr:
+            warmup_step.targetValueOne = warmup_hr[0]
+            warmup_step.targetValueTwo = warmup_hr[1]
+
+    # Build main interval step
+    if use_pace:
+        main_step = ExecutableStep(
+            stepOrder=2,
+            stepType=STEP_INTERVAL,
+            endCondition=END_TIME,
+            endConditionValue=main_secs,
+            targetType=TARGET_PACE
+        )
+        main_step.targetValueOne = main_pace[0]  # slow speed m/s
+        main_step.targetValueTwo = main_pace[1]  # fast speed m/s
+    else:
+        main_step = ExecutableStep(
+            stepOrder=2,
+            stepType=STEP_INTERVAL,
+            endCondition=END_TIME,
+            endConditionValue=main_secs,
+            targetType=TARGET_HR if hr_target else TARGET_NONE
+        )
+        if hr_target:
+            main_step.targetValueOne = hr_target[0]
+            main_step.targetValueTwo = hr_target[1]
+
+    # Build cooldown step
+    if use_pace and warmup_pace:
+        cooldown_step = ExecutableStep(
+            stepOrder=3,
+            stepType=STEP_COOLDOWN,
+            endCondition=END_TIME,
+            endConditionValue=cooldown_secs,
+            targetType=TARGET_PACE
+        )
+        cooldown_step.targetValueOne = warmup_pace[0]
+        cooldown_step.targetValueTwo = warmup_pace[1]
+    else:
+        cooldown_step = ExecutableStep(
+            stepOrder=3,
+            stepType=STEP_COOLDOWN,
+            endCondition=END_TIME,
+            endConditionValue=cooldown_secs,
+            targetType=TARGET_HR if warmup_hr else TARGET_NONE
+        )
+        if warmup_hr:
+            cooldown_step.targetValueOne = warmup_hr[0]
+            cooldown_step.targetValueTwo = warmup_hr[1]
 
     steps = [warmup_step, main_step, cooldown_step]
 

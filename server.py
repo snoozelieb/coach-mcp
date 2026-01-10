@@ -663,6 +663,189 @@ def update_athlete(
 
 
 @mcp.tool()
+def set_threshold_pace(
+    pace: str = None,
+    time_trial_mins: int = None,
+    time_trial_distance_km: float = None
+) -> str:
+    """
+    Set running threshold pace from a test result.
+
+    The threshold pace is the running equivalent of FTP - the pace you can
+    sustain for approximately 60 minutes. Pace zones are automatically
+    calculated using Jack Daniels methodology.
+
+    Provide ONE of:
+    - pace: Direct pace input as "MM:SS" per km (e.g., "5:30" = 5min 30sec/km)
+    - time_trial_mins + time_trial_distance_km: Calculate from a time trial
+      (e.g., 30 min for 6.5 km)
+
+    For 30-min time trials, pace is adjusted +5% (slightly slower than threshold).
+    For 60-min time trials, pace equals threshold.
+
+    Examples:
+        set_threshold_pace(pace="5:15")  # Set directly to 5:15/km
+        set_threshold_pace(time_trial_mins=30, time_trial_distance_km=6.2)  # From 30-min TT
+        set_threshold_pace(time_trial_mins=60, time_trial_distance_km=11.5)  # From 60-min TT
+
+    Returns the calculated threshold pace and derived pace zones.
+    """
+    from planner import save_json_file
+    from config import ATHLETE_FILE
+
+    try:
+        athlete = load_athlete()
+        athlete.pop('baseline', None)
+        athlete.pop('personal_records', None)
+
+        threshold_sec_per_km = None
+
+        if pace:
+            # Parse MM:SS format
+            parts = pace.strip().split(':')
+            if len(parts) == 2:
+                mins, secs = int(parts[0]), int(parts[1])
+                threshold_sec_per_km = mins * 60 + secs
+            else:
+                return json.dumps({'error': 'pace must be in MM:SS format (e.g., "5:30")'})
+
+        elif time_trial_mins and time_trial_distance_km:
+            # Calculate pace from time trial
+            total_secs = time_trial_mins * 60
+            pace_sec_per_km = total_secs / time_trial_distance_km
+
+            # Adjust for test duration (30-min TT is ~5% faster than threshold)
+            if time_trial_mins <= 35:
+                threshold_sec_per_km = int(pace_sec_per_km * 1.05)
+            elif time_trial_mins <= 50:
+                threshold_sec_per_km = int(pace_sec_per_km * 1.02)
+            else:
+                threshold_sec_per_km = int(pace_sec_per_km)
+        else:
+            return json.dumps({'error': 'Provide either pace (MM:SS) or time_trial_mins + time_trial_distance_km'})
+
+        # Calculate pace zones using Jack Daniels methodology
+        pace_zones = {
+            "z1_recovery": [int(threshold_sec_per_km * 1.25), int(threshold_sec_per_km * 1.30)],
+            "z2_easy": [int(threshold_sec_per_km * 1.15), int(threshold_sec_per_km * 1.24)],
+            "z3_tempo": [int(threshold_sec_per_km * 1.05), int(threshold_sec_per_km * 1.14)],
+            "z4_threshold": [int(threshold_sec_per_km * 0.96), int(threshold_sec_per_km * 1.04)],
+            "z5_interval": [int(threshold_sec_per_km * 0.85), int(threshold_sec_per_km * 0.95)],
+        }
+
+        # Update athlete profile
+        athlete.setdefault('personal', {})['threshold_pace_sec_per_km'] = threshold_sec_per_km
+        athlete['personal']['pace_zones'] = pace_zones
+
+        save_json_file(ATHLETE_FILE, athlete)
+
+        # Format for display
+        def format_pace(sec_per_km):
+            mins = sec_per_km // 60
+            secs = sec_per_km % 60
+            return f"{mins}:{secs:02d}/km"
+
+        zones_formatted = {
+            zone: f"{format_pace(vals[1])} - {format_pace(vals[0])}"
+            for zone, vals in pace_zones.items()
+        }
+
+        return json.dumps({
+            'status': 'success',
+            'threshold_pace': format_pace(threshold_sec_per_km),
+            'threshold_sec_per_km': threshold_sec_per_km,
+            'pace_zones': zones_formatted
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def set_ftp(
+    ftp_watts: int = None,
+    test_avg_watts: int = None,
+    test_duration_mins: int = 20
+) -> str:
+    """
+    Set cycling FTP (Functional Threshold Power) from a test result.
+
+    FTP is the maximum power you can sustain for approximately 60 minutes.
+    Power zones are automatically calculated.
+
+    Provide ONE of:
+    - ftp_watts: Direct FTP value in watts
+    - test_avg_watts: Average power from a test (default assumes 20-min test)
+      - 20-min test: FTP = avg_power × 0.95
+      - 8-min test: FTP = avg_power × 0.90
+      - 60-min test: FTP = avg_power
+
+    Examples:
+        set_ftp(ftp_watts=250)  # Set directly
+        set_ftp(test_avg_watts=265, test_duration_mins=20)  # From 20-min test
+        set_ftp(test_avg_watts=280, test_duration_mins=8)  # From 8-min test
+
+    Returns the FTP value and derived power zones.
+    """
+    from planner import save_json_file
+    from config import ATHLETE_FILE
+
+    try:
+        athlete = load_athlete()
+        athlete.pop('baseline', None)
+        athlete.pop('personal_records', None)
+
+        ftp = None
+
+        if ftp_watts:
+            ftp = ftp_watts
+        elif test_avg_watts:
+            # Apply adjustment factor based on test duration
+            if test_duration_mins <= 10:
+                ftp = int(test_avg_watts * 0.90)
+            elif test_duration_mins <= 25:
+                ftp = int(test_avg_watts * 0.95)
+            elif test_duration_mins <= 40:
+                ftp = int(test_avg_watts * 0.98)
+            else:
+                ftp = test_avg_watts
+        else:
+            return json.dumps({'error': 'Provide either ftp_watts or test_avg_watts'})
+
+        # Calculate power zones (using standard 7-zone model)
+        power_zones = {
+            "z1_recovery": [0, int(ftp * 0.55)],
+            "z2_endurance": [int(ftp * 0.56), int(ftp * 0.75)],
+            "z3_tempo": [int(ftp * 0.76), int(ftp * 0.90)],
+            "z4_threshold": [int(ftp * 0.91), int(ftp * 1.05)],
+            "z5_vo2max": [int(ftp * 1.06), int(ftp * 1.20)],
+            "z6_anaerobic": [int(ftp * 1.21), int(ftp * 1.50)],
+            "z7_neuromuscular": [int(ftp * 1.51), None],
+        }
+
+        # Update athlete profile
+        athlete.setdefault('personal', {})['ftp'] = ftp
+        athlete['personal']['power_zones'] = power_zones
+
+        save_json_file(ATHLETE_FILE, athlete)
+
+        # Format zones for display
+        zones_formatted = {
+            zone: f"{vals[0]}-{vals[1]}W" if vals[1] else f"{vals[0]}W+"
+            for zone, vals in power_zones.items()
+        }
+
+        return json.dumps({
+            'status': 'success',
+            'ftp': ftp,
+            'power_zones': zones_formatted
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_methodology() -> str:
     """
     Returns the complete training methodology.
