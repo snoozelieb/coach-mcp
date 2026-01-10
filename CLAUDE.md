@@ -65,13 +65,41 @@ python daily_loop.py --llm
 | `get_planning_context()` | Full context for LLM planning | JSON object |
 | `get_weekly_plan()` | Current 7-day plan | JSON object |
 | `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
-| `push_plan_to_garmin()` | Push running/cycling sessions to Garmin calendar | JSON summary |
+| `push_plan_to_garmin()` | Push workouts to Garmin calendar | JSON summary |
 
 **push_plan_to_garmin() workflow:**
-- Converts running/cycling sessions from weekly plan to Garmin workout format
-- Uploads workouts to Garmin Connect and schedules them to the appropriate dates
-- Strength, mobility, and rest days are skipped (not representable as Garmin workouts)
+- Converts sessions to Garmin workout format with targets:
+  - **Cycling**: HR zone targets from athlete profile
+  - **Running**: Pace zone targets (if threshold set) or HR fallback
+  - **Swimming**: 25m pool setting
+  - **Strength**: Full exercise list with sets/reps
+  - **Yoga/Mobility**: Timed sessions
+- Automatically expands double sessions (e.g., AM ride + PM mobility → 2 workouts)
+- Skips optional sessions (e.g., pool_sauna) and rest days
+- Deletes existing workouts from plan period before pushing (prevents duplicates)
 - Returns summary: pushed count, dates, any errors
+
+### Performance Testing Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `set_threshold_pace(pace, time_trial_mins, time_trial_distance_km)` | Set running threshold from test | Pace zones |
+| `set_ftp(ftp_watts, test_avg_watts, test_duration_mins)` | Set cycling FTP from test | Power zones |
+
+**set_threshold_pace examples:**
+```python
+set_threshold_pace(pace="5:30")  # Direct: 5:30/km
+set_threshold_pace(time_trial_mins=30, time_trial_distance_km=6.2)  # From 30-min TT
+```
+- Calculates pace zones using Jack Daniels methodology
+- Running workouts then use pace targets instead of HR
+
+**set_ftp examples:**
+```python
+set_ftp(test_avg_watts=265, test_duration_mins=20)  # From 20-min test (×0.95)
+set_ftp(ftp_watts=250)  # Direct value
+```
+- Calculates 7-zone power model
+- Cycling workouts then use power targets
 
 ### Race Management Tools
 | Tool | Purpose | Returns |
@@ -169,10 +197,10 @@ coach-mcp/
 
 ### athlete.json - WHO the athlete is
 Manually edited. Contains:
-- `personal`: name, age, max_hr, HR zones, FTP, weight
+- `personal`: name, age, max_hr, HR zones, FTP, power_zones, threshold_pace, pace_zones, weight
 - `life_constraints`: recurring commitments (e.g., Wednesday Padel), preferred training times, work schedule
 - `injury_history`: past injuries with status and notes
-- `preferences`: likes, dislikes, equipment
+- `preferences`: likes, dislikes, equipment, gym_access
 - `coaching_notes`: free-form notes for the AI coach
 
 ### athlete_baseline.json - Garmin-derived capacity
