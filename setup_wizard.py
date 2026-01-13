@@ -199,6 +199,7 @@ def run_setup():
     # Check what's already there
     athlete_exists = (DATA_DIR / "athlete.json").exists()
     config_exists = (DATA_DIR / "training_config.json").exists()
+    redo = False  # Initialize to avoid scope issues
 
     if athlete_exists and config_exists:
         print("\nSetup already complete! Your data files exist:")
@@ -223,17 +224,25 @@ def run_setup():
             json.dump(config, f, indent=2)
         print(f"Created: {DATA_DIR / 'training_config.json'}")
 
-    # Create empty weekly plan
-    plan = create_weekly_plan()
-    with open(DATA_DIR / "weekly_plan.json", "w") as f:
-        json.dump(plan, f, indent=2)
-    print(f"Created: {DATA_DIR / 'weekly_plan.json'}")
+    # Create empty weekly plan (only if doesn't exist - preserve existing plans)
+    plan_path = DATA_DIR / "weekly_plan.json"
+    if not plan_path.exists():
+        plan = create_weekly_plan()
+        with open(plan_path, "w") as f:
+            json.dump(plan, f, indent=2)
+        print(f"Created: {plan_path}")
+    else:
+        print(f"Preserved existing: {plan_path}")
 
-    # Create empty coaching log (LLM memory)
-    coaching_log = create_coaching_log()
-    with open(DATA_DIR / "coaching_log.json", "w") as f:
-        json.dump(coaching_log, f, indent=2)
-    print(f"Created: {DATA_DIR / 'coaching_log.json'}")
+    # Create empty coaching log (only if doesn't exist - preserve LLM memory)
+    log_path = DATA_DIR / "coaching_log.json"
+    if not log_path.exists():
+        coaching_log = create_coaching_log()
+        with open(log_path, "w") as f:
+            json.dump(coaching_log, f, indent=2)
+        print(f"Created: {log_path}")
+    else:
+        print(f"Preserved existing: {log_path}")
 
     print("\n" + "=" * 50)
     print("  Setup Complete!")

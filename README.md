@@ -56,6 +56,19 @@ python daily_loop.py        # Standalone mode
 python daily_loop.py --llm  # With LLM coaching
 ```
 
+## MCP Client
+
+This server is designed to work with MCP (Model Context Protocol) clients.
+
+**Recommended: Claude Code (CLI)**
+
+```bash
+# Add to your Claude Code MCP settings
+claude mcp add coach-mcp python server.py
+```
+
+This has been tested and works well with [Claude Code](https://claude.ai/code). Other MCP clients (Claude Desktop, custom implementations) may work but have not been tested.
+
 ## Data Files
 
 | File | Purpose | Git Status |
