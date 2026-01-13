@@ -431,7 +431,7 @@ set_ftp(ftp_watts=250)  # Direct value
 |------|---------|---------|
 | `research_race(name, url)` | Course info, elevation, difficulty | JSON with training focus |
 | `research_sport(sport_name, url)` | Training principles for unfamiliar sports | JSON with periodization, injuries, demands |
-| `research_exercise(exercise_name, url)` | Form cues, muscles, progressions | JSON with technique info |
+| `research_exercise(exercise_name, save_to_library)` | Form cues, setup, mistakes | JSON + saves to library |
 | `research_injury(...)` | See Injury Tools above | Treatment & recovery info |
 
 **research_sport workflow:**
@@ -440,9 +440,17 @@ set_ftp(ftp_watts=250)  # Direct value
 - Example: `research_sport("rock climbing")` - fetches Wikipedia and extracts training-relevant info
 
 **research_exercise workflow:**
-- Use when building strength programs or finding injury-safe alternatives
-- Returns: muscles worked, form cues, safety notes, variations
-- Example: `research_exercise("romanian deadlift")` - proper form and progressions
+- Use when athlete is unsure how to perform an exercise
+- Fetches form guides from fitness resources (ExRx, Wikipedia)
+- Returns: setup instructions, key cues, common mistakes, modifications
+- **Saves to exercise library** (default) for use in Garmin workout notes
+- Example: `research_exercise("Romanian deadlift")` - returns form cues and saves to library
+
+**Exercise library → Garmin workout notes:**
+1. Call `research_exercise("hip thrust")` to learn the exercise
+2. Form cues are cached in `data/exercise_library.json`
+3. When `push_plan_to_garmin()` builds strength workouts, it includes the notes
+4. You see the form cues on your Garmin watch/app during the workout
 
 ## Architecture
 
@@ -464,6 +472,7 @@ coach-mcp/
 │   ├── weekly_plan.json       # CURRENT - rolling 7-day plan with session PURPOSE
 │   ├── fitness_history.json   # FITNESS - daily loads, CTL/ATL snapshots
 │   ├── coaching_log.json      # MEMORY - coaching decisions, patterns, approvals
+│   ├── exercise_library.json  # FORM - cached exercise form cues for Garmin notes
 │   └── suggestions.json       # Pending LLM suggestions
 ├── test_server.py         # Server tests (46 tests)
 ├── test_rules.py          # Rules tests (23 tests)

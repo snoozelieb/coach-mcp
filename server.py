@@ -3686,6 +3686,223 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
 
 
 @mcp.tool()
+def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
+    """
+    Research proper form, cues, and common mistakes for an exercise.
+
+    Fetches information from fitness resources and optionally saves to the
+    exercise library for use in Garmin workout notes.
+
+    Args:
+        exercise_name: Name of the exercise (e.g., "Romanian deadlift", "Bulgarian split squat")
+        save_to_library: Whether to cache the form cues for future workouts (default True)
+
+    Returns:
+        JSON with form cues, setup instructions, common mistakes, and modifications.
+
+    Usage:
+        research_exercise("Romanian deadlift")
+        research_exercise("hip thrust", save_to_library=True)
+    """
+    from config import HTTP_TIMEOUT_SECONDS, PAGE_TEXT_MAX_CHARS, EXERCISE_LIBRARY_FILE
+    import requests
+    import re
+
+    try:
+        # Normalize exercise name
+        exercise_normalized = exercise_name.strip().lower()
+        exercise_url_name = exercise_name.replace(' ', '_').replace('-', '_')
+
+        result = {
+            "exercise": exercise_name,
+            "form_cues": {},
+            "sources": [],
+            "cached": False,
+        }
+
+        # Check if already in library
+        library_path = DATA_DIR / EXERCISE_LIBRARY_FILE
+        library = {}
+        if library_path.exists():
+            with open(library_path) as f:
+                library = json.load(f)
+
+            if exercise_normalized in library:
+                cached = library[exercise_normalized]
+                cached["cached"] = True
+                cached["note"] = "Retrieved from exercise library. Use research_exercise with a new name to research different exercises."
+                return json.dumps(cached, indent=2)
+
+        # Search sources for exercise info
+        search_sources = [
+            {
+                "name": "ExRx",
+                "url": f"https://exrx.net/WeightExercises/search?q={exercise_url_name}",
+                "type": "form"
+            },
+            {
+                "name": "Wikipedia",
+                "url": f"https://en.wikipedia.org/wiki/{exercise_url_name}",
+                "type": "general"
+            },
+        ]
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        # HTML text extractor
+        from html.parser import HTMLParser
+        from io import StringIO
+
+        class HTMLStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.reset()
+                self.strict = False
+                self.convert_charrefs = True
+                self.text = StringIO()
+                self.skip = False
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = True
+
+            def handle_endtag(self, tag):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = False
+
+            def handle_data(self, data):
+                if not self.skip:
+                    self.text.write(data + ' ')
+
+            def get_text(self):
+                return self.text.getvalue()
+
+        # Try to fetch content
+        fetched_content = None
+        for source in search_sources:
+            try:
+                response = requests.get(
+                    source["url"],
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                    allow_redirects=True
+                )
+                if response.status_code == 200:
+                    stripper = HTMLStripper()
+                    stripper.feed(response.text)
+                    content = stripper.get_text()[:PAGE_TEXT_MAX_CHARS]
+
+                    # Check for exercise-related content
+                    content_lower = content.lower()
+                    exercise_indicators = ['muscle', 'exercise', 'movement', 'form', 'position', 'repetition', 'set']
+                    has_exercise_content = any(ind in content_lower for ind in exercise_indicators)
+
+                    if len(content) > 300 and has_exercise_content:
+                        fetched_content = content
+                        result["sources"].append(response.url)
+                        break
+            except Exception:
+                continue
+
+        # Extract relevant information
+        if fetched_content:
+            sentences = re.split(r'[.!?]+', fetched_content)
+
+            # Keywords for different aspects
+            setup_keywords = ['position', 'stance', 'grip', 'feet', 'hands', 'setup', 'starting']
+            execution_keywords = ['lower', 'raise', 'push', 'pull', 'extend', 'flex', 'drive', 'squeeze', 'contract']
+            cue_keywords = ['keep', 'maintain', 'avoid', 'ensure', 'focus', 'engage', 'brace']
+            mistake_keywords = ['avoid', 'don\'t', 'never', 'mistake', 'wrong', 'error', 'common']
+            muscle_keywords = ['muscle', 'target', 'work', 'engage', 'activate']
+
+            setup_findings = []
+            execution_findings = []
+            cue_findings = []
+            mistake_findings = []
+            muscle_findings = []
+
+            for sentence in sentences:
+                sentence_clean = sentence.strip()
+                sentence_lower = sentence_clean.lower()
+                if len(sentence_clean) > 15 and len(sentence_clean) < 200:
+                    if any(kw in sentence_lower for kw in setup_keywords):
+                        setup_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in execution_keywords):
+                        execution_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in cue_keywords):
+                        cue_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in mistake_keywords):
+                        mistake_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in muscle_keywords):
+                        muscle_findings.append(sentence_clean)
+
+            result["form_cues"] = {
+                "setup": setup_findings[:3] if setup_findings else ["Set up with proper stance and alignment"],
+                "execution": execution_findings[:4] if execution_findings else ["Control the movement through full range of motion"],
+                "key_cues": cue_findings[:4] if cue_findings else ["Focus on mind-muscle connection"],
+                "common_mistakes": mistake_findings[:3] if mistake_findings else ["Avoid using momentum or excessive weight"],
+                "muscles_worked": muscle_findings[:2] if muscle_findings else [],
+            }
+
+            # Generate a concise note for Garmin workouts
+            garmin_note_parts = []
+            if setup_findings:
+                garmin_note_parts.append(setup_findings[0][:80])
+            if cue_findings:
+                garmin_note_parts.append(cue_findings[0][:80])
+            if execution_findings:
+                garmin_note_parts.append(execution_findings[0][:80])
+
+            result["garmin_note"] = ". ".join(garmin_note_parts)[:250] if garmin_note_parts else f"Perform {exercise_name} with controlled form."
+
+        else:
+            # Couldn't fetch - provide basic guidance
+            result["form_cues"] = {
+                "note": f"Unable to fetch form guide for '{exercise_name}'.",
+                "suggested_searches": [
+                    f"{exercise_name} form guide",
+                    f"{exercise_name} how to",
+                    f"{exercise_name} technique",
+                ],
+                "video_search": f"YouTube: {exercise_name} form tutorial"
+            }
+            result["garmin_note"] = f"Perform {exercise_name} with controlled form. Look up tutorial if unsure."
+
+        # Add modifications guidance
+        result["modifications"] = {
+            "easier": "Reduce weight, decrease range of motion, or use assisted variation",
+            "harder": "Add weight, slow tempo, add pause at bottom, or use unilateral variation",
+            "equipment_alternatives": "Check gym equipment available or ask for substitution"
+        }
+
+        # Save to library if requested
+        if save_to_library and result.get("form_cues"):
+            library[exercise_normalized] = {
+                "exercise": exercise_name,
+                "form_cues": result["form_cues"],
+                "garmin_note": result.get("garmin_note", ""),
+                "modifications": result["modifications"],
+                "sources": result["sources"],
+                "researched_date": date.today().isoformat(),
+            }
+
+            # Ensure data directory exists
+            DATA_DIR.mkdir(exist_ok=True)
+            with open(library_path, 'w') as f:
+                json.dump(library, f, indent=2)
+
+            result["cached"] = True
+            result["cache_note"] = "Saved to exercise library. Will be included in Garmin workout notes."
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 def list_exercises(
     category: str = None,
     muscle: str = None,

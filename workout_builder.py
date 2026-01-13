@@ -569,6 +569,31 @@ def build_yoga_workout(session: dict, date: str) -> dict:
     }
 
 
+def load_exercise_library() -> dict:
+    """Load the exercise form cues library."""
+    from pathlib import Path
+    library_path = Path(__file__).parent / "data" / "exercise_library.json"
+    if library_path.exists():
+        with open(library_path) as f:
+            return json.load(f)
+    return {}
+
+
+def get_exercise_note(exercise_name: str, library: dict) -> str:
+    """Get form cues note for an exercise from the library."""
+    # Try exact match first
+    normalized = exercise_name.strip().lower()
+    if normalized in library:
+        return library[normalized].get("garmin_note", "")
+
+    # Try partial match (e.g., "ROMANIAN_DEADLIFT" -> "romanian deadlift")
+    garmin_name = exercise_name.replace("_", " ").lower()
+    if garmin_name in library:
+        return library[garmin_name].get("garmin_note", "")
+
+    return ""
+
+
 def build_strength_workout(session: dict, date: str) -> dict:
     """
     Build a strength workout from a plan session.
@@ -576,10 +601,15 @@ def build_strength_workout(session: dict, date: str) -> dict:
     If session contains 'exercises' list, builds detailed workout with
     RepeatGroupDTO for each exercise (containing sets x reps + rest).
     Otherwise creates a simple timed strength workout.
+
+    Form cues from the exercise library are included as notes on each exercise.
     """
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Strength training")
     exercises = session.get("exercises", [])
+
+    # Load exercise library for form cues
+    exercise_library = load_exercise_library()
 
     # Create workout name from description
     workout_name = description[:40]
@@ -641,6 +671,9 @@ def build_strength_workout(session: dict, date: str) -> dict:
         rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
         weight = exercise.get("weight_kg")
 
+        # Get form cues from library if available
+        exercise_note = get_exercise_note(ex_name, exercise_library)
+
         # Build exercise step (inside repeat group)
         exercise_step = {
             "type": "ExecutableStepDTO",
@@ -653,6 +686,10 @@ def build_strength_workout(session: dict, date: str) -> dict:
             "category": category,
             "exerciseName": ex_name,
         }
+
+        # Add form cues note if available
+        if exercise_note:
+            exercise_step["description"] = exercise_note
 
         # Add weight if specified
         if weight:

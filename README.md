@@ -67,6 +67,7 @@ python daily_loop.py --llm  # With LLM coaching
 | `data/training_config.json` | Your race calendar and current phase | Personal (gitignored) |
 | `data/weekly_plan.json` | Current 7-day rolling plan | Personal (gitignored) |
 | `data/coaching_log.json` | LLM coaching memory (decisions, patterns) | Personal (gitignored) |
+| `data/exercise_library.json` | Cached exercise form cues for Garmin notes | Personal (gitignored) |
 
 Personal data files are created by `setup_wizard.py` and stay on your machine.
 
@@ -153,6 +154,24 @@ Personal data files are created by `setup_wizard.py` and stay on your machine.
 **research_injury usage:**
 - Auto-search: `research_injury("shin splints")` - searches Wikipedia/medical sources
 - Direct URL: `research_injury("tendinitis", url="https://...")` - fetches specific resource
+
+### Exercise Research Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `research_exercise(exercise_name, save_to_library)` | Form cues, setup, common mistakes | JSON + cached to library |
+| `list_exercises(category, muscle, search)` | Browse exercise database | JSON with matches |
+
+**research_exercise workflow:**
+- Fetches form guides from fitness resources (ExRx, Wikipedia)
+- Returns: setup instructions, key cues, common mistakes, modifications
+- Saves to `data/exercise_library.json` by default
+- Form cues appear as notes on Garmin workouts when pushed via `push_plan_to_garmin()`
+
+**Example:**
+```python
+research_exercise("Romanian deadlift")  # Learn proper form
+# → Form cues cached, will appear on Garmin during strength workouts
+```
 
 ## Training Methodology
 

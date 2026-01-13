@@ -20,6 +20,7 @@ SUGGESTIONS_FILE = "suggestions.json"
 COACHING_LOG_FILE = "coaching_log.json"
 FITNESS_HISTORY_FILE = "fitness_history.json"
 SEASON_PLAN_FILE = "season_plan.json"
+EXERCISE_LIBRARY_FILE = "exercise_library.json"  # Cached exercise form cues
 
 # Fitness tracking constants (based on TrainingPeaks/Firstbeat research)
 # CTL = Chronic Training Load (fitness) - 42-day time constant
