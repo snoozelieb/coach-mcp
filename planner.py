@@ -16,6 +16,7 @@ from config import (
     ATHLETE_BASELINE_FILE,
     METHODOLOGY_FILE,
     COACHING_LOG_FILE,
+    RACE_TEMPLATE_WINDOW_DAYS,
 )
 
 
@@ -245,7 +246,7 @@ def build_planning_context(
     race_templates = methodology.get('race_templates', {})
     relevant_race_templates = {}
     for event in upcoming_events:
-        if event.get('days_until', 999) <= 56:  # Within 8 weeks
+        if event.get('days_until', 999) <= RACE_TEMPLATE_WINDOW_DAYS:
             race_type = event.get('type')
             priority = event.get('priority', 'C')
             if race_type and race_type in race_templates and priority in ['A', 'B', 'C']:
@@ -448,29 +449,63 @@ def create_empty_week_template() -> dict[str, Any]:
     """
     Create an empty 7-day plan template starting from today.
 
-    Returns structure like:
-    {
-        'week_start': '2026-01-05',
-        'days': {
-            '2026-01-05': {
-                'planned': {
-                    'type': 'long_ride',
-                    'description': 'Long MTB ride',
-                    'duration_mins': 150,
-                    'intensity': 'easy',
-                    'purpose': 'Build aerobic base for sani2c Day 1',
-                    'goal_category': 'race_preparation',
-                    'phase_alignment': 'base'
-                },
-                'actual': None,
-                'notes': ''
-            },
-            ...
-        }
-    }
+    Returns a dict with:
+        - week_start, week_end: ISO date strings
+        - days: dict keyed by ISO date with day structures
 
-    Session 'purpose' field is REQUIRED - explains WHY this session matters.
-    Session 'goal_category' is one of: race_preparation, fun_activities, aesthetics
+    Day structure fields:
+        - day_name: e.g., "Monday"
+        - planned: session dict or None (see below)
+        - actual: filled by audit after completion
+        - status: "pending" | "completed" | "missed" | "modified"
+        - notes: optional string
+
+    Planned session fields:
+        - type: e.g., "long_ride", "strength", "mobility", "double_session", "rest"
+        - description: human-readable summary
+        - duration_mins: total duration
+        - intensity: "easy" | "moderate" | "hard" | "max_effort" (optional)
+        - priority: "critical" | "high" | "medium" (optional)
+        - purpose: REQUIRED - explains WHY this session matters
+        - goal_category: "race_preparation" | "fun_activities" | "aesthetics"
+        - phase_alignment: current training phase (optional)
+
+    For double sessions, add:
+        - sessions: list of {time, type, duration_mins, notes}
+
+    For strength sessions, add:
+        - exercises: list of {name, category, sets, reps, rest_secs}
+
+    For test sessions (FTP, time trial), add:
+        - protocol: list of {phase, duration_mins, notes}
+
+    For swimming sessions, add:
+        - target_distance_m: total target distance
+        - pool_length_m: pool length (default 25)
+        - structure: list of {phase, distance_m, stroke, pace, notes}
+          phases: warmup, drills, main, cooldown
+          Example: [
+            {"phase": "warmup", "distance_m": 200, "stroke": "freestyle", "pace": "easy"},
+            {"phase": "drills", "distance_m": 200, "notes": "Catch-up, fingertip drag"},
+            {"phase": "main", "distance_m": 400, "notes": "4x100m steady, 15s rest"},
+            {"phase": "cooldown", "distance_m": 100, "stroke": "easy choice"}
+          ]
+        Note: Check athlete.swimming profile for experience level and pace.
+
+    For pilates/yoga sessions, add:
+        - focus: primary focus area (core, flexibility, strength, full_body)
+        - target_areas: list of body regions to emphasize
+        - avoid: movements to skip (from injury considerations)
+        - class_or_solo: "class" | "solo" | "video"
+        Example: {
+            "type": "pilates",
+            "duration_mins": 45,
+            "focus": "core",
+            "target_areas": ["hip_flexors", "lower_back", "glutes"],
+            "avoid": ["standing_balance"],
+            "notes": "Post-ride recovery focus on hip mobility"
+        }
+        Note: Check athlete.pilates profile for experience and injury considerations.
     """
     today = date.today()
     days = {}

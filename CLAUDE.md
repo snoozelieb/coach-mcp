@@ -8,11 +8,41 @@ An **adaptive AI training coach** MCP server that:
 - Fetches fitness data from Garmin Connect
 - Maintains a 7-day rolling training plan with PURPOSE for each session
 - Uses **persistent coaching memory** - decisions survive between sessions
-- Tracks **goal balance**: race prep (50%), fun activities (25%), aesthetics (25%)
+- **Understands the athlete** - discovers goals, constraints, history via conversation
+- **Prescribes with authority** - coach decides what's best, athlete follows
 - Uses Garmin's load metrics for intensity recommendations
-- Requires user approval for major coaching changes
+- Requires user approval for major coaching changes (but coach makes recommendations)
 
-**Athlete context:** Running, Cycling, High-intensity games (Ultimate, Padel). Injury-prone, needs Mobility + Strength. Balanced goals: A-race (sani2c), fun activities, upper body aesthetics.
+## Coaching Philosophy
+
+**You are the coach. You know better.** The athlete trusts you to:
+
+1. **Be science-based, not opinion-based**
+   - If you don't know something, research it before recommending
+   - Use `research_injury()`, `research_race()`, `research_sport()`, `research_exercise()` to gather evidence
+   - Base training loads on actual data (Garmin metrics, compliance history)
+
+2. **Push back on bad ideas**
+   - If an athlete wants to do something stupid (race on an injury, skip recovery, overtrain), say NO
+   - Explain WHY it's a bad idea with evidence
+   - Don't be a pleaser - be honest even when it's not what they want to hear
+
+3. **Adapt approach, not standards**
+   - Personalize HOW you train them (pillars, goals, schedule)
+   - Never compromise on safety constraints (rest after races, injury protocols)
+   - An ultra runner and a beginner have different plans, but both follow sound principles
+
+4. **Help them achieve their dreams**
+   - Understand what success looks like for THEM
+   - Build a realistic path to get there
+   - Protect them from themselves when enthusiasm exceeds capacity
+
+5. **Be direct and clear**
+   - "You need rest" not "Maybe consider possibly taking it easy"
+   - "This is a bad idea because X" not "That's interesting but have you thought about..."
+   - Give recommendations, not menus of options
+
+**Remember:** Athletes hire coaches because they DON'T know what's best. Your job is to know for them.
 
 ## Commands
 
@@ -43,8 +73,9 @@ python daily_loop.py --llm
 | `get_personal_records()` | All PBs | JSON array |
 | `get_training_readiness(date)` | Recovery score, HRV, load | JSON object |
 | `get_athlete()` | Full athlete profile (personal, constraints, preferences) | JSON object |
-| `update_athlete(section, data)` | Update profile section (personal, preferences, add_injury, etc.) | Confirmation |
+| `update_athlete(section, data)` | Update profile section (personal, preferences, training_pillars, etc.) | Confirmation |
 | `refresh_athlete_baseline()` | Generate baseline from 6mo Garmin history | JSON summary |
+| `get_onboarding_guide()` | Get personas and onboarding conversation guide | JSON guide |
 
 ### Methodology Tools
 | Tool | Purpose | Returns |
@@ -167,6 +198,24 @@ set_ftp(ftp_watts=250)  # Direct value
 - Direct URL: `research_injury("tendinitis", url="https://...")` - fetches and parses specific resource
 - Each injury is researched uniquely from web sources rather than using static protocols
 
+### Research Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `research_race(name, url)` | Course info, elevation, difficulty | JSON with training focus |
+| `research_sport(sport_name, url)` | Training principles for unfamiliar sports | JSON with periodization, injuries, demands |
+| `research_exercise(exercise_name, url)` | Form cues, muscles, progressions | JSON with technique info |
+| `research_injury(...)` | See Injury Tools above | Treatment & recovery info |
+
+**research_sport workflow:**
+- Use when onboarding athlete in unfamiliar sport (climbing, CrossFit, rowing, martial arts)
+- Returns: training approaches, periodization patterns, common injuries, physical demands
+- Example: `research_sport("rock climbing")` - fetches Wikipedia and extracts training-relevant info
+
+**research_exercise workflow:**
+- Use when building strength programs or finding injury-safe alternatives
+- Returns: muscles worked, form cues, safety notes, variations
+- Example: `research_exercise("romanian deadlift")` - proper form and progressions
+
 ## Architecture
 
 ```
@@ -197,9 +246,12 @@ coach-mcp/
 
 ### athlete.json - WHO the athlete is
 Manually edited. Contains:
+- `training_pillars`: **personalized** training pillars (based on persona, customized via onboarding)
 - `personal`: name, age, max_hr, HR zones, FTP, power_zones, threshold_pace, pace_zones, weight
 - `life_constraints`: recurring commitments (e.g., Wednesday Padel), preferred training times, work schedule
 - `injury_history`: past injuries with status and notes
+- `swimming`: experience level, pace, comfortable distance, strokes (ask user to personalize)
+- `pilates`: experience, class preference, focus areas, injury considerations
 - `preferences`: likes, dislikes, equipment, gym_access
 - `coaching_notes`: free-form notes for the AI coach
 
@@ -209,18 +261,20 @@ Auto-generated by `refresh_athlete_baseline()`. Contains:
 - `personal_records`: all PRs from Garmin
 - `last_refreshed`: timestamp
 
-### methodology.json - HOW to train
+### methodology.json - HOW to train (shared templates)
 Rarely changes. Contains:
-- `pillars`: strength 2x/week, mobility 90min/week, long effort 1x/week
+- `personas`: starting templates (endurance_athlete, strength_athlete, recreational, return_from_injury, multi_sport)
+- `default_pillar_templates`: fallback pillars if athlete has none configured
 - `safety_constraints`: max consecutive hard days, rest after race
 - `race_templates`: key sessions and phase guidance by race type
+- `recovery_protocols`: pre-sleep stretching by activity type (cycling, running, high-intensity)
 
 ### training_config.json - WHAT they're training for
 User-edited for race calendar. Contains:
 - `events`: race calendar with A/B/C/D priorities
 - `current_block`: phase, dates, volume target, focus
 - `periodization`: phase definitions (base/build/peak/taper) with intensity distributions
-- `goal_balance`: weights for race_preparation (50%), fun_activities (25%), aesthetics (25%)
+- `goals`: **flexible goals array** - any type (event, health, wellness, aesthetics, fun)
 - `weekly_structure`: preferred long day, strength days, rest rules
 
 ### coaching_log.json - LLM MEMORY
@@ -231,10 +285,19 @@ Auto-managed by coaching tools. Contains:
 
 ## Training Pillars
 
-Defined in `data/methodology.json`:
-- **Strength:** 2 sessions per week
-- **Mobility:** 90 minutes per week (yoga, pilates, stretching)
-- **Long Effort:** 1 session of 60+ minutes cardio per week
+**Personalized in athlete.json** (not fixed in methodology). Each athlete has their own pillars based on:
+- Selected persona (starting template)
+- Goals (event-focused vs wellness vs strength)
+- Time available
+- Customization via onboarding conversation
+
+Example pillar structure:
+```json
+{"name": "endurance", "target_hours_per_week": 4, "target_type": "hours", "types": ["cycling", "running"]}
+{"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]}
+```
+
+Use `get_onboarding_guide()` to start the personalization process.
 
 ## Activity Classification
 

@@ -15,6 +15,7 @@ from config import (
     VOLUME_COMPLIANCE_MIN_PERCENT,
     TRAINING_CONFIG_FILE,
     METHODOLOGY_FILE,
+    ATHLETE_FILE,
 )
 
 
@@ -42,12 +43,68 @@ def get_thresholds() -> dict[str, Any]:
     }
 
 
+def load_athlete_pillars() -> dict[str, Any] | None:
+    """
+    Load personalized training pillars from athlete.json.
+
+    Returns the training_pillars dict if athlete has personalized pillars,
+    or None if not configured (falls back to methodology defaults).
+
+    New format pillars have:
+    - pillars: list of {name, target_*, target_type, types[], priority}
+    - based_on_persona: which persona template was used
+    - customized: whether athlete has modified the defaults
+    """
+    athlete_path = DATA_DIR / ATHLETE_FILE
+    if not athlete_path.exists():
+        return None
+
+    with open(athlete_path) as f:
+        athlete = json.load(f)
+
+    training_pillars = athlete.get('training_pillars')
+    if not training_pillars or not training_pillars.get('pillars'):
+        return None
+
+    return training_pillars
+
+
+def convert_athlete_pillars_to_legacy(athlete_pillars: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convert new flexible pillar format to legacy format for backward compatibility.
+
+    New format: [{"name": "strength", "target_sessions_per_week": 2, ...}, ...]
+    Legacy format: {"strength_sessions_per_week": 2, "mobility_minutes_per_week": 90, ...}
+    """
+    legacy = {}
+    for pillar in athlete_pillars.get('pillars', []):
+        name = pillar.get('name', '').lower()
+        target_type = pillar.get('target_type', 'sessions')
+
+        if target_type == 'sessions':
+            key = f"{name}_sessions_per_week"
+            legacy[key] = pillar.get('target_sessions_per_week', 0)
+        elif target_type == 'minutes':
+            key = f"{name}_minutes_per_week"
+            legacy[key] = pillar.get('target_mins_per_week', 0)
+        elif target_type == 'hours':
+            # Convert hours to minutes for consistency
+            key = f"{name}_hours_per_week"
+            legacy[key] = pillar.get('target_hours_per_week', 0)
+
+    return legacy
+
+
 def load_training_config() -> dict[str, Any]:
     """
-    Load training configuration merged with methodology.
+    Load training configuration merged with methodology and athlete pillars.
+
+    Priority for pillars:
+    1. Athlete-specific pillars from athlete.json (if configured)
+    2. Default pillars from methodology.json (fallback)
 
     Returns training_config.json data (events, current_block) merged with
-    methodology.json data (pillars, constraints, race_templates).
+    pillars (from athlete or methodology) and constraints.
     """
     # Load training config
     config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -57,15 +114,33 @@ def load_training_config() -> dict[str, Any]:
     else:
         config = {}
 
-    # Load methodology and merge into config for backward compatibility
+    # Load methodology for constraints and race templates
     methodology_path = DATA_DIR / METHODOLOGY_FILE
     if methodology_path.exists():
         with open(methodology_path) as f:
             methodology = json.load(f)
-        # Merge methodology into config
-        config['pillars'] = methodology.get('pillars', {})
         config['constraints'] = methodology.get('safety_constraints', {})
         config['race_requirements'] = methodology.get('race_templates', {})
+        config['personas'] = methodology.get('personas', {})
+        # Default pillars from methodology (legacy format)
+        default_pillars = methodology.get('default_pillar_templates', {})
+        # Also check old 'pillars' key for backward compat
+        if not default_pillars:
+            default_pillars = methodology.get('pillars', {})
+    else:
+        default_pillars = {}
+
+    # Try to load athlete-specific pillars first
+    athlete_pillars = load_athlete_pillars()
+    if athlete_pillars:
+        # Convert new format to legacy format for backward compat
+        config['pillars'] = convert_athlete_pillars_to_legacy(athlete_pillars)
+        config['athlete_pillars'] = athlete_pillars  # Keep original for advanced use
+        config['pillars_source'] = 'athlete'
+    else:
+        # Fall back to methodology defaults
+        config['pillars'] = default_pillars
+        config['pillars_source'] = 'methodology_default'
 
     return config
 
@@ -163,21 +238,30 @@ def check_weekly_compliance(
             strength: {required: 2, completed: 1, deficit: 1, compliant: False},
             mobility: {required: 90, completed: 45, deficit: 45, compliant: False},
             long_effort: {required: 1, completed: 1, deficit: 0, compliant: True},
-            volume: {target_hrs: 6.0, actual_hrs: 5.5, percent: 92, compliant: True},
+            volume: {target_hrs: 6.0, actual_hrs: 5.5, percent: 92, compliant: True, over_volume: False},
             overall_compliant: False,
-            deficits: ["strength", "mobility"]
+            deficits: ["strength", "mobility"],
+            warnings: []
         }
     """
     # Load thresholds from config
     thresholds = get_thresholds()
     volume_compliance_min = thresholds.get('volume_compliance_percent', VOLUME_COMPLIANCE_MIN_PERCENT)
 
+    # Load config for defaults
+    config = load_training_config()
+
     if pillars is None:
-        config = load_training_config()
         pillars = config.get('pillars', {})
         volume_target = config.get('current_block', {}).get('weekly_volume_target_hrs', 0)
     else:
+        # If pillars explicitly passed, use volume target from it (for testing/override)
         volume_target = pillars.get('weekly_volume_target_hrs', 0)
+        if volume_target == 0:
+            # Fallback to config if not in pillars
+            volume_target = config.get('current_block', {}).get('weekly_volume_target_hrs', 0)
+
+    warnings = []
 
     # Count pillar completions
     strength_count = 0
@@ -204,7 +288,19 @@ def check_weekly_compliance(
 
     # Build compliance report
     total_volume_hrs = round(total_volume_mins / 60, 1)
-    volume_percent = round((total_volume_hrs / volume_target * 100)) if volume_target else 100
+
+    # Handle volume percentage calculation
+    if volume_target > 0:
+        volume_percent = round((total_volume_hrs / volume_target * 100), 1)
+        volume_compliant = volume_percent >= volume_compliance_min
+        over_volume = volume_percent > 150  # Flag if >150% of target
+        if over_volume:
+            warnings.append(f"Volume at {volume_percent}% of target - potential overtraining risk")
+    else:
+        volume_percent = None  # No target set
+        volume_compliant = True  # Can't fail if no target
+        over_volume = False
+        warnings.append("No volume target set in current_block")
 
     result = {
         'strength': {
@@ -229,7 +325,8 @@ def check_weekly_compliance(
             'target_hrs': volume_target,
             'actual_hrs': total_volume_hrs,
             'percent': volume_percent,
-            'compliant': volume_percent >= volume_compliance_min,
+            'compliant': volume_compliant,
+            'over_volume': over_volume,
         },
     }
 
@@ -243,6 +340,7 @@ def check_weekly_compliance(
 
     result['overall_compliant'] = len(deficits) == 0
     result['deficits'] = deficits
+    result['warnings'] = warnings
 
     return result
 
@@ -256,7 +354,7 @@ def check_safety_rules(
     Check safety constraints for training decisions.
 
     Args:
-        recent_activities: Last 7-14 days of activities (most recent first)
+        recent_activities: Last 7-14 days of activities, sorted by date descending (most recent first)
         today_plan: Planned session for today (optional)
         constraints: Safety constraints (loads from config if None)
 
@@ -276,12 +374,18 @@ def check_safety_rules(
 
     max_consecutive_hard = constraints.get('max_consecutive_hard_days', 2)
     rest_after_race = constraints.get('mandatory_rest_after_race_days', 1)
-    max_volume_increase = constraints.get('max_weekly_volume_increase_percent', 10)
+
+    # Sort activities by date descending to ensure correct order
+    sorted_activities = sorted(
+        recent_activities,
+        key=lambda a: a.get('date', ''),
+        reverse=True
+    )
 
     # Check for consecutive hard days
-    if recent_activities:
+    if sorted_activities:
         consecutive_hard = 0
-        for activity in recent_activities[:7]:  # Last 7 days
+        for activity in sorted_activities[:7]:  # Last 7 days
             classification = classify_activity(activity)
             if classification['is_hard']:
                 consecutive_hard += 1
@@ -297,9 +401,19 @@ def check_safety_rules(
                 blocked.append("Cannot schedule hard session - maximum consecutive hard days reached")
 
     # Check for race in recent history requiring rest
-    for activity in recent_activities[:rest_after_race + 1]:
-        activity_name = activity.get('name', '').lower()
-        if 'race' in activity_name or 'competition' in activity_name:
+    # Look for both "race" in name AND race activity types
+    race_types = {'race', 'competition', 'event', 'triathlon', 'marathon'}
+    for activity in sorted_activities[:rest_after_race + 1]:
+        activity_name = (activity.get('name', '') or '').lower()
+        activity_type = (activity.get('type', '') or '').lower()
+
+        is_race = (
+            'race' in activity_name or
+            'competition' in activity_name or
+            activity_type in race_types
+        )
+
+        if is_race:
             warnings.append("Recent race detected - ensure adequate recovery")
             if today_plan:
                 blocked.append(f"Mandatory {rest_after_race}-day rest after race")

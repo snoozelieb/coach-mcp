@@ -451,31 +451,74 @@ def build_swimming_workout(session: dict, date: str) -> dict:
     """
     Build a swimming workout from a plan session.
 
-    Swimming workouts use a simple timed structure with 25m pool setting.
+    Supports two modes:
+    1. Structured: If session has 'structure' field, creates multi-step workout
+       structure: [{phase, distance_m, stroke, pace, notes}, ...]
+       phases: warmup, drills, main, cooldown
+    2. Simple: Falls back to timed workout if no structure provided
+
+    Pool length defaults to 25m but can be overridden via pool_length_m.
     """
     duration_mins = session.get("duration_mins", 30)
     description = session.get("description", "Swimming session")
+    structure = session.get("structure", [])
+    pool_length = session.get("pool_length_m", 25.0)
 
-    total_secs = duration_mins * 60
     workout_name = description[:40]
+    steps = []
 
-    # Simple timed workout for swimming
-    steps = [
-        {
-            "type": "ExecutableStepDTO",
-            "stepOrder": 1,
-            "stepType": STEP_INTERVAL,
-            "endCondition": END_TIME,
-            "endConditionValue": float(total_secs),
-            "targetType": TARGET_NONE,
-        }
-    ]
+    if structure:
+        # Structured workout with multiple phases
+        step_order = 1
+        total_distance_m = 0
+
+        for phase in structure:
+            phase_type = phase.get("phase", "main").lower()
+            distance_m = phase.get("distance_m", 100)
+            total_distance_m += distance_m
+
+            # Map phase to step type
+            if phase_type == "warmup":
+                step_type = STEP_WARMUP
+            elif phase_type == "cooldown":
+                step_type = STEP_COOLDOWN
+            elif phase_type == "recovery":
+                step_type = STEP_RECOVERY
+            else:
+                step_type = STEP_INTERVAL
+
+            steps.append({
+                "type": "ExecutableStepDTO",
+                "stepOrder": step_order,
+                "stepType": step_type,
+                "endCondition": END_DISTANCE,
+                "endConditionValue": float(distance_m),
+                "targetType": TARGET_NONE,
+            })
+            step_order += 1
+
+        # Estimate duration from distance (assume ~2:00/100m for beginner)
+        estimated_secs = int(total_distance_m * 1.2)  # 120 secs per 100m
+    else:
+        # Simple timed workout fallback
+        total_secs = duration_mins * 60
+        estimated_secs = int(total_secs)
+        steps = [
+            {
+                "type": "ExecutableStepDTO",
+                "stepOrder": 1,
+                "stepType": STEP_INTERVAL,
+                "endCondition": END_TIME,
+                "endConditionValue": float(total_secs),
+                "targetType": TARGET_NONE,
+            }
+        ]
 
     return {
         "workoutName": workout_name,
         "sportType": SWIMMING_SPORT,
-        "estimatedDurationInSecs": int(total_secs),
-        "poolLength": 25.0,
+        "estimatedDurationInSecs": estimated_secs,
+        "poolLength": pool_length,
         "poolLengthUnit": {"unitKey": "meter"},
         "workoutSegments": [
             {

@@ -537,6 +537,103 @@ def get_daily_metrics() -> str:
 
 
 @mcp.tool()
+def get_onboarding_guide() -> str:
+    """
+    Get the onboarding guide for setting up a new athlete.
+
+    Returns available personas and a conversation guide for the LLM to follow
+    when discovering athlete needs and configuring their training pillars.
+
+    Use this when:
+    - Setting up a new athlete for the first time
+    - An athlete wants to reconfigure their training approach
+    - Transitioning to a new training focus
+
+    The LLM should follow the returned guide to ask questions and then
+    use update_athlete() to save the personalized configuration.
+    """
+    try:
+        methodology = load_methodology()
+        personas = methodology.get('personas', {})
+
+        # Remove description keys for cleaner output
+        persona_list = []
+        for key, value in personas.items():
+            if key.startswith('_'):
+                continue
+            persona_list.append({
+                'id': key,
+                'description': value.get('description', ''),
+                'typical_weekly_hours': value.get('typical_weekly_hours', 'varies'),
+                'key_focus': value.get('key_focus', ''),
+                'suggested_pillars': value.get('suggested_pillars', [])
+            })
+
+        guide = {
+            'coaching_principle': "You are the coach. Understand the athlete, then PRESCRIBE - don't offer a menu.",
+            'available_personas': persona_list,
+            'onboarding_steps': [
+                {
+                    'step': 1,
+                    'name': 'Understand the athlete',
+                    'questions': [
+                        "What are your main sports or activities?",
+                        "How long have you been training?",
+                        "Any current injuries or limitations?"
+                    ],
+                    'note': "Listen and gather information. Don't give options yet."
+                },
+                {
+                    'step': 2,
+                    'name': 'Understand their goals',
+                    'questions': [
+                        "What do you want to achieve?",
+                        "Any events or races you're targeting?",
+                        "What does success look like for you in 6 months?"
+                    ],
+                    'note': "Understand their WHY. This informs your prescription."
+                },
+                {
+                    'step': 3,
+                    'name': 'Assess capacity',
+                    'questions': [
+                        "How many hours per week can you realistically commit to training?",
+                        "Any days that absolutely don't work?",
+                        "Morning or evening person?"
+                    ],
+                    'note': "Get realistic constraints. Athletes often overestimate availability."
+                },
+                {
+                    'step': 4,
+                    'name': 'PRESCRIBE the plan',
+                    'instruction': "Based on everything learned, TELL them what their training pillars will be. Explain WHY. Don't ask 'does this work for you?' - state 'Based on your goals and capacity, here is what you need to do.' They can ask questions but you are the expert."
+                },
+                {
+                    'step': 5,
+                    'name': 'Save and commit',
+                    'instruction': "Use update_athlete() to save training_pillars. Tell them what comes next."
+                }
+            ],
+            'update_example': {
+                'section': 'training_pillars',
+                'data': {
+                    'based_on_persona': 'endurance_athlete',
+                    'customized': True,
+                    'pillars': [
+                        {'name': 'endurance', 'target_hours_per_week': 4, 'target_type': 'hours', 'types': ['running', 'cycling']},
+                        {'name': 'strength', 'target_sessions_per_week': 2, 'target_type': 'sessions', 'types': ['strength_training']}
+                    ]
+                }
+            }
+        }
+
+        return json.dumps(guide, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_athlete() -> str:
     """
     Returns the complete athlete profile.
@@ -576,6 +673,9 @@ def update_athlete(
             - 'coaching_notes': free-form coaching notes (string, not object)
             - 'add_commitment': add a recurring commitment
             - 'add_injury': add an injury to history
+            - 'training_pillars': personalized training pillars (from onboarding)
+            - 'swimming': swimming profile (experience, pace, strokes)
+            - 'pilates': pilates profile (experience, focus areas)
         data: JSON string with the data to update/add
 
     Examples:
@@ -584,6 +684,7 @@ def update_athlete(
         update_athlete('add_injury', '{"date": "2026-01-01", "type": "ankle", "description": "Rolled ankle"}')
         update_athlete('preferences', '{"likes": ["MTB", "trail running"]}')
         update_athlete('coaching_notes', '"Responds well to data-driven feedback"')
+        update_athlete('training_pillars', '{"based_on_persona": "endurance_athlete", "pillars": [...]}')
 
     Returns confirmation with updated section.
     """
@@ -642,9 +743,32 @@ def update_athlete(
             athlete.setdefault('injury_history', []).append(parsed_data)
             updated = parsed_data
 
+        elif section == 'training_pillars':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'training_pillars must be an object with pillars array'})
+            if 'pillars' not in parsed_data:
+                return json.dumps({'error': 'training_pillars requires pillars array'})
+            # Add metadata
+            from datetime import date
+            parsed_data['last_updated'] = date.today().isoformat()
+            athlete['training_pillars'] = parsed_data
+            updated = parsed_data
+
+        elif section == 'swimming':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'swimming data must be an object'})
+            athlete.setdefault('swimming', {}).update(parsed_data)
+            updated = athlete['swimming']
+
+        elif section == 'pilates':
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'pilates data must be an object'})
+            athlete.setdefault('pilates', {}).update(parsed_data)
+            updated = athlete['pilates']
+
         else:
             return json.dumps({
-                'error': f"Unknown section '{section}'. Use: personal, life_constraints, preferences, coaching_notes, add_commitment, add_injury"
+                'error': f"Unknown section '{section}'. Use: personal, life_constraints, preferences, coaching_notes, add_commitment, add_injury, training_pillars, swimming, pilates"
             })
 
         # Save updated athlete profile
@@ -3592,6 +3716,358 @@ def get_response_patterns() -> str:
 
     except Exception as e:
         return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def research_sport(sport_name: str, url: str = None) -> str:
+    """
+    Research training principles and methodology for a specific sport.
+
+    Use this when onboarding an athlete in an unfamiliar sport. Fetches
+    information about training approaches, periodization, common injuries,
+    and key performance metrics.
+
+    Args:
+        sport_name: Name of the sport (e.g., "rock climbing", "CrossFit", "rowing")
+        url: Optional direct URL to a training resource for this sport
+
+    Returns:
+        JSON with training principles, typical periodization, common injuries,
+        and key metrics for this sport.
+
+    Usage:
+        research_sport("rock climbing")
+        research_sport("CrossFit", url="https://example.com/crossfit-training")
+    """
+    import requests
+    import re
+
+    try:
+        research_result = {
+            "sport": sport_name,
+            "researched_info": {},
+            "sources": [],
+            "training_implications": [],
+        }
+
+        # Format sport name for Wikipedia URL
+        sport_url_name = sport_name.replace(' ', '_').title()
+
+        # Build list of URLs to try
+        if url:
+            search_sources = [{"name": "Provided URL", "url": url, "type": "direct"}]
+        else:
+            search_sources = []
+
+        # Add Wikipedia as primary source
+        search_sources.extend([
+            {
+                "name": "Wikipedia",
+                "url": f"https://en.wikipedia.org/wiki/{sport_url_name}",
+                "type": "general"
+            },
+            # Try with "_training" suffix for training-specific articles
+            {
+                "name": "Wikipedia Training",
+                "url": f"https://en.wikipedia.org/wiki/{sport_url_name}_training",
+                "type": "training"
+            },
+        ])
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        # HTML text extractor
+        from html.parser import HTMLParser
+        from io import StringIO
+
+        class HTMLStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.reset()
+                self.strict = False
+                self.convert_charrefs = True
+                self.text = StringIO()
+                self.skip = False
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = True
+
+            def handle_endtag(self, tag):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = False
+
+            def handle_data(self, data):
+                if not self.skip:
+                    self.text.write(data + ' ')
+
+            def get_text(self):
+                return self.text.getvalue()
+
+        # Try to fetch from sources
+        fetched_content = None
+        for source in search_sources:
+            try:
+                response = requests.get(
+                    source["url"],
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                    allow_redirects=True
+                )
+                if response.status_code == 200:
+                    stripper = HTMLStripper()
+                    stripper.feed(response.text)
+                    content = stripper.get_text()[:PAGE_TEXT_MAX_CHARS]
+
+                    # Check if we got meaningful sport/training content
+                    content_lower = content.lower()
+                    sport_indicators = ['training', 'competition', 'athlete', 'technique', 'performance', 'exercise', 'strength', 'endurance']
+                    has_sport_content = any(ind in content_lower for ind in sport_indicators)
+
+                    if len(content) > 500 and has_sport_content:
+                        fetched_content = content
+                        research_result["sources"].append(response.url)
+                        break
+            except Exception:
+                continue
+
+        # Extract relevant information from fetched content
+        if fetched_content:
+            content_lower = fetched_content.lower()
+            sentences = re.split(r'[.!?]+', fetched_content)
+
+            # Keywords for different aspects of sport training
+            training_keywords = ["training", "workout", "practice", "conditioning", "preparation"]
+            periodization_keywords = ["season", "off-season", "peak", "competition", "periodization", "cycle", "phase"]
+            injury_keywords = ["injury", "injuries", "strain", "overuse", "prevention", "risk"]
+            strength_keywords = ["strength", "power", "muscle", "resistance", "weight"]
+            endurance_keywords = ["endurance", "aerobic", "cardio", "stamina", "cardiovascular"]
+            technique_keywords = ["technique", "skill", "form", "mechanics", "coordination"]
+
+            training_findings = []
+            periodization_findings = []
+            injury_findings = []
+            physical_demands = []
+            technique_findings = []
+
+            for sentence in sentences:
+                sentence_clean = sentence.strip()
+                sentence_lower = sentence_clean.lower()
+                if len(sentence_clean) > 30:  # Skip very short fragments
+                    if any(kw in sentence_lower for kw in training_keywords):
+                        training_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in periodization_keywords):
+                        periodization_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in injury_keywords):
+                        injury_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in strength_keywords + endurance_keywords):
+                        physical_demands.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in technique_keywords):
+                        technique_findings.append(sentence_clean)
+
+            research_result["researched_info"] = {
+                "training_approaches": training_findings[:5] if training_findings else [f"Research specific training protocols for {sport_name}"],
+                "periodization": periodization_findings[:3] if periodization_findings else ["Periodization varies by competition schedule"],
+                "common_injuries": injury_findings[:4] if injury_findings else [f"Research common {sport_name} injuries for prevention planning"],
+                "physical_demands": physical_demands[:4] if physical_demands else ["Assess physical demands through athlete interview"],
+                "technique_notes": technique_findings[:3] if technique_findings else ["Technical development is sport-specific"],
+            }
+
+            # Generate training implications for the coach
+            implications = []
+            if any("endurance" in s.lower() for s in physical_demands):
+                implications.append("Include aerobic base building in training")
+            if any("strength" in s.lower() or "power" in s.lower() for s in physical_demands):
+                implications.append("Strength training is important for this sport")
+            if any("technique" in s.lower() or "skill" in s.lower() for s in technique_findings):
+                implications.append("Allocate time for sport-specific skill work")
+            if injury_findings:
+                implications.append("Plan injury prevention work based on common injury patterns")
+
+            research_result["training_implications"] = implications if implications else [
+                f"Gather more specific information about {sport_name} training requirements from the athlete"
+            ]
+
+            research_result["content_preview"] = fetched_content[:1500]
+
+        else:
+            # Couldn't fetch - provide guidance
+            research_result["researched_info"] = {
+                "note": f"Unable to fetch research for '{sport_name}'. Gather info via athlete interview:",
+                "questions_to_ask": [
+                    f"What does a typical {sport_name} training week look like?",
+                    "What are the main physical demands of the sport?",
+                    "What injuries are common in this sport?",
+                    "What does your competition schedule look like?",
+                    "What does peak performance look like vs off-season?"
+                ]
+            }
+
+        return json.dumps(research_result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def research_exercise(exercise_name: str, url: str = None) -> str:
+    """
+    Research proper form, muscles worked, and progressions for an exercise.
+
+    Use when building strength programs or finding injury-safe alternatives.
+
+    Args:
+        exercise_name: Name of the exercise (e.g., "deadlift", "turkish get-up")
+        url: Optional direct URL to an exercise guide
+
+    Returns:
+        JSON with proper form cues, muscles targeted, common mistakes,
+        progressions, and alternative exercises.
+    """
+    import requests
+    import re
+
+    try:
+        research_result = {
+            "exercise": exercise_name,
+            "researched_info": {},
+            "sources": [],
+        }
+
+        # Format exercise name for URL
+        exercise_url_name = exercise_name.replace(' ', '_').lower()
+
+        # Build list of URLs to try
+        if url:
+            search_sources = [{"name": "Provided URL", "url": url, "type": "direct"}]
+        else:
+            search_sources = []
+
+        # Add Wikipedia as source
+        search_sources.extend([
+            {
+                "name": "Wikipedia",
+                "url": f"https://en.wikipedia.org/wiki/{exercise_url_name}",
+                "type": "general"
+            },
+            {
+                "name": "Wikipedia Exercise",
+                "url": f"https://en.wikipedia.org/wiki/{exercise_url_name}_(exercise)",
+                "type": "exercise"
+            },
+        ])
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        # HTML text extractor
+        from html.parser import HTMLParser
+        from io import StringIO
+
+        class HTMLStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.reset()
+                self.strict = False
+                self.convert_charrefs = True
+                self.text = StringIO()
+                self.skip = False
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = True
+
+            def handle_endtag(self, tag):
+                if tag in ('script', 'style', 'nav', 'footer', 'header', 'aside'):
+                    self.skip = False
+
+            def handle_data(self, data):
+                if not self.skip:
+                    self.text.write(data + ' ')
+
+            def get_text(self):
+                return self.text.getvalue()
+
+        # Try to fetch from sources
+        fetched_content = None
+        for source in search_sources:
+            try:
+                response = requests.get(
+                    source["url"],
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                    allow_redirects=True
+                )
+                if response.status_code == 200:
+                    stripper = HTMLStripper()
+                    stripper.feed(response.text)
+                    content = stripper.get_text()[:PAGE_TEXT_MAX_CHARS]
+
+                    # Check if we got meaningful exercise content
+                    content_lower = content.lower()
+                    exercise_indicators = ['muscle', 'exercise', 'movement', 'form', 'technique', 'strength', 'weight']
+                    has_exercise_content = any(ind in content_lower for ind in exercise_indicators)
+
+                    if len(content) > 300 and has_exercise_content:
+                        fetched_content = content
+                        research_result["sources"].append(response.url)
+                        break
+            except Exception:
+                continue
+
+        # Extract relevant information
+        if fetched_content:
+            sentences = re.split(r'[.!?]+', fetched_content)
+
+            muscle_keywords = ["muscle", "muscles", "works", "targets", "activates", "engages"]
+            form_keywords = ["form", "technique", "position", "stance", "grip", "posture"]
+            safety_keywords = ["avoid", "mistake", "common error", "injury", "safety", "caution"]
+            variation_keywords = ["variation", "alternative", "progression", "modification", "regression"]
+
+            muscle_findings = []
+            form_findings = []
+            safety_findings = []
+            variation_findings = []
+
+            for sentence in sentences:
+                sentence_clean = sentence.strip()
+                sentence_lower = sentence_clean.lower()
+                if len(sentence_clean) > 25:
+                    if any(kw in sentence_lower for kw in muscle_keywords):
+                        muscle_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in form_keywords):
+                        form_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in safety_keywords):
+                        safety_findings.append(sentence_clean)
+                    if any(kw in sentence_lower for kw in variation_keywords):
+                        variation_findings.append(sentence_clean)
+
+            research_result["researched_info"] = {
+                "muscles_worked": muscle_findings[:4] if muscle_findings else [f"Research primary and secondary muscles for {exercise_name}"],
+                "form_cues": form_findings[:4] if form_findings else ["Focus on controlled movement through full range of motion"],
+                "safety_notes": safety_findings[:3] if safety_findings else ["Start light, master form before adding load"],
+                "variations": variation_findings[:3] if variation_findings else [f"Explore progressions and regressions for {exercise_name}"],
+            }
+
+            research_result["content_preview"] = fetched_content[:1000]
+
+        else:
+            research_result["researched_info"] = {
+                "note": f"Unable to fetch research for '{exercise_name}'.",
+                "recommendations": [
+                    "Check exercise library with list_exercises() for Garmin-supported exercises",
+                    "Ask athlete to demonstrate current technique",
+                    f"Search for '{exercise_name} proper form' for detailed guides"
+                ]
+            }
+
+        return json.dumps(research_result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 if __name__ == "__main__":

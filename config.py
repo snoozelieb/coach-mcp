@@ -37,6 +37,9 @@ HTTP_TIMEOUT_SECONDS = 15
 PROFILE_HISTORY_DAYS = 180
 RECENT_ACTIVITY_DAYS = 35  # 5 weeks to view current week within 4-week block context
 
+# Planning windows (days)
+RACE_TEMPLATE_WINDOW_DAYS = 56  # 8 weeks - races within this window get template guidance
+
 # Web scraping limits
 PAGE_TEXT_MAX_CHARS = 8000
 ELEVATION_SIGNIFICANCE_THRESHOLD = 1000

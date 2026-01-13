@@ -1,9 +1,64 @@
 {
-  "pillars": {
+  "default_pillar_templates": {
+    "_note": "Legacy format - used as fallback if athlete has no training_pillars",
     "strength_sessions_per_week": 2,
     "mobility_minutes_per_week": 90,
     "long_effort_per_week": 1,
     "long_effort_min_duration_mins": 60
+  },
+  "personas": {
+    "_description": "Starting templates for different athlete types. LLM uses these as suggestions, then personalizes via conversation.",
+    "endurance_athlete": {
+      "description": "Runner, cyclist, triathlete, swimmer - focused on aerobic events and distance",
+      "suggested_pillars": [
+        {"name": "endurance", "target_hours_per_week": 4, "target_type": "hours", "types": ["running", "cycling", "swimming", "trail_running"]},
+        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training", "functional_strength"]},
+        {"name": "mobility", "target_mins_per_week": 60, "target_type": "minutes", "types": ["yoga", "pilates", "stretching"]}
+      ],
+      "typical_weekly_hours": "6-10",
+      "key_focus": "Aerobic base, injury prevention, event-specific preparation"
+    },
+    "strength_athlete": {
+      "description": "Powerlifter, bodybuilder, CrossFitter - focused on strength and muscle",
+      "suggested_pillars": [
+        {"name": "strength", "target_sessions_per_week": 4, "target_type": "sessions", "types": ["strength_training", "powerlifting", "bodybuilding"]},
+        {"name": "conditioning", "target_mins_per_week": 60, "target_type": "minutes", "types": ["rowing", "cycling", "walking"]},
+        {"name": "mobility", "target_mins_per_week": 45, "target_type": "minutes", "types": ["stretching", "foam_rolling"]}
+      ],
+      "typical_weekly_hours": "5-8",
+      "key_focus": "Progressive overload, recovery, nutrition timing"
+    },
+    "recreational": {
+      "description": "General fitness, health maintenance, stress relief - no specific events",
+      "suggested_pillars": [
+        {"name": "cardio", "target_mins_per_week": 150, "target_type": "minutes", "types": ["any_cardio"]},
+        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]},
+        {"name": "flexibility", "target_mins_per_week": 30, "target_type": "minutes", "types": ["yoga", "stretching"]}
+      ],
+      "typical_weekly_hours": "3-5",
+      "key_focus": "Consistency, enjoyment, sustainable habits"
+    },
+    "return_from_injury": {
+      "description": "Recovering from injury - conservative progression, focus on rehab",
+      "suggested_pillars": [
+        {"name": "rehab", "target_sessions_per_week": 3, "target_type": "sessions", "types": ["physio_exercises", "mobility"]},
+        {"name": "low_impact_cardio", "target_mins_per_week": 90, "target_type": "minutes", "types": ["swimming", "cycling", "walking"]},
+        {"name": "strength", "target_sessions_per_week": 1, "target_type": "sessions", "types": ["strength_training"]}
+      ],
+      "typical_weekly_hours": "3-4",
+      "key_focus": "Safe progression, pain-free movement, building back capacity"
+    },
+    "multi_sport": {
+      "description": "Multiple sports/activities - balancing competing demands",
+      "suggested_pillars": [
+        {"name": "primary_sport", "target_hours_per_week": 3, "target_type": "hours", "types": ["ask_athlete"]},
+        {"name": "secondary_sport", "target_hours_per_week": 2, "target_type": "hours", "types": ["ask_athlete"]},
+        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]},
+        {"name": "mobility", "target_mins_per_week": 45, "target_type": "minutes", "types": ["yoga", "stretching"]}
+      ],
+      "typical_weekly_hours": "6-10",
+      "key_focus": "Balance, avoiding overtraining, sport-specific strength"
+    }
   },
   "safety_constraints": {
     "max_consecutive_hard_days": 2,
@@ -133,5 +188,62 @@
     "mobility_types": ["yoga", "pilates", "stretching", "breathwork"],
     "cardio_types": ["running", "cycling", "swimming", "trail_running", "open_water_swimming"],
     "high_intensity_types": ["ultimate_disc", "hiit", "interval_training", "track_running"]
+  },
+  "recovery_protocols": {
+    "pre_sleep_stretching": {
+      "description": "10-15 min targeted stretching before bed after long efforts. Focus: parasympathetic activation for better sleep quality.",
+      "principles": [
+        "Slow, gentle holds (30-60 secs) - no bouncing",
+        "Deep diaphragmatic breathing throughout",
+        "Avoid stimulating stretches (deep backbends, inversions)",
+        "Dim lights, quiet environment"
+      ],
+      "by_activity": {
+        "cycling": {
+          "duration_mins": 12,
+          "target_areas": ["hip_flexors", "quads", "lower_back", "thoracic_spine", "neck"],
+          "suggested_sequence": [
+            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side - hip external rotators"},
+            {"name": "Kneeling hip flexor stretch", "duration_secs": 60, "notes": "Each side - counteract cycling position"},
+            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side - thoracic mobility"},
+            {"name": "Cat-cow", "duration_secs": 90, "notes": "Slow, breath-led - lower back release"},
+            {"name": "Child's pose with reach", "duration_secs": 90, "notes": "Extended arms - lat and shoulder release"},
+            {"name": "Neck rolls", "duration_secs": 60, "notes": "Gentle - release from aero position"}
+          ],
+          "rationale": "Cycling creates hip flexor tightness, thoracic kyphosis, and neck strain. Focus on opening front body and releasing spine."
+        },
+        "running": {
+          "duration_mins": 12,
+          "target_areas": ["calves", "hamstrings", "hip_flexors", "glutes", "lower_back"],
+          "suggested_sequence": [
+            {"name": "Supine hamstring stretch", "duration_secs": 60, "notes": "Each leg - use strap if needed"},
+            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side - piriformis release"},
+            {"name": "Kneeling hip flexor stretch", "duration_secs": 60, "notes": "Each side"},
+            {"name": "Wall calf stretch", "duration_secs": 60, "notes": "Each leg - gastroc and soleus"},
+            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side"},
+            {"name": "Legs up the wall", "duration_secs": 120, "notes": "Passive recovery - venous return"}
+          ],
+          "rationale": "Running impacts posterior chain and hip flexors. Focus on calves, hamstrings, and hip opening."
+        },
+        "high_intensity": {
+          "duration_mins": 15,
+          "target_areas": ["full_body", "nervous_system"],
+          "suggested_sequence": [
+            {"name": "Child's pose", "duration_secs": 90, "notes": "With deep breathing - nervous system reset"},
+            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side"},
+            {"name": "Supine hamstring stretch", "duration_secs": 60, "notes": "Each leg"},
+            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side"},
+            {"name": "Happy baby", "duration_secs": 60, "notes": "Gentle rocking - hip release"},
+            {"name": "Savasana with 4-7-8 breathing", "duration_secs": 180, "notes": "Inhale 4, hold 7, exhale 8 - parasympathetic activation"}
+          ],
+          "rationale": "High-intensity creates systemic stress. Focus on calming nervous system with longer holds and breathing."
+        }
+      },
+      "ask_athlete": [
+        "Any specific areas feeling tight tonight?",
+        "How intense was the session (RPE)?",
+        "Any areas to avoid due to injury?"
+      ]
+    }
   }
 }
