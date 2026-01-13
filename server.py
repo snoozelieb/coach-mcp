@@ -457,6 +457,267 @@ def get_load_status() -> str:
 
 
 @mcp.tool()
+def get_fitness_status(days: int = 90) -> str:
+    """
+    Get comprehensive fitness status with CTL, ATL, TSB, and ACWR.
+
+    Science-based metrics for training load management:
+    - CTL (Chronic Training Load): Your fitness level (42-day weighted average)
+    - ATL (Acute Training Load): Your fatigue level (7-day weighted average)
+    - TSB (Training Stress Balance): Your form (CTL - ATL). Positive = fresh, negative = fatigued
+    - ACWR (Acute:Chronic Workload Ratio): Injury risk indicator (0.8-1.3 is sweet spot)
+
+    Args:
+        days: Number of days to analyze for trend (default 90)
+
+    Returns:
+        JSON with fitness metrics, trend analysis, and recommendations.
+
+    Use this to:
+    - Understand current fitness level relative to history
+    - Check if training load is in safe range (ACWR)
+    - See if fitness is building toward race goals
+    - Determine if athlete is fresh (positive TSB) or fatigued (negative TSB)
+    """
+    from fitness import (
+        load_fitness_history,
+        calculate_fitness_metrics,
+        get_fitness_trend,
+        get_load_athlete_max_hr,
+    )
+
+    try:
+        # Load fitness history
+        history = load_fitness_history()
+        daily_loads = history.get('daily_loads', {})
+
+        if not daily_loads:
+            return json.dumps({
+                'status': 'no_data',
+                'message': 'No fitness history. Run refresh_fitness_history() to backfill from Garmin.',
+                'action': 'Call refresh_fitness_history() first',
+            })
+
+        # Calculate current metrics
+        metrics = calculate_fitness_metrics(daily_loads)
+
+        # Get trend
+        trend = get_fitness_trend(days)
+
+        # Generate coaching insights
+        insights = []
+        recommendations = []
+
+        # CTL insights
+        if metrics['ctl'] < 20:
+            insights.append("Low chronic load - still building base fitness")
+        elif metrics['ctl'] < 40:
+            insights.append("Moderate fitness base established")
+        else:
+            insights.append(f"Good fitness foundation (CTL: {metrics['ctl']})")
+
+        # TSB insights
+        if metrics['tsb'] > 15:
+            insights.append("Very fresh - may be losing fitness if rest continues")
+            recommendations.append("Good time for a key session or test")
+        elif metrics['tsb'] > 0:
+            insights.append("Fresh and ready to perform")
+            recommendations.append("Good form for quality sessions")
+        elif metrics['tsb'] > -15:
+            insights.append("Slightly fatigued but functional")
+            recommendations.append("Normal training can continue")
+        elif metrics['tsb'] > -30:
+            insights.append("Fatigued - accumulating training stress")
+            recommendations.append("Monitor recovery, consider easier day soon")
+        else:
+            insights.append("Heavily fatigued - deep in training block")
+            recommendations.append("Recovery day needed to absorb training")
+
+        # ACWR insights
+        if metrics['acwr_status'] == 'optimal':
+            insights.append("Training load in sweet spot (ACWR 0.8-1.3)")
+        elif metrics['acwr_status'] == 'low':
+            recommendations.append("Load is low - safe to increase training")
+        elif metrics['acwr_status'] == 'elevated':
+            recommendations.append("Load spike detected - be cautious with intensity")
+        elif metrics['acwr_status'] == 'danger':
+            recommendations.append("HIGH INJURY RISK - reduce load immediately")
+
+        # Trend insights
+        if trend['trend'] == 'building':
+            insights.append(f"Fitness building (+{trend['ctl_change']} over {trend['period_days']} days)")
+        elif trend['trend'] == 'declining':
+            insights.append(f"Fitness declining ({trend['ctl_change']} over {trend['period_days']} days)")
+            recommendations.append("Consider if this is intentional (taper) or concerning")
+
+        return json.dumps({
+            'metrics': {
+                'ctl': metrics['ctl'],
+                'ctl_label': 'Chronic Training Load (Fitness)',
+                'atl': metrics['atl'],
+                'atl_label': 'Acute Training Load (Fatigue)',
+                'tsb': metrics['tsb'],
+                'tsb_label': 'Training Stress Balance (Form)',
+                'acwr': metrics['acwr'],
+                'acwr_status': metrics['acwr_status'],
+                'acwr_label': 'Acute:Chronic Workload Ratio',
+            },
+            'trend': {
+                'direction': trend['trend'],
+                'ctl_change': trend.get('ctl_change', 0),
+                'projected_ctl_30_days': trend.get('projected_ctl_30_days'),
+                'period_days': trend.get('period_days', days),
+            },
+            'data_quality': {
+                'days_with_data': metrics['days_with_data'],
+                'data_sufficient': metrics['data_sufficient'],
+                'as_of_date': metrics['as_of_date'],
+            },
+            'insights': insights,
+            'recommendations': recommendations,
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def refresh_fitness_history(days: int = 180) -> str:
+    """
+    Refresh fitness history by fetching activities from Garmin.
+
+    Calculates training load for each day and updates CTL/ATL history.
+    Run this periodically to keep fitness metrics current, or once with
+    a large window (365+) to backfill historical data.
+
+    Args:
+        days: Number of days to fetch (default 180, max recommended 365)
+
+    Returns:
+        JSON with summary of updated data and current fitness metrics.
+    """
+    from fitness import (
+        update_fitness_history,
+        calculate_fitness_metrics,
+        get_load_athlete_max_hr,
+    )
+
+    try:
+        client = get_garmin_client()
+        today = date.today()
+        start = (today - timedelta(days=days)).isoformat()
+
+        # Fetch activities from Garmin
+        raw_activities = client.get_activities_by_date(start, today.isoformat())
+
+        if not raw_activities:
+            return json.dumps({
+                'status': 'no_activities',
+                'message': f'No activities found in last {days} days',
+            })
+
+        # Parse activities
+        activities = parse_activities(raw_activities)
+
+        # Get athlete's max HR for load calculation
+        max_hr = get_load_athlete_max_hr()
+
+        # Update fitness history
+        history = update_fitness_history(activities, max_hr)
+
+        # Calculate current metrics
+        metrics = calculate_fitness_metrics(history.get('daily_loads', {}))
+
+        return json.dumps({
+            'status': 'success',
+            'activities_processed': len(activities),
+            'days_with_load': len(history.get('daily_loads', {})),
+            'period': f'{start} to {today.isoformat()}',
+            'current_metrics': {
+                'ctl': metrics['ctl'],
+                'atl': metrics['atl'],
+                'tsb': metrics['tsb'],
+                'acwr': metrics['acwr'],
+                'acwr_status': metrics['acwr_status'],
+            },
+            'note': 'Fitness history updated. Use get_fitness_status() for detailed analysis.',
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_intensity_distribution(days: int = 28) -> str:
+    """
+    Analyze training intensity distribution over a period.
+
+    Checks compliance with the Norwegian 80/20 polarized model:
+    - 80% low intensity (Zone 1-2: easy/aerobic)
+    - 15% moderate intensity (Zone 3: tempo)
+    - 5% high intensity (Zone 4-5: threshold/VO2max)
+
+    Args:
+        days: Number of days to analyze (default 28 for monthly view)
+
+    Returns:
+        JSON with zone distribution, polarization score, and recommendations.
+
+    Use this to:
+    - Check if training is properly polarized
+    - Identify if too much time in "gray zone" (moderate)
+    - Plan intensity for upcoming sessions
+    """
+    from fitness import calculate_intensity_distribution, get_athlete_hr_zones
+
+    try:
+        client = get_garmin_client()
+        today = date.today()
+        start = (today - timedelta(days=days)).isoformat()
+
+        # Fetch activities
+        raw_activities = client.get_activities_by_date(start, today.isoformat())
+
+        if not raw_activities:
+            return json.dumps({
+                'status': 'no_activities',
+                'message': f'No activities found in last {days} days',
+                'period': f'{start} to {today.isoformat()}',
+            })
+
+        # Parse activities
+        activities = parse_activities(raw_activities)
+
+        # Get HR zones
+        hr_zones = get_athlete_hr_zones()
+
+        # Calculate distribution
+        distribution = calculate_intensity_distribution(activities, hr_zones)
+
+        # Add period info
+        distribution['period'] = {
+            'start': start,
+            'end': today.isoformat(),
+            'days': days,
+            'activities_count': len(activities),
+        }
+
+        # Add coaching context
+        zone_dist = distribution.get('zone_distribution', {})
+        low_pct = zone_dist.get('low_z1_z2_pct', 0)
+
+        if low_pct < 70:
+            distribution['warning'] = "Training too intense - risk of overtraining and injury"
+        elif low_pct > 90 and days > 14:
+            distribution['note'] = "Very conservative training - safe but may limit fitness gains"
+
+        return json.dumps(distribution, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_personal_records() -> str:
     """
     Fetches personal records (PBs) from Garmin.
@@ -1239,6 +1500,423 @@ def get_planning_context() -> str:
         }
 
         return json.dumps(context, indent=2, default=str)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_periodization_status() -> str:
+    """
+    Get current position in the season periodization plan.
+
+    Shows:
+    - Current phase and week within phase
+    - Days/weeks until A-race
+    - Remaining phases before race
+    - Current vs target fitness trajectory
+    - Phase-specific guidance (key sessions, intensity targets)
+
+    Use this to understand WHERE we are in the season and WHAT the
+    current phase demands. The LLM can then adapt weekly plans accordingly.
+    """
+    from fitness import load_fitness_history, calculate_fitness_metrics
+
+    try:
+        today = date.today()
+        config = load_training_config()
+
+        periodization = config.get('periodization', {})
+        current_block = config.get('current_block', {})
+        events = config.get('events', [])
+
+        # Find A-race
+        a_race = None
+        for event in events:
+            if event.get('priority') == 'A':
+                try:
+                    race_date = date.fromisoformat(event.get('date', ''))
+                    if race_date > today:
+                        a_race = {
+                            'name': event.get('name'),
+                            'date': event.get('date'),
+                            'days_until': (race_date - today).days,
+                            'weeks_until': (race_date - today).days // 7,
+                            'type': event.get('type'),
+                        }
+                        break
+                except ValueError:
+                    continue
+
+        # Current phase info
+        current_phase = periodization.get('current_phase', current_block.get('phase', 'unknown'))
+        phases = periodization.get('phases', {})
+        phase_info = phases.get(current_phase, {})
+
+        # Calculate week within phase
+        phase_start = periodization.get('phase_start', current_block.get('start_date'))
+        if phase_start:
+            try:
+                start = date.fromisoformat(phase_start)
+                weeks_in_phase = (today - start).days // 7 + 1
+            except ValueError:
+                weeks_in_phase = 1
+        else:
+            weeks_in_phase = 1
+
+        typical_weeks = phase_info.get('typical_weeks', 4)
+
+        # Get fitness status if available
+        fitness_metrics = None
+        try:
+            history = load_fitness_history()
+            daily_loads = history.get('daily_loads', {})
+            if daily_loads:
+                fitness_metrics = calculate_fitness_metrics(daily_loads)
+        except Exception:
+            pass
+
+        # Build remaining phases
+        phase_order = ['base', 'build', 'peak', 'taper']
+        remaining_phases = []
+        found_current = False
+        for phase in phase_order:
+            if phase == current_phase:
+                found_current = True
+                # Add remaining weeks of current phase
+                remaining_weeks = max(0, typical_weeks - weeks_in_phase)
+                if remaining_weeks > 0:
+                    remaining_phases.append({
+                        'phase': phase,
+                        'weeks': remaining_weeks,
+                        'status': 'current',
+                    })
+            elif found_current and phase in phases:
+                remaining_phases.append({
+                    'phase': phase,
+                    'weeks': phases[phase].get('typical_weeks', 4),
+                    'status': 'upcoming',
+                })
+
+        # Phase-specific guidance
+        guidance = {
+            'focus': phase_info.get('focus', 'General training'),
+            'intensity_distribution': phase_info.get('intensity_distribution', {}),
+            'volume_trend': phase_info.get('volume_trend', 'stable'),
+            'key_sessions': phase_info.get('key_sessions', []),
+        }
+
+        result = {
+            'current_phase': {
+                'name': current_phase,
+                'week': weeks_in_phase,
+                'of_weeks': typical_weeks,
+                'progress_pct': round(weeks_in_phase / typical_weeks * 100) if typical_weeks > 0 else 0,
+            },
+            'a_race': a_race,
+            'remaining_phases': remaining_phases,
+            'phase_guidance': guidance,
+            'weekly_volume_target_hrs': current_block.get('weekly_volume_target_hrs'),
+        }
+
+        if fitness_metrics:
+            result['fitness_status'] = {
+                'ctl': fitness_metrics['ctl'],
+                'tsb': fitness_metrics['tsb'],
+                'acwr': fitness_metrics['acwr'],
+                'acwr_status': fitness_metrics['acwr_status'],
+            }
+
+        # Add coaching notes based on phase
+        notes = []
+        if current_phase == 'base':
+            notes.append("Focus on volume over intensity. Build aerobic foundation.")
+            notes.append("Strength work is critical now - easier to build when load is lower.")
+        elif current_phase == 'build':
+            notes.append("Add race-specific intensity. Maintain (don't increase) volume.")
+            notes.append("Start practicing race nutrition and pacing strategies.")
+        elif current_phase == 'peak':
+            notes.append("Race simulation efforts. Start reducing volume.")
+            notes.append("Confidence-building sessions - you're ready.")
+        elif current_phase == 'taper':
+            notes.append("Sharp volume reduction. Maintain short sharp efforts.")
+            notes.append("Trust your fitness. Rest is training now.")
+
+        if a_race and a_race['days_until'] < 14:
+            notes.append(f"RACE WEEK APPROACHING: {a_race['days_until']} days to {a_race['name']}")
+
+        result['coaching_notes'] = notes
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_weekly_prescription() -> str:
+    """
+    Get this week's training prescription based on periodization and fitness.
+
+    Combines:
+    - Current phase demands (from periodization)
+    - Current fitness status (CTL, ACWR, TSB)
+    - Recovery status (Garmin readiness)
+    - Pillar compliance (what's behind?)
+
+    Returns a PRESCRIPTION that the LLM can adapt based on conversation
+    with the athlete. This is the bridge between block planning and daily execution.
+
+    The prescription includes:
+    - Target volume for the week
+    - Number and type of key sessions
+    - Intensity distribution targets
+    - Flexibility notes (what can be moved/swapped)
+    - Constraints (injuries, life events)
+    """
+    from fitness import load_fitness_history, calculate_fitness_metrics
+
+    try:
+        today = date.today()
+        client = get_garmin_client()
+
+        # Load all context
+        config = load_training_config()
+        athlete = load_athlete()
+        periodization = config.get('periodization', {})
+        current_block = config.get('current_block', {})
+
+        # Get current phase info
+        current_phase = periodization.get('current_phase', current_block.get('phase', 'base'))
+        phases = periodization.get('phases', {})
+        phase_info = phases.get(current_phase, {})
+
+        # Get fitness metrics
+        fitness_metrics = None
+        try:
+            history = load_fitness_history()
+            daily_loads = history.get('daily_loads', {})
+            if daily_loads:
+                fitness_metrics = calculate_fitness_metrics(daily_loads)
+        except Exception:
+            pass
+
+        # Get today's readiness
+        readiness_data = client.get_training_readiness(today.isoformat())
+        readiness = parse_training_readiness(readiness_data)
+
+        # Get recent compliance
+        start_7_days = today - timedelta(days=7)
+        raw_activities = client.get_activities_by_date(
+            start_7_days.isoformat(),
+            today.isoformat()
+        )
+        recent_activities = parse_activities(raw_activities)
+        compliance = check_weekly_compliance(recent_activities)
+
+        # Calculate prescribed volume
+        base_volume_hrs = current_block.get('weekly_volume_target_hrs', 6.0)
+        volume_trend = phase_info.get('volume_trend', 'stable')
+
+        # Adjust volume based on ACWR if available
+        if fitness_metrics:
+            acwr = fitness_metrics['acwr']
+            if acwr > 1.3:
+                volume_adjustment = 0.85  # Reduce 15% if overloaded
+                volume_note = "Reduced due to elevated ACWR"
+            elif acwr < 0.8:
+                volume_adjustment = 1.10  # Can increase 10% if undertrained
+                volume_note = "Safe to push - load ratio is low"
+            else:
+                volume_adjustment = 1.0
+                volume_note = "Load ratio in sweet spot"
+        else:
+            volume_adjustment = 1.0
+            volume_note = "No fitness history - using base target"
+
+        prescribed_volume_hrs = round(base_volume_hrs * volume_adjustment, 1)
+
+        # Get intensity targets from phase
+        intensity_targets = phase_info.get('intensity_distribution', {
+            'z1_z2_pct': 80,
+            'z3_pct': 15,
+            'z4_z5_pct': 5,
+        })
+
+        # Get key sessions for this phase
+        key_sessions = phase_info.get('key_sessions', ['long_effort', 'strength'])
+
+        # Check what pillars need attention
+        pillar_priorities = []
+        if not compliance.get('strength', {}).get('compliant', True):
+            deficit = compliance.get('strength', {}).get('deficit', 0)
+            pillar_priorities.append(f"Strength: {deficit} session(s) behind")
+        if not compliance.get('mobility', {}).get('compliant', True):
+            deficit = compliance.get('mobility', {}).get('deficit', 0)
+            pillar_priorities.append(f"Mobility: {deficit} mins behind")
+
+        # Check for active injuries
+        injury_constraints = []
+        injuries = athlete.get('injury_history', [])
+        for injury in injuries:
+            if injury.get('status') == 'active':
+                restricted = injury.get('restricted_activities', [])
+                injury_constraints.append({
+                    'injury': injury.get('type', 'Unknown'),
+                    'restricted': restricted,
+                    'safe': injury.get('safe_activities', []),
+                })
+
+        # Check for life events this week
+        life_events = []
+        constraints = athlete.get('life_constraints', {})
+        travel = constraints.get('travel', [])
+        for trip in travel:
+            try:
+                trip_date = date.fromisoformat(trip.get('date', ''))
+                trip_end = date.fromisoformat(trip.get('end_date', trip.get('date', '')))
+                # Check if trip overlaps with this week
+                week_end = today + timedelta(days=7)
+                if trip_date <= week_end and trip_end >= today:
+                    life_events.append({
+                        'event': trip.get('type', 'travel'),
+                        'dates': f"{trip.get('date')} to {trip.get('end_date', trip.get('date'))}",
+                        'notes': trip.get('notes'),
+                    })
+            except ValueError:
+                continue
+
+        # Build prescription
+        prescription = {
+            'volume': {
+                'target_hrs': prescribed_volume_hrs,
+                'base_target_hrs': base_volume_hrs,
+                'adjustment': volume_adjustment,
+                'adjustment_reason': volume_note,
+            },
+            'intensity': {
+                'targets': intensity_targets,
+                'note': f"Phase: {current_phase} - {phase_info.get('focus', 'General')}",
+            },
+            'key_sessions': {
+                'required': key_sessions,
+                'count': len([k for k in key_sessions if k not in ['mobility', 'rest']]),
+                'note': "These sessions drive adaptation - prioritize them",
+            },
+            'pillar_priorities': pillar_priorities if pillar_priorities else ["All pillars on track"],
+            'constraints': {
+                'injuries': injury_constraints,
+                'life_events': life_events,
+            },
+            'readiness': {
+                'score': readiness.get('score'),
+                'level': readiness.get('level'),
+                'recommendation': 'Rest or easy' if readiness.get('score', 50) < 40 else 'Normal training',
+            },
+            'flexibility': {
+                'swappable': "Long efforts can move within week based on weather/life",
+                'fixed': "Strength days benefit from consistency (same days each week)",
+                'note': "Adapt the plan through conversation - this is guidance, not law",
+            },
+        }
+
+        if fitness_metrics:
+            prescription['current_fitness'] = {
+                'ctl': fitness_metrics['ctl'],
+                'tsb': fitness_metrics['tsb'],
+                'form_status': 'Fresh' if fitness_metrics['tsb'] > 0 else 'Fatigued',
+            }
+
+        return json.dumps(prescription, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def update_phase(new_phase: str, notes: str = None) -> str:
+    """
+    Transition to a new training phase.
+
+    Use this when the athlete is ready to move to the next phase of their
+    periodization plan. This is a significant coaching decision.
+
+    Args:
+        new_phase: The phase to transition to (base, build, peak, taper)
+        notes: Optional notes about why the transition is happening
+
+    Returns:
+        Confirmation with updated phase information.
+    """
+    valid_phases = ['base', 'build', 'peak', 'taper', 'recovery', 'maintenance']
+
+    if new_phase.lower() not in valid_phases:
+        return json.dumps({
+            'error': f"Invalid phase '{new_phase}'. Valid phases: {valid_phases}"
+        })
+
+    try:
+        config_path = DATA_DIR / TRAINING_CONFIG_FILE
+        with open(config_path) as f:
+            config = json.load(f)
+
+        today = date.today()
+        old_phase = config.get('periodization', {}).get('current_phase', 'unknown')
+
+        # Update periodization
+        if 'periodization' not in config:
+            config['periodization'] = {}
+
+        config['periodization']['current_phase'] = new_phase.lower()
+        config['periodization']['phase_start'] = today.isoformat()
+
+        # Update current_block
+        if 'current_block' not in config:
+            config['current_block'] = {}
+
+        config['current_block']['phase'] = new_phase.lower()
+        config['current_block']['start_date'] = today.isoformat()
+
+        # Get phase-specific defaults
+        phases = config.get('periodization', {}).get('phases', {})
+        phase_info = phases.get(new_phase.lower(), {})
+
+        if phase_info:
+            config['current_block']['focus'] = phase_info.get('key_sessions', [])
+            config['current_block']['notes'] = phase_info.get('focus', f'{new_phase} phase')
+
+        # Save
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        # Log the decision
+        try:
+            from planner import load_coaching_log, save_coaching_log
+            log = load_coaching_log()
+            if 'decisions' not in log:
+                log['decisions'] = []
+            log['decisions'].append({
+                'id': f"phase_{today.isoformat()}",
+                'date': today.isoformat(),
+                'type': 'phase_transition',
+                'decision': f"Transitioned from {old_phase} to {new_phase}",
+                'rationale': notes or "Athlete ready for next phase",
+                'status': 'active',
+            })
+            save_coaching_log(log)
+        except Exception:
+            pass  # Non-critical
+
+        return json.dumps({
+            'status': 'success',
+            'transition': {
+                'from': old_phase,
+                'to': new_phase.lower(),
+                'date': today.isoformat(),
+            },
+            'phase_info': phase_info if phase_info else 'Custom phase - no template',
+            'notes': notes,
+        }, indent=2)
 
     except Exception as e:
         return json.dumps({'error': str(e)})

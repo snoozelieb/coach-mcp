@@ -18,6 +18,29 @@ METHODOLOGY_FILE = "methodology.json"
 WEEKLY_PLAN_FILE = "weekly_plan.json"
 SUGGESTIONS_FILE = "suggestions.json"
 COACHING_LOG_FILE = "coaching_log.json"
+FITNESS_HISTORY_FILE = "fitness_history.json"
+SEASON_PLAN_FILE = "season_plan.json"
+
+# Fitness tracking constants (based on TrainingPeaks/Firstbeat research)
+# CTL = Chronic Training Load (fitness) - 42-day time constant
+# ATL = Acute Training Load (fatigue) - 7-day time constant
+CTL_TIME_CONSTANT_DAYS = 42
+ATL_TIME_CONSTANT_DAYS = 7
+
+# ACWR (Acute:Chronic Workload Ratio) thresholds
+# Research shows 0.8-1.3 is the "sweet spot" for injury prevention
+ACWR_LOW_THRESHOLD = 0.8    # Below this = undertrained/deconditioned
+ACWR_HIGH_THRESHOLD = 1.3   # Above this = injury risk elevated
+ACWR_DANGER_THRESHOLD = 1.5 # Above this = high injury risk
+
+# Intensity distribution targets (Norwegian model: 80/20)
+INTENSITY_LOW_TARGET_PCT = 80      # Zone 1-2 (recovery + aerobic)
+INTENSITY_MODERATE_TARGET_PCT = 15 # Zone 3 (tempo)
+INTENSITY_HIGH_TARGET_PCT = 5      # Zone 4-5 (threshold + VO2max)
+
+# Minimum data requirements
+MIN_DAYS_FOR_CTL = 14      # Need at least 2 weeks for meaningful CTL
+MIN_DAYS_FOR_TRENDS = 28   # Need 4 weeks for trend analysis
 
 # Coaching decision types that require approval
 MAJOR_DECISION_TYPES = ['phase_transition', 'volume_change_major', 'goal_rebalance', 'skip_session']

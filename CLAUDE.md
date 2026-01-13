@@ -44,6 +44,53 @@ An **adaptive AI training coach** MCP server that:
 
 **Remember:** Athletes hire coaches because they DON'T know what's best. Your job is to know for them.
 
+## Science-Based Coaching Model
+
+The coach operates at multiple timeframes, adapting plans while keeping long-term goals in sight:
+
+```
+SEASON (months)           ← Where are we going?
+├── get_periodization_status()
+├── A-race target, phase sequence
+└── Fitness trajectory (CTL building toward race)
+
+BLOCK (4-8 weeks)         ← What phase are we in?
+├── Phase: base/build/peak/taper
+├── Intensity distribution targets (80/20)
+└── Volume trend (building/maintaining/reducing)
+
+WEEK                      ← What should this week look like?
+├── get_weekly_prescription()
+├── Volume target (adjusted for ACWR)
+├── Key sessions to prioritize
+└── Constraints (injuries, life events)
+
+DAY                       ← What should today look like?
+├── get_training_readiness()
+├── Adapt based on readiness score
+└── Conversation with athlete
+```
+
+**Key Principle: The conversation IS the coaching.** Tools provide data and structure. The LLM provides intelligence and adaptation. When life gets in the way, the coach adjusts while keeping the athlete on track for their goals.
+
+### Adaptive Coaching Flow
+
+1. **Start of week**: Call `get_weekly_prescription()` to understand targets
+2. **Daily check**: Call `get_training_readiness()` to see recovery status
+3. **Planning**: Build weekly plan based on prescription + readiness + athlete conversation
+4. **Adaptation**: When things change (missed session, feeling great/terrible), adjust
+5. **End of week**: Check compliance, update fitness history, plan next week
+
+### Load Management (Injury Prevention)
+
+Based on ACWR (Acute:Chronic Workload Ratio) research:
+- **0.8-1.3**: Sweet spot - safe to train normally
+- **< 0.8**: Undertrained - safe to increase load
+- **> 1.3**: Elevated risk - reduce intensity
+- **> 1.5**: High risk - mandatory load reduction
+
+The `get_fitness_status()` tool tracks this automatically and provides recommendations.
+
 ## Commands
 
 ```bash
@@ -89,6 +136,36 @@ python daily_loop.py --llm
 | Tool | Purpose | Returns |
 |------|---------|---------|
 | `get_compliance_report(days)` | Weekly pillar compliance | JSON with deficits |
+
+### Fitness Tracking Tools (Science-Based)
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_fitness_status(days)` | CTL, ATL, TSB, ACWR with trend analysis | JSON with metrics, insights |
+| `refresh_fitness_history(days)` | Backfill fitness history from Garmin | JSON summary |
+| `get_intensity_distribution(days)` | Zone distribution vs 80/20 target | JSON with polarization score |
+
+**Key Metrics:**
+- **CTL (Chronic Training Load)**: 42-day weighted fitness level
+- **ATL (Acute Training Load)**: 7-day weighted fatigue level
+- **TSB (Training Stress Balance)**: Form = CTL - ATL. Positive = fresh, negative = fatigued
+- **ACWR (Acute:Chronic Workload Ratio)**: Injury risk. Sweet spot is 0.8-1.3
+
+**First-time setup:** Run `refresh_fitness_history(365)` to backfill from Garmin history.
+
+### Periodization Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `get_periodization_status()` | Current phase, weeks to race, phase guidance | JSON with position in season |
+| `get_weekly_prescription()` | This week's targets based on phase + fitness | JSON with volume, intensity, constraints |
+| `update_phase(phase, notes)` | Transition to new training phase | Confirmation |
+
+**get_weekly_prescription() is the key tool for adaptive coaching.** It combines:
+- Phase demands (from periodization)
+- Current fitness (CTL, ACWR)
+- Recovery status (Garmin readiness)
+- Life constraints (injuries, travel, commitments)
+
+The LLM uses this prescription as a starting point, then adapts through conversation.
 
 ### Planning Tools
 | Tool | Purpose | Returns |
@@ -223,17 +300,18 @@ coach-mcp/
 ├── server.py              # MCP server with all tools
 ├── garmin_client.py       # Garmin auth with token caching
 ├── workout_builder.py     # Converts plan sessions to Garmin workouts
+├── fitness.py             # CTL/ATL/TSB calculations, intensity distribution
 ├── rules.py               # Compliance checker, safety rules
 ├── planner.py             # Context builder, plan/suggestion management
 ├── daily_loop.py          # Morning audit automation
-├── notifier.py            # Notification system (console/email)
 ├── config.py              # Shared configuration and constants
 ├── data/
 │   ├── athlete.json           # WHO - personal info, life constraints, preferences
 │   ├── athlete_baseline.json  # WHO - Garmin-derived capacity (auto-generated)
 │   ├── methodology.json       # HOW - pillars, safety rules, race templates
-│   ├── training_config.json   # WHAT - events, periodization, goal balance
+│   ├── training_config.json   # WHAT - events, periodization, goals
 │   ├── weekly_plan.json       # CURRENT - rolling 7-day plan with session PURPOSE
+│   ├── fitness_history.json   # FITNESS - daily loads, CTL/ATL snapshots
 │   ├── coaching_log.json      # MEMORY - coaching decisions, patterns, approvals
 │   └── suggestions.json       # Pending LLM suggestions
 ├── test_server.py         # Server tests (46 tests)
