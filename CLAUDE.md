@@ -73,13 +73,85 @@ DAY                       ← What should today look like?
 
 **Key Principle: The conversation IS the coaching.** Tools provide data and structure. The LLM provides intelligence and adaptation. When life gets in the way, the coach adjusts while keeping the athlete on track for their goals.
 
+### MANDATORY Coaching Sequence
+
+**CRITICAL: Before making ANY coaching recommendations, you MUST call `get_coaching_snapshot()` first.**
+
+This prevents the coaching error of prescribing without understanding current state.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  BEFORE ANY RECOMMENDATION, CALL get_coaching_snapshot()   │
+│                                                             │
+│  This returns:                                              │
+│  ├── Current weekly plan (what's planned)                   │
+│  ├── Activities this week (what's actual)                   │
+│  ├── Planned vs actual (gaps/completion rate)               │
+│  ├── Fitness metrics (CTL, ATL, TSB, ACWR)                  │
+│  ├── Compliance status (pillars met/missing)                │
+│  ├── Recovery status (today's readiness)                    │
+│  ├── Sport priority breakdown (multi-sport blending)        │
+│  └── Active injuries and restrictions                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why this matters:**
+- The coach proposed a plan without checking the existing plan = BAD
+- The coach must see current state before recommending changes = GOOD
+- The snapshot enforces this by bundling everything in one call
+
+### Multi-Sport Handling
+
+When an athlete has races in multiple sports (e.g., cycling A-race + running B-race):
+
+1. **Sport Priority Analysis**: `get_coaching_snapshot()` calculates volume distribution
+   - Weights based on: race priority (A>B>C>D) × time proximity (closer = higher weight)
+   - Example: Cycling A-race 114 days away + Running B-race 45 days away → Running gets more volume NOW
+
+2. **Shared Sessions**: Strength, mobility, recovery benefit ALL sports
+   - Schedule these regardless of sport focus
+   - They don't compete for sport-specific volume
+
+3. **Sport-Specific Sessions**: Key sessions from race templates
+   - `long_mtb_ride` for cycling races
+   - `long_trail_run` for running races
+   - Prioritize based on sport priority analysis
+
 ### Adaptive Coaching Flow
 
-1. **Start of week**: Call `get_weekly_prescription()` to understand targets
-2. **Daily check**: Call `get_training_readiness()` to see recovery status
-3. **Planning**: Build weekly plan based on prescription + readiness + athlete conversation
-4. **Adaptation**: When things change (missed session, feeling great/terrible), adjust
+1. **Start of any coaching conversation**: Call `get_coaching_snapshot()` FIRST
+2. **Analyze the snapshot**: What's the current state? What's working? What's missing?
+3. **Planning**: Build/adjust plan based on snapshot + athlete conversation
+4. **Adaptation**: When things change (missed session, feeling great/terrible), check snapshot again
 5. **End of week**: Check compliance, update fitness history, plan next week
+
+### Sleep as Foundation (Training Gate)
+
+**Sleep is not just a metric - it's a GATE for training decisions.**
+
+Without adequate sleep, training becomes CATABOLIC (breakdown) not ANABOLIC (building):
+- ↓ Testosterone, ↓ Growth Hormone, ↑ Cortisol
+- ↑ Inflammatory markers, impaired glycogen resynthesis
+- **Adaptation literally cannot happen**
+
+Research shows performance impact by exercise type (effect size):
+- High-intensity intervals: **-1.57** (most affected)
+- Skill/coordination: -1.06
+- Aerobic endurance: -0.54
+- Strength/power: -0.39 (least affected)
+
+**Sleep Status → Training Modifications:**
+
+| Status | Avg Sleep | Training Cap | Skip | Notes |
+|--------|-----------|--------------|------|-------|
+| Adequate | ≥7.5hrs | None | - | Full training |
+| Borderline | 7-7.5hrs | Caution | - | Monitor, prioritize sleep |
+| **Deficit** | 6.5-7hrs | Moderate | FTP tests, max efforts | No adaptation capacity |
+| Severe | <6.5hrs | Recovery only | All intensity | Rest until sleep improves |
+
+**Critical:** Early AM workouts that cut into sleep are COUNTERPRODUCTIVE (effect size -1.17). Sleeping in is more valuable than the workout.
+
+The `get_coaching_snapshot()` tool now includes `sleep.training_modifications` with specific guidance.
 
 ### Load Management (Injury Prevention)
 
@@ -109,6 +181,73 @@ python daily_loop.py
 # Run morning audit with LLM
 python daily_loop.py --llm
 ```
+
+## Tool Hierarchy for Coaching Context
+
+Understanding which tool to use and when prevents redundant data fetching and ensures efficient coaching.
+
+### 1. `get_coaching_snapshot()` - MANDATORY First Call
+
+**When:** Any coaching conversation, making recommendations, adjusting plans
+
+**Returns:** Everything needed for coaching decisions in one call:
+- Current weekly plan
+- Actual activities (planned vs completed)
+- Fitness metrics (CTL/ATL/TSB/ACWR)
+- Compliance status
+- Sleep analysis with training modifications
+- Recovery status
+- Sport priority breakdown
+- Active injuries
+
+**Use this as the ENTRY POINT for all coaching interactions.**
+
+### 2. `get_planning_context()` - Full Context for Weekly Planning
+
+**When:** Building a weekly plan from scratch, major plan revisions
+
+**Returns:** Extended context including:
+- Athlete profile (personal info, constraints, preferences)
+- Event calendar with race analysis
+- Methodology (pillars, safety rules)
+- Current plan
+- Fitness trajectory
+
+**Use when you need the full picture, not just current state.**
+
+### 3. `get_load_status()` - Quick Fitness Check
+
+**When:** Need only load/ACWR status, no plan context needed
+
+**Returns:** Just fitness metrics:
+- CTL, ATL, TSB
+- ACWR status and risk level
+- Fitness trend
+
+**Use for quick load checks without full coaching context.**
+
+### 4. `get_compliance_report(days)` - Pillar Tracking Only
+
+**When:** Checking if weekly pillars are met
+
+**Returns:** Compliance against pillars:
+- Strength sessions
+- Mobility minutes
+- Long efforts
+- Volume
+
+**Use for pillar-focused analysis.**
+
+### Tool Selection Guide
+
+| Question | Tool to Use |
+|----------|-------------|
+| "What should I train today?" | `get_coaching_snapshot()` |
+| "Am I overtrained?" | `get_coaching_snapshot()` or `get_load_status()` |
+| "Did I hit my pillars this week?" | `get_compliance_report()` |
+| "Plan next week from scratch" | `get_planning_context()` |
+| "How's my sleep affecting training?" | `get_coaching_snapshot()` |
+| "What's my fitness trending?" | `get_load_status()` |
 
 ## MCP Tools Reference
 
@@ -170,10 +309,22 @@ The LLM uses this prescription as a starting point, then adapts through conversa
 ### Planning Tools
 | Tool | Purpose | Returns |
 |------|---------|---------|
+| `get_coaching_snapshot()` | **MANDATORY FIRST CALL** - complete coaching context | JSON with plan, actual, fitness, compliance |
 | `get_planning_context()` | Full context for LLM planning | JSON object |
 | `get_weekly_plan()` | Current 7-day plan | JSON object |
 | `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
 | `push_plan_to_garmin()` | Push workouts to Garmin calendar | JSON summary |
+
+**get_coaching_snapshot() is the MANDATORY first call.** It returns:
+- `weekly_plan`: What's currently planned
+- `activities_this_week`: What's been done (actual)
+- `planned_vs_actual`: Comparison with gaps/completion rate
+- `fitness_metrics`: CTL, ATL, TSB, ACWR with coaching insights
+- `compliance`: Pillar status (strength, mobility, long effort)
+- `recovery`: Today's readiness score and recommendation
+- `sport_priorities`: Multi-sport volume distribution (if multiple races)
+- `active_injuries`: Current restrictions
+- `coaching_checklist`: Quick status flags (has_plan, acwr_safe, compliance_ok)
 
 **push_plan_to_garmin() workflow:**
 - Converts sessions to Garmin workout format with targets:

@@ -478,3 +478,231 @@ def get_athlete_hr_zones() -> dict[str, list[int]] | None:
             athlete = json.load(f)
         return athlete.get('personal', {}).get('hr_zones')
     return None
+
+
+def get_sleep_summary(client, today: date, days: int = 7) -> dict:
+    """
+    Get comprehensive sleep analysis for the last N days.
+
+    This is a CORE coaching metric - sleep quality and quantity directly
+    determine whether training adaptations can occur.
+
+    Analyzes:
+    - Duration vs personalized need (Garmin calculates based on training load)
+    - Quality: deep sleep %, REM %, sleep stress, awake count
+    - Consistency: variance night to night
+    - Accumulated deficit
+
+    Without adequate sleep, training is CATABOLIC not ANABOLIC.
+
+    Args:
+        client: Garmin client instance
+        today: Current date
+        days: Number of days to analyze (default 7)
+
+    Returns:
+        Dict with sleep status, metrics, quality issues, and training modifications
+    """
+    sleep_records = []
+    personalized_need_mins = None  # Garmin's calculated need based on training
+    baseline_need_mins = None  # Athlete's base sleep need
+    need_feedback = None  # Garmin's feedback on sleep need ("HIGHLY_INCREASED" etc)
+    training_impact = None  # How chronic training is affecting sleep need
+
+    for i in range(days):
+        d = today - timedelta(days=i)
+        try:
+            sleep = client.get_sleep_data(d.isoformat())
+            if sleep and sleep.get('dailySleepDTO'):
+                dto = sleep['dailySleepDTO']
+                scores = dto.get('sleepScores', {})
+
+                duration_secs = dto.get('sleepTimeSeconds', 0)
+                if not duration_secs or duration_secs <= 0:
+                    continue
+
+                # Extract quality metrics
+                deep_secs = dto.get('deepSleepSeconds', 0)
+                rem_secs = dto.get('remSleepSeconds', 0)
+                light_secs = dto.get('lightSleepSeconds', 0)
+                awake_secs = dto.get('awakeSleepSeconds', 0)
+
+                record = {
+                    'date': d.isoformat(),
+                    'duration_hrs': round(duration_secs / 3600, 1),
+                    'score': scores.get('overall', {}).get('value'),
+                    'quality': scores.get('overall', {}).get('qualifierKey'),
+                    # Quality breakdown
+                    'deep_pct': round(deep_secs / duration_secs * 100, 0) if duration_secs else 0,
+                    'deep_quality': scores.get('deepPercentage', {}).get('qualifierKey'),
+                    'rem_pct': round(rem_secs / duration_secs * 100, 0) if duration_secs else 0,
+                    'rem_quality': scores.get('remPercentage', {}).get('qualifierKey'),
+                    'awake_mins': round(awake_secs / 60, 0),
+                    'awake_count': dto.get('awakeCount', 0),
+                    # Stress and restlessness
+                    'sleep_stress': dto.get('avgSleepStress'),
+                    'stress_quality': scores.get('stress', {}).get('qualifierKey'),
+                    'restlessness': scores.get('restlessness', {}).get('qualifierKey'),
+                    # Recovery indicators
+                    'avg_hr': dto.get('avgHeartRate'),
+                    'respiration': dto.get('averageRespirationValue'),
+                }
+                sleep_records.append(record)
+
+                # Get personalized sleep need (most recent)
+                if i == 0:  # Last night
+                    sleep_need = dto.get('sleepNeed', {})
+                    if sleep_need:
+                        personalized_need_mins = sleep_need.get('actual')  # Training-adjusted need
+                        baseline_need_mins = sleep_need.get('baseline')  # Base need without training
+                        need_feedback = sleep_need.get('feedback')  # "HIGHLY_INCREASED" etc
+                        training_impact = sleep_need.get('trainingFeedback')  # "CHRONIC" load impact
+
+        except Exception:
+            continue
+
+    if not sleep_records:
+        return {'status': 'no_data', 'note': 'Could not fetch sleep data'}
+
+    # Calculate averages
+    avg_duration = round(sum(r['duration_hrs'] for r in sleep_records) / len(sleep_records), 1)
+    scores_with_values = [r['score'] for r in sleep_records if r.get('score')]
+    avg_score = round(sum(scores_with_values) / len(scores_with_values), 0) if scores_with_values else None
+    avg_deep_pct = round(sum(r['deep_pct'] for r in sleep_records) / len(sleep_records), 0)
+    avg_rem_pct = round(sum(r['rem_pct'] for r in sleep_records) / len(sleep_records), 0)
+
+    # Use personalized need if available, otherwise use athlete default
+    if personalized_need_mins:
+        target_hrs = round(personalized_need_mins / 60, 1)
+        target_source = 'garmin_personalized'
+    else:
+        target_hrs = 7.5  # Fallback
+        target_source = 'default'
+
+    # Calculate deficit against PERSONALIZED target
+    daily_deficit = target_hrs - avg_duration
+    weekly_deficit = round(daily_deficit * 7, 1)
+
+    # Quality assessment (not just duration)
+    quality_issues = []
+
+    # Deep sleep check (optimal 16-33% for adults)
+    if avg_deep_pct < 15:
+        quality_issues.append(f'Low deep sleep ({avg_deep_pct}%) - physical recovery impaired')
+    elif avg_deep_pct < 20:
+        quality_issues.append(f'Borderline deep sleep ({avg_deep_pct}%)')
+
+    # REM check (optimal 21-31%)
+    if avg_rem_pct < 18:
+        quality_issues.append(f'Low REM ({avg_rem_pct}%) - cognitive recovery impaired')
+
+    # Count poor quality nights
+    poor_quality_nights = len([r for r in sleep_records if r.get('quality') in ['POOR']])
+    fair_quality_nights = len([r for r in sleep_records if r.get('quality') in ['FAIR']])
+
+    # Consistency check (high variance = poor sleep hygiene)
+    durations = [r['duration_hrs'] for r in sleep_records]
+    if len(durations) > 1:
+        variance = max(durations) - min(durations)
+        if variance > 2:
+            quality_issues.append(f'Inconsistent sleep ({variance:.1f}hr variance) - poor sleep hygiene')
+
+    # Combined status based on BOTH quantity AND quality
+    # This is the key change - quality can override duration assessment
+    quantity_ok = avg_duration >= (target_hrs - 0.5)  # Within 30min of target
+    quality_ok = avg_score and avg_score >= 70 and avg_deep_pct >= 15
+
+    if avg_duration < 6:
+        status = 'severe_deficit'
+    elif avg_duration < 6.5 or (avg_score and avg_score < 50):
+        status = 'severe_deficit' if not quality_ok else 'deficit'
+    elif avg_duration < target_hrs - 0.5:
+        status = 'deficit'
+    elif avg_duration < target_hrs:
+        status = 'borderline' if quality_ok else 'deficit'
+    elif quality_ok:
+        status = 'adequate'
+    else:
+        status = 'quality_issue'  # Duration OK but quality poor
+
+    # Generate recommendation based on combined assessment
+    if status == 'severe_deficit':
+        recommendation = f'CRITICAL: Severe sleep deficit. Training is catabolic. Prioritize sleep over ALL training.'
+    elif status == 'deficit':
+        recommendation = f'Sleep deficit ({weekly_deficit:.0f}hrs/week vs your need of {target_hrs}hrs/night). No max efforts until resolved.'
+    elif status == 'quality_issue':
+        recommendation = f'Duration OK but quality poor. Focus on sleep hygiene: consistent bedtime, no screens, cool room.'
+    elif status == 'borderline':
+        recommendation = f'Close to target but not quite there. Add 30 mins tonight. {quality_issues[0] if quality_issues else ""}'
+    else:
+        recommendation = 'Sleep adequate for training adaptation. Full training supported.'
+
+    # Training modifications - based on COMBINED status
+    if status in ['severe_deficit']:
+        training_modifications = {
+            'intensity_cap': 'recovery_only',
+            'skip_sessions': ['ftp_test', 'intervals', 'hiit', 'tempo', 'threshold', 'race', 'time_trial'],
+            'allowed_sessions': ['easy_ride', 'yoga', 'mobility', 'walking', 'easy_swim'],
+            'early_am_workouts': 'BANNED - sleep is medicine right now',
+            'volume_modifier': 0.5,  # 50% of planned volume max
+            'rationale': 'Severe deficit: your body cannot adapt. Training adds stress without benefit.',
+        }
+    elif status in ['deficit', 'quality_issue']:
+        training_modifications = {
+            'intensity_cap': 'moderate',
+            'skip_sessions': ['ftp_test', 'max_efforts', 'race_simulation', 'vo2max'],
+            'allowed_sessions': ['easy_ride', 'strength', 'mobility', 'easy_run', 'swim', 'tempo_short'],
+            'early_am_workouts': 'AVOID - prioritize sleep first',
+            'volume_modifier': 0.8,  # 80% of planned volume
+            'rationale': 'Deficit: adaptation capacity reduced. Save hard efforts for when rested.',
+        }
+    elif status == 'borderline':
+        training_modifications = {
+            'intensity_cap': 'normal_with_monitoring',
+            'skip_sessions': [],
+            'allowed_sessions': ['all'],
+            'early_am_workouts': 'Only if 7+ hrs achieved',
+            'volume_modifier': 1.0,
+            'rationale': 'Borderline: can train but prioritize sleep tonight for tomorrow.',
+        }
+    else:
+        training_modifications = {
+            'intensity_cap': 'none',
+            'skip_sessions': [],
+            'allowed_sessions': ['all'],
+            'early_am_workouts': 'OK',
+            'volume_modifier': 1.0,
+            'rationale': 'Sleep supports full training adaptation.',
+        }
+
+    return {
+        'status': status,
+        'days_analyzed': len(sleep_records),
+
+        # Quantity
+        'avg_duration_hrs': avg_duration,
+        'target_hrs': target_hrs,
+        'target_source': target_source,
+        'daily_deficit_hrs': round(max(0, daily_deficit), 1),
+        'weekly_deficit_hrs': round(max(0, weekly_deficit), 1),
+
+        # Garmin's sleep need analysis (valuable coaching context)
+        'baseline_need_hrs': round(baseline_need_mins / 60, 1) if baseline_need_mins else None,
+        'need_feedback': need_feedback,  # e.g., "HIGHLY_INCREASED"
+        'training_impact_on_sleep': training_impact,  # How chronic load affects sleep need
+
+        # Quality
+        'avg_score': avg_score,
+        'avg_deep_pct': avg_deep_pct,
+        'avg_rem_pct': avg_rem_pct,
+        'poor_quality_nights': poor_quality_nights,
+        'fair_quality_nights': fair_quality_nights,
+        'quality_issues': quality_issues,
+
+        # Recent nights (detailed)
+        'recent': sleep_records[:3],
+
+        # Coaching output
+        'recommendation': recommendation,
+        'training_modifications': training_modifications,
+    }

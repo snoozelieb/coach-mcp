@@ -13,6 +13,7 @@ from planner import (
     load_json_file,
     load_athlete,
     load_methodology,
+    load_coaching_log,
 )
 from config import (
     DATA_DIR,
@@ -24,6 +25,18 @@ from config import (
     HIGH_ALTITUDE_THRESHOLD,
     VALID_PRIORITIES,
     ATHLETE_BASELINE_FILE,
+    TRAINING_CONFIG_FILE,
+    ATHLETE_FILE,
+)
+from fitness import (
+    load_fitness_history,
+    calculate_fitness_metrics,
+    calculate_intensity_distribution,
+    get_load_athlete_max_hr,
+    get_athlete_hr_zones,
+    get_fitness_trend,
+    update_fitness_history,
+    get_sleep_summary,
 )
 from datetime import date, timedelta
 from typing import Any, Union
@@ -479,13 +492,6 @@ def get_fitness_status(days: int = 90) -> str:
     - See if fitness is building toward race goals
     - Determine if athlete is fresh (positive TSB) or fatigued (negative TSB)
     """
-    from fitness import (
-        load_fitness_history,
-        calculate_fitness_metrics,
-        get_fitness_trend,
-        get_load_athlete_max_hr,
-    )
-
     try:
         # Load fitness history
         history = load_fitness_history()
@@ -596,12 +602,6 @@ def refresh_fitness_history(days: int = 180) -> str:
     Returns:
         JSON with summary of updated data and current fitness metrics.
     """
-    from fitness import (
-        update_fitness_history,
-        calculate_fitness_metrics,
-        get_load_athlete_max_hr,
-    )
-
     try:
         client = get_garmin_client()
         today = date.today()
@@ -668,8 +668,6 @@ def get_intensity_distribution(days: int = 28) -> str:
     - Identify if too much time in "gray zone" (moderate)
     - Plan intensity for upcoming sessions
     """
-    from fitness import calculate_intensity_distribution, get_athlete_hr_zones
-
     try:
         client = get_garmin_client()
         today = date.today()
@@ -1520,8 +1518,6 @@ def get_periodization_status() -> str:
     Use this to understand WHERE we are in the season and WHAT the
     current phase demands. The LLM can then adapt weekly plans accordingly.
     """
-    from fitness import load_fitness_history, calculate_fitness_metrics
-
     try:
         today = date.today()
         config = load_training_config()
@@ -1674,8 +1670,6 @@ def get_weekly_prescription() -> str:
     - Flexibility notes (what can be moved/swapped)
     - Constraints (injuries, life events)
     """
-    from fitness import load_fitness_history, calculate_fitness_metrics
-
     try:
         today = date.today()
         client = get_garmin_client()
@@ -2742,6 +2736,432 @@ def get_compliance_report(days: int = 7) -> str:
 
     except Exception as e:
         return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_coaching_snapshot() -> str:
+    """
+    MANDATORY FIRST CALL before making any coaching recommendations.
+
+    Returns a comprehensive snapshot of the athlete's current state including:
+    - Current weekly plan (what's planned)
+    - Activities done this week (what's actual)
+    - Planned vs actual comparison (gaps/surpluses)
+    - Fitness metrics (CTL, ATL, TSB, ACWR)
+    - Compliance status (pillars met/missing)
+    - Recovery status (today's readiness)
+    - Sport priority breakdown (for multi-sport athletes)
+    - Active injuries and restrictions
+
+    This prevents the coaching error of proposing plans without seeing current state.
+
+    Multi-sport handling:
+    - Analyzes all upcoming races by sport type
+    - Calculates relative priority based on days until race + priority level
+    - Recommends weekly volume distribution across sports
+    - Identifies shared sessions (strength, mobility) vs sport-specific
+
+    Returns:
+        JSON with complete coaching context. Check this BEFORE making any recommendations.
+    """
+    try:
+        today = date.today()
+        client = get_garmin_client()
+
+        # 1. Current Weekly Plan
+        current_plan = get_current_plan()
+
+        # 2. Activities this week (actual)
+        # Use plan dates if available, otherwise use calendar week (Mon-Sun)
+        if current_plan and current_plan.get('week_start'):
+            week_start = date.fromisoformat(current_plan['week_start'])
+        else:
+            week_start = today - timedelta(days=today.weekday())  # Monday
+
+        raw_activities = client.get_activities_by_date(
+            week_start.isoformat(),
+            today.isoformat()
+        )
+        activities_this_week = parse_activities(raw_activities)
+
+        # 3. Planned vs Actual comparison
+        planned_vs_actual = _compare_planned_actual(current_plan, activities_this_week, today)
+
+        # 4. Fitness metrics
+        history = load_fitness_history()
+        daily_loads = history.get('daily_loads', {})
+        if daily_loads:
+            fitness_metrics = calculate_fitness_metrics(daily_loads)
+            # Add coaching interpretation
+            fitness_metrics['coaching_insight'] = _interpret_fitness_metrics(fitness_metrics)
+        else:
+            fitness_metrics = {
+                'status': 'no_data',
+                'action': 'Run refresh_fitness_history() to backfill from Garmin'
+            }
+
+        # 5. Compliance status
+        compliance = check_weekly_compliance(activities_this_week)
+
+        # 6. Recovery status (today) + Sleep tracking
+        try:
+            readiness_data = client.get_training_readiness(today.isoformat())
+            recovery = _parse_readiness_for_snapshot(readiness_data)
+        except Exception:
+            recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
+
+        # 6b. Sleep data (last 7 days)
+        sleep_data = get_sleep_summary(client, today, days=7)
+
+        # 7. Sport priority breakdown (multi-sport analysis)
+        training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
+        if training_config_path.exists():
+            with open(training_config_path) as f:
+                training_config = json.load(f)
+        else:
+            training_config = {}
+
+        methodology = load_methodology()
+        sport_priorities = _analyze_sport_priorities(
+            training_config.get('events', []),
+            training_config.get('current_block', {}),
+            methodology.get('race_templates', {})
+        )
+
+        # 8. Active injuries
+        athlete_path = DATA_DIR / ATHLETE_FILE
+        if athlete_path.exists():
+            with open(athlete_path) as f:
+                athlete = json.load(f)
+            injuries = athlete.get('injury_history', [])
+            active_injuries = [i for i in injuries if i.get('status') == 'active']
+        else:
+            active_injuries = []
+
+        # 9. Intensity distribution (last 7 days)
+        athlete_hr_zones = get_athlete_hr_zones()
+        intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
+
+        snapshot = {
+            'snapshot_date': today.isoformat(),
+            'day_of_week': today.strftime('%A'),
+
+            'weekly_plan': {
+                'week_start': current_plan.get('week_start') if current_plan else None,
+                'week_end': current_plan.get('week_end') if current_plan else None,
+                'days': current_plan.get('days', {}) if current_plan else {},
+                'has_plan': bool(current_plan and current_plan.get('days')),
+            },
+
+            'activities_this_week': {
+                'count': len(activities_this_week),
+                'activities': activities_this_week,
+                'total_duration_mins': sum(a.get('duration_mins', 0) or 0 for a in activities_this_week),
+            },
+
+            'planned_vs_actual': planned_vs_actual,
+
+            'fitness_metrics': fitness_metrics,
+
+            'compliance': compliance,
+
+            'recovery': recovery,
+
+            'sleep': sleep_data,
+
+            'sport_priorities': sport_priorities,
+
+            'active_injuries': active_injuries,
+
+            'intensity_distribution': intensity_dist,
+
+            'coaching_checklist': {
+                'has_current_plan': bool(current_plan and current_plan.get('days')),
+                'has_fitness_data': bool(daily_loads),
+                'acwr_safe': fitness_metrics.get('acwr_status') in ['optimal', 'low'] if isinstance(fitness_metrics, dict) else False,
+                'compliance_ok': compliance.get('overall_compliant', False),
+                'no_blocking_injuries': len([i for i in active_injuries if i.get('severity') == 'severe']) == 0,
+                'sleep_adequate': sleep_data.get('status') == 'adequate' if sleep_data else False,
+            },
+        }
+
+        return json.dumps(snapshot, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
+    """Compare planned sessions against actual activities."""
+    if not plan or not plan.get('days'):
+        return {'status': 'no_plan', 'note': 'No weekly plan to compare against'}
+
+    comparison = {
+        'sessions_planned': 0,
+        'sessions_completed': 0,
+        'sessions_missed': 0,
+        'sessions_pending': 0,
+        'gaps': [],
+        'surpluses': [],
+        'details': []
+    }
+
+    for day_str, day_data in plan.get('days', {}).items():
+        try:
+            day_date = date.fromisoformat(day_str)
+        except ValueError:
+            continue
+
+        planned = day_data.get('planned', {})
+        if not planned or planned.get('type', '').lower() == 'rest':
+            continue
+
+        comparison['sessions_planned'] += 1
+
+        # Check if this day has passed
+        if day_date > today:
+            comparison['sessions_pending'] += 1
+            comparison['details'].append({
+                'date': day_str,
+                'status': 'pending',
+                'planned': planned.get('type'),
+            })
+            continue
+
+        # Find matching activity
+        day_activities = [a for a in activities if a.get('date') == day_str]
+
+        if day_activities:
+            comparison['sessions_completed'] += 1
+            actual_type = day_activities[0].get('type', 'unknown')
+            actual_duration = day_activities[0].get('duration_mins', 0)
+            planned_duration = planned.get('duration_mins', 0)
+
+            comparison['details'].append({
+                'date': day_str,
+                'status': 'completed',
+                'planned': planned.get('type'),
+                'actual': actual_type,
+                'duration_planned': planned_duration,
+                'duration_actual': actual_duration,
+            })
+
+            # Check if duration significantly different
+            if planned_duration and actual_duration:
+                diff_pct = (actual_duration - planned_duration) / planned_duration * 100
+                if diff_pct < -30:
+                    comparison['gaps'].append(f"{day_str}: {planned.get('type')} was shorter than planned ({actual_duration}min vs {planned_duration}min)")
+                elif diff_pct > 30:
+                    comparison['surpluses'].append(f"{day_str}: {planned.get('type')} was longer than planned ({actual_duration}min vs {planned_duration}min)")
+        else:
+            comparison['sessions_missed'] += 1
+            comparison['gaps'].append(f"{day_str}: Missed {planned.get('type')}")
+            comparison['details'].append({
+                'date': day_str,
+                'status': 'missed',
+                'planned': planned.get('type'),
+            })
+
+    comparison['completion_rate'] = (
+        round(comparison['sessions_completed'] / comparison['sessions_planned'] * 100, 1)
+        if comparison['sessions_planned'] > 0 else None
+    )
+
+    return comparison
+
+
+def _interpret_fitness_metrics(metrics: dict) -> str:
+    """Generate coaching interpretation of fitness metrics."""
+    insights = []
+
+    # TSB interpretation
+    tsb = metrics.get('tsb', 0)
+    if tsb > 15:
+        insights.append("Very fresh - consider adding stimulus")
+    elif tsb > 0:
+        insights.append("Fresh and ready for quality work")
+    elif tsb > -15:
+        insights.append("Manageable fatigue - normal training OK")
+    elif tsb > -30:
+        insights.append("Fatigued - monitor recovery")
+    else:
+        insights.append("Heavy fatigue - recovery day recommended")
+
+    # ACWR interpretation
+    acwr_status = metrics.get('acwr_status', '')
+    if acwr_status == 'optimal':
+        insights.append("Load in sweet spot (0.8-1.3)")
+    elif acwr_status == 'low':
+        insights.append("Load is low - safe to build")
+    elif acwr_status == 'elevated':
+        insights.append("Load spike - caution advised")
+    elif acwr_status == 'danger':
+        insights.append("HIGH INJURY RISK - reduce load")
+
+    return "; ".join(insights)
+
+
+def _parse_readiness_for_snapshot(readiness_data: dict) -> dict:
+    """Parse readiness data for snapshot."""
+    if not readiness_data:
+        return {'status': 'unavailable'}
+
+    return {
+        'score': readiness_data.get('score'),
+        'level': readiness_data.get('level'),
+        'hrv_status': readiness_data.get('hrvStatus'),
+        'sleep_score': readiness_data.get('sleepScore'),
+        'recovery_time_mins': readiness_data.get('recoveryTime'),
+        'recommendation': _readiness_to_recommendation(readiness_data.get('level', ''))
+    }
+
+
+def _readiness_to_recommendation(level: str) -> str:
+    """Convert readiness level to coaching recommendation."""
+    recommendations = {
+        'PRIME': 'Excellent recovery - ideal for hard session or test',
+        'HIGH': 'Good recovery - quality training supported',
+        'MODERATE': 'Normal recovery - regular training OK',
+        'LOW': 'Poor recovery - consider easier session or rest',
+        'POOR': 'Very low recovery - rest day recommended',
+    }
+    return recommendations.get(level, 'Check Garmin for details')
+
+
+def _analyze_sport_priorities(events: list, current_block: dict, race_templates: dict) -> dict:
+    """
+    Analyze multi-sport priorities based on upcoming races.
+
+    Returns recommended volume distribution across sports and identifies
+    which sessions are shared (strength, mobility) vs sport-specific.
+    """
+    today = date.today()
+
+    # Map race types to sports (defined at function level for reuse)
+    sport_mapping = {
+        'multi_day_mtb': 'cycling',
+        'road_cycling': 'cycling',
+        'trail_ultra': 'running',
+        'marathon': 'running',
+        'half_marathon': 'running',
+        '10k': 'running',
+        '5k': 'running',
+        'triathlon': 'triathlon',
+        'swimming': 'swimming',
+        'tournament': 'multi_sport',
+    }
+
+    # Categorize events by sport type
+    sports_analysis = {}
+    for event in events:
+        try:
+            event_date = date.fromisoformat(event.get('date', ''))
+            days_until = (event_date - today).days
+            if days_until < 0:
+                continue  # Skip past events
+        except ValueError:
+            continue
+
+        sport_type = event.get('type', 'unknown')
+        priority = event.get('priority', 'D')
+        sport = sport_mapping.get(sport_type, 'other')
+
+        # Calculate priority weight (closer + higher priority = more weight)
+        priority_weights = {'A': 4, 'B': 3, 'C': 2, 'D': 1}
+        priority_weight = priority_weights.get(priority, 1)
+
+        # Time-based weight (races in next 8 weeks get more weight)
+        if days_until <= 14:
+            time_weight = 4  # Very close - peak/taper
+        elif days_until <= 28:
+            time_weight = 3  # Close - build/peak
+        elif days_until <= 56:
+            time_weight = 2  # Medium - build
+        else:
+            time_weight = 1  # Far - base
+
+        score = priority_weight * time_weight
+
+        if sport not in sports_analysis:
+            sports_analysis[sport] = {
+                'events': [],
+                'total_score': 0,
+                'primary_focus': False,
+            }
+
+        sports_analysis[sport]['events'].append({
+            'name': event.get('name'),
+            'days_until': days_until,
+            'priority': priority,
+            'type': sport_type,
+            'score': score,
+        })
+        sports_analysis[sport]['total_score'] += score
+
+    # Calculate percentage distribution
+    total_score = sum(s['total_score'] for s in sports_analysis.values())
+    if total_score > 0:
+        for sport in sports_analysis:
+            sports_analysis[sport]['volume_pct'] = round(
+                sports_analysis[sport]['total_score'] / total_score * 100, 1
+            )
+            # Mark primary sport
+            if sports_analysis[sport]['total_score'] == max(
+                s['total_score'] for s in sports_analysis.values()
+            ):
+                sports_analysis[sport]['primary_focus'] = True
+
+    # Get shared sessions (apply to all sports)
+    shared_sessions = ['strength', 'mobility', 'recovery']
+
+    # Get sport-specific key sessions from race templates
+    sport_specific_sessions = {}
+    for sport_type, template in race_templates.items():
+        sport = sport_mapping.get(sport_type, sport_type)
+        if sport not in sport_specific_sessions:
+            sport_specific_sessions[sport] = []
+        key_sessions = template.get('key_sessions', [])
+        for session in key_sessions:
+            session_type = session.get('type')
+            if session_type and session_type not in sport_specific_sessions[sport]:
+                sport_specific_sessions[sport].append(session_type)
+
+    return {
+        'sports': sports_analysis,
+        'shared_sessions': shared_sessions,
+        'sport_specific_sessions': sport_specific_sessions,
+        'recommendation': _generate_sport_blend_recommendation(sports_analysis, current_block),
+        'has_multi_sport': len(sports_analysis) > 1,
+    }
+
+
+def _generate_sport_blend_recommendation(sports_analysis: dict, current_block: dict) -> str:
+    """Generate recommendation for blending multiple sports."""
+    if not sports_analysis:
+        return "No upcoming events - focus on general fitness"
+
+    if len(sports_analysis) == 1:
+        sport = list(sports_analysis.keys())[0]
+        return f"Single sport focus: {sport}. Follow sport-specific periodization."
+
+    # Multi-sport recommendations
+    primary = None
+    secondary = []
+    for sport, data in sports_analysis.items():
+        if data['primary_focus']:
+            primary = sport
+        else:
+            secondary.append(sport)
+
+    if primary and secondary:
+        secondary_str = ', '.join(secondary)
+        return (
+            f"Multi-sport: Primary focus on {primary} ({sports_analysis[primary]['volume_pct']}%). "
+            f"Maintain {secondary_str} with complementary sessions. "
+            f"Shared strength/mobility benefits all sports."
+        )
+
+    return "Balance training across all sports based on race proximity"
 
 
 @mcp.tool()
@@ -3932,11 +4352,6 @@ def get_goal_progress(days: int = 14) -> str:
 # =============================================================================
 # COACHING DECISION PERSISTENCE TOOLS
 # =============================================================================
-
-def load_coaching_log() -> dict[str, Any]:
-    """Load the coaching log file."""
-    return load_json_file('coaching_log.json')
-
 
 def save_coaching_log(log: dict[str, Any]) -> None:
     """Save the coaching log file."""

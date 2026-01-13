@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fitness import get_athlete_hr_zones
 from garminconnect.workout import (
     CyclingWorkout,
     RunningWorkout,
@@ -109,27 +110,19 @@ INTENSITY_ZONE_MAP = {
 }
 
 
-def get_athlete_hr_zones() -> dict:
-    """Load athlete HR zones from athlete.json."""
-    athlete_path = Path(__file__).parent / "data" / "athlete.json"
-    try:
-        with open(athlete_path) as f:
-            athlete = json.load(f)
-        return athlete.get("personal", {}).get("hr_zones", {})
-    except:
-        # Default zones if file not found
-        return {
-            "z1_recovery": [0, 120],
-            "z2_aerobic": [120, 140],
-            "z3_tempo": [140, 155],
-            "z4_threshold": [155, 170],
-            "z5_max": [170, 184]
-        }
+# Default HR zones if athlete profile not configured
+DEFAULT_HR_ZONES = {
+    "z1_recovery": [0, 120],
+    "z2_aerobic": [120, 140],
+    "z3_tempo": [140, 155],
+    "z4_threshold": [155, 170],
+    "z5_max": [170, 184]
+}
 
 
 def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
     """Get HR range (low, high) for a given intensity."""
-    hr_zones = get_athlete_hr_zones()
+    hr_zones = get_athlete_hr_zones() or DEFAULT_HR_ZONES
     zone_key = INTENSITY_ZONE_MAP.get(intensity.lower(), "z2_aerobic")
     zone_range = hr_zones.get(zone_key)
     if zone_range and len(zone_range) == 2:
