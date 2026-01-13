@@ -3733,19 +3733,28 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                 cached["note"] = "Retrieved from exercise library. Use research_exercise with a new name to research different exercises."
                 return json.dumps(cached, indent=2)
 
-        # Search sources for exercise info
+        # Primary source: muscleandstrength.com has excellent form guides with videos
+        # URL format: muscleandstrength.com/exercises/exercise-name.html
+        exercise_url_slug = exercise_name.lower().replace(' ', '-').replace('_', '-')
+
+        # Search sources for exercise info - prioritize muscleandstrength for video content
         search_sources = [
+            {
+                "name": "Muscle & Strength",
+                "url": f"https://www.muscleandstrength.com/exercises/{exercise_url_slug}.html",
+                "type": "form",
+                "has_video": True
+            },
             {
                 "name": "ExRx",
                 "url": f"https://exrx.net/WeightExercises/search?q={exercise_url_name}",
-                "type": "form"
-            },
-            {
-                "name": "Wikipedia",
-                "url": f"https://en.wikipedia.org/wiki/{exercise_url_name}",
-                "type": "general"
+                "type": "form",
+                "has_video": False
             },
         ]
+
+        # Track video URL for successful source
+        video_url = None
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -3802,6 +3811,9 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                     if len(content) > 300 and has_exercise_content:
                         fetched_content = content
                         result["sources"].append(response.url)
+                        # Capture video URL if source has videos
+                        if source.get("has_video"):
+                            video_url = source["url"]
                         break
             except Exception:
                 continue
@@ -3852,13 +3864,22 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                 garmin_note_parts.append(setup_findings[0][:80])
             if cue_findings:
                 garmin_note_parts.append(cue_findings[0][:80])
-            if execution_findings:
-                garmin_note_parts.append(execution_findings[0][:80])
 
-            result["garmin_note"] = ". ".join(garmin_note_parts)[:250] if garmin_note_parts else f"Perform {exercise_name} with controlled form."
+            # Build garmin note with video link
+            note_text = ". ".join(garmin_note_parts) if garmin_note_parts else f"Perform {exercise_name} with controlled form"
+
+            # Add video URL to note (shortened domain for Garmin display)
+            if video_url:
+                result["video_url"] = video_url
+                # Shorten URL for Garmin note display
+                short_url = video_url.replace("https://www.", "").replace("https://", "")
+                result["garmin_note"] = f"{note_text[:180]}. Video: {short_url}"[:250]
+            else:
+                result["garmin_note"] = note_text[:250]
 
         else:
-            # Couldn't fetch - provide basic guidance
+            # Couldn't fetch - provide fallback video URL and guidance
+            fallback_video = f"https://www.muscleandstrength.com/exercises/{exercise_url_slug}.html"
             result["form_cues"] = {
                 "note": f"Unable to fetch form guide for '{exercise_name}'.",
                 "suggested_searches": [
@@ -3866,9 +3887,9 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                     f"{exercise_name} how to",
                     f"{exercise_name} technique",
                 ],
-                "video_search": f"YouTube: {exercise_name} form tutorial"
             }
-            result["garmin_note"] = f"Perform {exercise_name} with controlled form. Look up tutorial if unsure."
+            result["video_url"] = fallback_video
+            result["garmin_note"] = f"Perform {exercise_name} with controlled form. Video: muscleandstrength.com/exercises/{exercise_url_slug}"[:250]
 
         # Add modifications guidance
         result["modifications"] = {
@@ -3883,6 +3904,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                 "exercise": exercise_name,
                 "form_cues": result["form_cues"],
                 "garmin_note": result.get("garmin_note", ""),
+                "video_url": result.get("video_url", ""),
                 "modifications": result["modifications"],
                 "sources": result["sources"],
                 "researched_date": date.today().isoformat(),

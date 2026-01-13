@@ -158,19 +158,20 @@ Personal data files are created by `setup_wizard.py` and stay on your machine.
 ### Exercise Research Tools
 | Tool | Purpose | Returns |
 |------|---------|---------|
-| `research_exercise(exercise_name, save_to_library)` | Form cues, setup, common mistakes | JSON + cached to library |
+| `research_exercise(exercise_name, save_to_library)` | Form cues, setup, mistakes, video URL | JSON + cached to library |
 | `list_exercises(category, muscle, search)` | Browse exercise database | JSON with matches |
 
 **research_exercise workflow:**
-- Fetches form guides from fitness resources (ExRx, Wikipedia)
-- Returns: setup instructions, key cues, common mistakes, modifications
+- Primary source: muscleandstrength.com (has video guides)
+- Returns: setup instructions, key cues, common mistakes, modifications, **video_url**
 - Saves to `data/exercise_library.json` by default
-- Form cues appear as notes on Garmin workouts when pushed via `push_plan_to_garmin()`
+- Form cues + video links appear as notes on Garmin workouts when pushed via `push_plan_to_garmin()`
 
 **Example:**
 ```python
 research_exercise("Romanian deadlift")  # Learn proper form
-# → Form cues cached, will appear on Garmin during strength workouts
+# → Form cues + video URL cached, will appear on Garmin during strength workouts
+# → garmin_note: "Hip hinge, chest up. Video: muscleandstrength.com/exercises/romanian-deadlift"
 ```
 
 ## Training Methodology

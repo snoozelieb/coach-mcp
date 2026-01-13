@@ -441,16 +441,21 @@ set_ftp(ftp_watts=250)  # Direct value
 
 **research_exercise workflow:**
 - Use when athlete is unsure how to perform an exercise
-- Fetches form guides from fitness resources (ExRx, Wikipedia)
-- Returns: setup instructions, key cues, common mistakes, modifications
+- Primary source: muscleandstrength.com (has video guides)
+- Returns: setup instructions, key cues, common mistakes, modifications, **video_url**
 - **Saves to exercise library** (default) for use in Garmin workout notes
-- Example: `research_exercise("Romanian deadlift")` - returns form cues and saves to library
+- Example: `research_exercise("Romanian deadlift")` - returns form cues + video link
+
+**Video URL protocol:**
+- Each exercise includes a `video_url` field linking to muscleandstrength.com form guide
+- The Garmin note includes a shortened video link for quick reference
+- Example garmin_note: `"Squeeze shoulder blades, elbows 45deg. Video: muscleandstrength.com/exercises/dumbbell-bench-press"`
 
 **Exercise library → Garmin workout notes:**
 1. Call `research_exercise("hip thrust")` to learn the exercise
-2. Form cues are cached in `data/exercise_library.json`
-3. When `push_plan_to_garmin()` builds strength workouts, it includes the notes
-4. You see the form cues on your Garmin watch/app during the workout
+2. Form cues + video URL cached in `data/exercise_library.json`
+3. When `push_plan_to_garmin()` builds strength workouts, it includes the notes with video links
+4. You see form cues + video link on your Garmin watch/app during the workout
 
 ## Architecture
 

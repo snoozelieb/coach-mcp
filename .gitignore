@@ -10,6 +10,7 @@ data/weekly_plan.json
 data/suggestions.json
 data/coaching_log.json
 data/fitness_history.json
+data/exercise_library.json
 
 # Temp files from Claude Code
 tmpclaude-*
