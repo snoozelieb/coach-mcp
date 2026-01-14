@@ -457,6 +457,37 @@ set_ftp(ftp_watts=250)  # Direct value
 3. When `push_plan_to_garmin()` builds strength workouts, it includes the notes with video links
 4. You see form cues + video link on your Garmin watch/app during the workout
 
+### Strength Sync Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `sync_strength_session(activity_id)` | Pull completed exercise data from Garmin and update baselines | JSON with synced exercises, PRs, progressions |
+| `get_strength_baseline(exercise)` | View current strength baselines | JSON with weights, reps, history |
+| `approve_progression(exercise)` | Approve suggested weight progression | Confirmation with new weight |
+| `set_exercise_preference(exercise_group, preferred_variation)` | Set preferred exercise variation | Confirmation |
+
+**Strength sync workflow:**
+1. Athlete completes gym session on Garmin watch
+2. `get_coaching_snapshot()` auto-syncs recent strength sessions
+3. Baselines are updated with actual weights used
+4. If target reps completed, progression suggestion generated (+2.5kg)
+5. Athlete approves progression → next workout uses new weight
+6. `push_plan_to_garmin()` uses baseline weights when building workouts
+
+**Exercise equivalence groups:**
+- Related exercises share progression (e.g., barbell bench = dumbbell bench)
+- Groups: BENCH_PRESS, ROW, PULL_UP, SHOULDER_PRESS, CURL, TRICEPS_EXTENSION, SQUAT, DEADLIFT, LATERAL_RAISE, CORE
+- Use `set_exercise_preference()` to set preferred variation in each group
+
+**Example flow:**
+```
+User: "I just finished my gym session"
+Coach: [calls get_coaching_snapshot()]
+→ "Synced strength session. Bench press: 3x12 @ 10kg. You completed all target reps - I suggest progressing to 12.5kg next session."
+User: "yes bump it up"
+Coach: [calls approve_progression("bench_press")]
+→ "Bench press progression approved. Next session: 3x12 @ 12.5kg"
+```
+
 ## Architecture
 
 ```
@@ -493,6 +524,7 @@ Manually edited. Contains:
 - `personal`: name, age, max_hr, HR zones, FTP, power_zones, threshold_pace, pace_zones, weight
 - `life_constraints`: recurring commitments (e.g., Wednesday Padel), preferred training times, work schedule
 - `injury_history`: past injuries with status and notes
+- `strength_baseline`: per-exercise weight/reps baselines (auto-synced from Garmin)
 - `swimming`: experience level, pace, comfortable distance, strokes (ask user to personalize)
 - `pilates`: experience, class preference, focus areas, injury considerations
 - `preferences`: likes, dislikes, equipment, gym_access

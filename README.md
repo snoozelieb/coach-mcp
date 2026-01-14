@@ -187,6 +187,22 @@ research_exercise("Romanian deadlift")  # Learn proper form
 # → garmin_note: "Hip hinge, chest up. Video: muscleandstrength.com/exercises/romanian-deadlift"
 ```
 
+### Strength Sync Tools
+| Tool | Purpose | Returns |
+|------|---------|---------|
+| `sync_strength_session(activity_id)` | Pull completed exercise data from Garmin | JSON with synced data |
+| `get_strength_baseline(exercise)` | View current strength baselines | JSON with weights, reps |
+| `approve_progression(exercise)` | Approve suggested weight increase | Confirmation |
+| `set_exercise_preference(group, variation)` | Set preferred exercise variation | Confirmation |
+
+**Strength sync workflow:**
+1. Complete gym session with Garmin watch
+2. Call `sync_strength_session()` (or auto-syncs via `get_coaching_snapshot()`)
+3. Baselines updated with actual weights used
+4. If target reps completed, progression suggested (+2.5kg)
+5. Call `approve_progression("bench_press")` to accept
+6. Next workout uses new weight automatically
+
 ## Training Methodology
 
 ### Pillars (defined in `methodology.json`)

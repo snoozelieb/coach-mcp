@@ -594,6 +594,40 @@ def get_exercise_note(exercise_name: str, library: dict) -> str:
     return ""
 
 
+def load_strength_baseline() -> dict:
+    """Load the strength baseline from athlete profile."""
+    from pathlib import Path
+    baseline_path = Path(__file__).parent / "data" / "athlete.json"
+    if baseline_path.exists():
+        with open(baseline_path) as f:
+            athlete = json.load(f)
+            return athlete.get("strength_baseline", {}).get("exercises", {})
+    return {}
+
+
+def get_baseline_weight(exercise_name: str, category: str, baseline: dict) -> float:
+    """Get baseline weight for an exercise from strength baseline."""
+    from config import DEFAULT_EQUIVALENCE_GROUPS
+
+    # Normalize exercise lookup key
+    category_key = category.lower().replace(' ', '_')
+
+    # Check if we have a baseline for this category
+    if category_key in baseline:
+        current = baseline[category_key].get('current', {})
+        return current.get('weight_kg')
+
+    # Check via equivalence groups
+    for group, exercises in DEFAULT_EQUIVALENCE_GROUPS.items():
+        if exercise_name in exercises or category in exercises:
+            group_key = group.lower().replace(' ', '_')
+            if group_key in baseline:
+                current = baseline[group_key].get('current', {})
+                return current.get('weight_kg')
+
+    return None
+
+
 def build_strength_workout(session: dict, date: str) -> dict:
     """
     Build a strength workout from a plan session.
@@ -603,6 +637,7 @@ def build_strength_workout(session: dict, date: str) -> dict:
     Otherwise creates a simple timed strength workout.
 
     Form cues from the exercise library are included as notes on each exercise.
+    Weights are automatically pulled from strength baseline if not specified.
     """
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Strength training")
@@ -610,6 +645,9 @@ def build_strength_workout(session: dict, date: str) -> dict:
 
     # Load exercise library for form cues
     exercise_library = load_exercise_library()
+
+    # Load strength baseline for weights
+    strength_baseline = load_strength_baseline()
 
     # Create workout name from description
     workout_name = description[:40]
@@ -670,6 +708,10 @@ def build_strength_workout(session: dict, date: str) -> dict:
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
         rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
         weight = exercise.get("weight_kg")
+
+        # If no explicit weight, try to get from strength baseline
+        if not weight:
+            weight = get_baseline_weight(ex_name, category, strength_baseline)
 
         # Get form cues from library if available
         exercise_note = get_exercise_note(ex_name, exercise_library)

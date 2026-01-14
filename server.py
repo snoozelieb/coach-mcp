@@ -935,6 +935,7 @@ def update_athlete(
             - 'training_pillars': personalized training pillars (from onboarding)
             - 'swimming': swimming profile (experience, pace, strokes)
             - 'pilates': pilates profile (experience, focus areas)
+            - 'strength_baseline': strength exercise baselines (exercises, equivalence_groups)
         data: JSON string with the data to update/add
 
     Examples:
@@ -1025,9 +1026,22 @@ def update_athlete(
             athlete.setdefault('pilates', {}).update(parsed_data)
             updated = athlete['pilates']
 
+        elif section == 'strength_baseline':
+            # Merge update into existing strength baseline
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': 'strength_baseline data must be an object'})
+            athlete.setdefault('strength_baseline', {'exercises': {}, 'equivalence_groups': {}})
+            if 'exercises' in parsed_data:
+                athlete['strength_baseline']['exercises'].update(parsed_data['exercises'])
+            if 'equivalence_groups' in parsed_data:
+                athlete['strength_baseline']['equivalence_groups'].update(parsed_data['equivalence_groups'])
+            if 'last_synced' in parsed_data:
+                athlete['strength_baseline']['last_synced'] = parsed_data['last_synced']
+            updated = athlete['strength_baseline']
+
         else:
             return json.dumps({
-                'error': f"Unknown section '{section}'. Use: personal, life_constraints, preferences, coaching_notes, add_commitment, add_injury, training_pillars, swimming, pilates"
+                'error': f"Unknown section '{section}'. Use: personal, life_constraints, preferences, coaching_notes, add_commitment, add_injury, training_pillars, swimming, pilates, strength_baseline"
             })
 
         # Save updated athlete profile
@@ -2875,6 +2889,8 @@ def get_coaching_snapshot() -> str:
 
             'intensity_distribution': intensity_dist,
 
+            'strength': _get_strength_sync_summary(activities_this_week),
+
             'coaching_checklist': {
                 'has_current_plan': bool(current_plan and current_plan.get('days')),
                 'has_fitness_data': bool(daily_loads),
@@ -2968,6 +2984,57 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
     )
 
     return comparison
+
+
+def _get_strength_sync_summary(activities: list) -> dict:
+    """Get strength sync summary for coaching snapshot."""
+    try:
+        # Check if there are any recent strength activities to sync
+        strength_activities = [
+            a for a in activities
+            if a.get('type') in ['strength_training', 'indoor_cardio', 'gym']
+        ]
+
+        # Load current baseline
+        baseline = _get_strength_baseline_data()
+        last_synced = baseline.get('last_synced')
+        exercises = baseline.get('exercises', {})
+
+        # Check for pending progressions
+        pending_progressions = []
+        for ex_key, ex_data in exercises.items():
+            progression = ex_data.get('progression')
+            if progression and progression.get('status') == 'pending':
+                current = ex_data.get('current', {})
+                pending_progressions.append({
+                    'exercise': ex_key,
+                    'current_kg': current.get('weight_kg'),
+                    'suggested_kg': progression.get('suggested_weight_kg'),
+                    'rationale': progression.get('rationale')
+                })
+
+        # Check if there are unsynced strength sessions
+        unsynced_activities = []
+        if last_synced and strength_activities:
+            for activity in strength_activities:
+                activity_date = activity.get('date')
+                if activity_date and activity_date > last_synced:
+                    unsynced_activities.append({
+                        'activity_id': activity.get('activity_id'),
+                        'date': activity_date,
+                        'duration_mins': activity.get('duration_mins')
+                    })
+
+        return {
+            'last_synced': last_synced,
+            'exercises_tracked': len(exercises),
+            'pending_progressions': pending_progressions,
+            'unsynced_sessions': unsynced_activities,
+            'needs_sync': len(unsynced_activities) > 0
+        }
+
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
 
 
 def _interpret_fitness_metrics(metrics: dict) -> str:
@@ -4025,6 +4092,509 @@ def list_exercises(
             result["injury_prevention_types"] = list(injury_mappings.keys())
 
         return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ============================================================================
+# Strength Sync Tools
+# ============================================================================
+
+def _get_canonical_exercise_group(exercise_name: str, category: str, equivalence_groups: dict) -> str:
+    """Map exercise name to canonical group."""
+    from config import DEFAULT_EQUIVALENCE_GROUPS
+
+    # Merge default with custom groups
+    groups = {**DEFAULT_EQUIVALENCE_GROUPS, **equivalence_groups}
+
+    # Check if category is a known group
+    if category in groups:
+        return category
+
+    # Check if exercise is in any group
+    for group, exercises in groups.items():
+        if exercise_name in exercises:
+            return group
+
+    # Fallback: use category as group
+    return category
+
+
+def _calculate_progression(current_weight: float, target_reps: int, actual_reps: int, actual_sets: int) -> dict:
+    """Calculate progression suggestion based on performance."""
+    from config import PROGRESSION_INCREMENT_KG, MIN_SETS_FOR_PROGRESSION
+
+    if actual_sets >= MIN_SETS_FOR_PROGRESSION and actual_reps >= target_reps:
+        return {
+            "suggested_weight_kg": current_weight + PROGRESSION_INCREMENT_KG,
+            "suggested_reps": target_reps,
+            "rationale": f"Completed {actual_sets}x{actual_reps} @ {current_weight}kg - ready for +{PROGRESSION_INCREMENT_KG}kg",
+            "status": "pending"
+        }
+    return None
+
+
+def _get_strength_baseline_data() -> dict:
+    """Load strength baseline from athlete profile."""
+    from config import DEFAULT_EQUIVALENCE_GROUPS
+
+    athlete = load_athlete()
+    baseline = athlete.get('strength_baseline', {})
+
+    # Ensure equivalence groups exist
+    if 'equivalence_groups' not in baseline:
+        baseline['equivalence_groups'] = DEFAULT_EQUIVALENCE_GROUPS
+
+    if 'exercises' not in baseline:
+        baseline['exercises'] = {}
+
+    return baseline
+
+
+def _save_strength_baseline(baseline: dict) -> None:
+    """Save strength baseline to athlete profile."""
+    from planner import save_json_file
+    from config import ATHLETE_FILE
+
+    athlete = load_athlete()
+
+    # Remove read-only fields before saving
+    athlete.pop('baseline', None)
+    athlete.pop('personal_records', None)
+    athlete.pop('baseline_last_refreshed', None)
+
+    athlete['strength_baseline'] = baseline
+
+    save_json_file(ATHLETE_FILE, athlete)
+
+
+@mcp.tool()
+def sync_strength_session(activity_id: str = None) -> str:
+    """
+    Sync completed strength session from Garmin and update exercise baselines.
+
+    Pulls exercise data (sets, reps, weights) from a completed strength workout
+    and updates the athlete's strength baseline. Suggests progression when
+    target reps are completed.
+
+    Args:
+        activity_id: Specific activity ID to sync. If omitted, syncs the most
+                     recent strength session.
+
+    Returns:
+        JSON with synced exercises, baseline updates, PRs, and progression suggestions.
+
+    Usage:
+        sync_strength_session()  # Sync most recent strength session
+        sync_strength_session("21536055257")  # Sync specific activity
+    """
+    from config import WEIGHT_GRAM_TO_KG, DEFAULT_EQUIVALENCE_GROUPS
+
+    try:
+        client = get_garmin_client()
+        today = date.today()
+
+        # Find strength activity to sync
+        if activity_id:
+            target_activity_id = int(activity_id)
+        else:
+            # Find most recent strength activity
+            week_ago = today - timedelta(days=7)
+            raw_activities = client.get_activities_by_date(
+                week_ago.isoformat(),
+                today.isoformat()
+            )
+            activities = parse_activities(raw_activities)
+
+            strength_activities = [
+                a for a in activities
+                if a.get('type') in ['strength_training', 'indoor_cardio', 'gym']
+            ]
+
+            if not strength_activities:
+                return json.dumps({
+                    "status": "no_activity",
+                    "message": "No strength sessions found in the last 7 days"
+                })
+
+            # Get most recent
+            target_activity_id = strength_activities[0]['activity_id']
+
+        # Fetch exercise sets from Garmin
+        try:
+            exercise_sets = client.get_activity_exercise_sets(target_activity_id)
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Could not fetch exercise sets: {str(e)}"
+            })
+
+        if not exercise_sets or 'exerciseSets' not in exercise_sets:
+            return json.dumps({
+                "status": "no_data",
+                "message": "No exercise set data found for this activity"
+            })
+
+        # Load current baseline
+        baseline = _get_strength_baseline_data()
+        equivalence_groups = baseline.get('equivalence_groups', DEFAULT_EQUIVALENCE_GROUPS)
+
+        # Process exercise sets
+        exercise_summary = {}  # group -> {sets, reps, weight, variation}
+
+        for exercise_set in exercise_sets['exerciseSets']:
+            if exercise_set.get('setType') != 'ACTIVE':
+                continue
+
+            exercises = exercise_set.get('exercises', [])
+            if not exercises:
+                continue
+
+            # Take the first exercise (highest probability)
+            exercise = exercises[0]
+            exercise_name = exercise.get('name')
+            category = exercise.get('category')
+
+            if not exercise_name or not category:
+                continue
+
+            # Map to canonical group
+            group = _get_canonical_exercise_group(exercise_name, category, equivalence_groups)
+            group_key = group.lower().replace('_', ' ').replace(' ', '_')
+
+            # Get set data
+            reps = exercise_set.get('repetitionCount', 0)
+            weight_grams = exercise_set.get('weight', 0) or 0
+            weight_kg = weight_grams / WEIGHT_GRAM_TO_KG
+
+            # Aggregate by group
+            if group_key not in exercise_summary:
+                exercise_summary[group_key] = {
+                    'canonical_name': group,
+                    'variation': exercise_name,
+                    'sets': 0,
+                    'total_reps': 0,
+                    'max_weight_kg': 0,
+                    'weights': []
+                }
+
+            exercise_summary[group_key]['sets'] += 1
+            exercise_summary[group_key]['total_reps'] += reps
+            if weight_kg > 0:
+                exercise_summary[group_key]['weights'].append(weight_kg)
+                exercise_summary[group_key]['max_weight_kg'] = max(
+                    exercise_summary[group_key]['max_weight_kg'],
+                    weight_kg
+                )
+
+        # Update baselines
+        updates = []
+        prs = []
+        progression_suggestions = []
+        activity_date = today.isoformat()
+
+        for group_key, data in exercise_summary.items():
+            sets = data['sets']
+            avg_reps = data['total_reps'] // sets if sets > 0 else 0
+            weight_kg = data['max_weight_kg']
+            variation = data['variation']
+
+            # Get or create exercise baseline
+            if group_key not in baseline['exercises']:
+                baseline['exercises'][group_key] = {
+                    'canonical_name': data['canonical_name'],
+                    'preferred_variation': variation,
+                    'current': None,
+                    'history': [],
+                    'progression': None
+                }
+
+            exercise_baseline = baseline['exercises'][group_key]
+            previous = exercise_baseline.get('current')
+
+            # Check for PR
+            if previous and weight_kg > previous.get('weight_kg', 0):
+                prs.append({
+                    'exercise': group_key,
+                    'previous_kg': previous.get('weight_kg'),
+                    'new_kg': weight_kg,
+                    'improvement_kg': weight_kg - previous.get('weight_kg', 0)
+                })
+
+            # Update current
+            exercise_baseline['current'] = {
+                'weight_kg': weight_kg if weight_kg > 0 else (previous.get('weight_kg') if previous else None),
+                'reps': avg_reps,
+                'sets': sets,
+                'last_performed': activity_date
+            }
+
+            # Update preferred variation
+            exercise_baseline['preferred_variation'] = variation
+
+            # Add to history
+            exercise_baseline['history'].append({
+                'date': activity_date,
+                'weight_kg': weight_kg,
+                'reps': avg_reps,
+                'sets': sets,
+                'variation': variation
+            })
+
+            # Keep history to last 20 entries
+            exercise_baseline['history'] = exercise_baseline['history'][-20:]
+
+            # Calculate progression suggestion
+            current_weight = exercise_baseline['current'].get('weight_kg', 0)
+            if current_weight and current_weight > 0:
+                progression = _calculate_progression(
+                    current_weight,
+                    target_reps=12,  # Default target
+                    actual_reps=avg_reps,
+                    actual_sets=sets
+                )
+                if progression:
+                    exercise_baseline['progression'] = progression
+                    progression_suggestions.append({
+                        'exercise': group_key,
+                        'current_kg': current_weight,
+                        'suggested_kg': progression['suggested_weight_kg'],
+                        'rationale': progression['rationale']
+                    })
+
+            updates.append({
+                'exercise': group_key,
+                'previous': previous,
+                'current': exercise_baseline['current']
+            })
+
+        # Update last synced
+        baseline['last_synced'] = activity_date
+
+        # Save updated baseline
+        _save_strength_baseline(baseline)
+
+        return json.dumps({
+            "status": "success",
+            "activity_id": target_activity_id,
+            "activity_date": activity_date,
+            "exercises_synced": len(exercise_summary),
+            "updates": updates,
+            "prs": prs,
+            "progression_suggestions": progression_suggestions
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_strength_baseline(exercise: str = None) -> str:
+    """
+    View current strength baselines for exercises.
+
+    Returns the current weights, reps, and progression status for all
+    tracked exercises or a specific exercise group.
+
+    Args:
+        exercise: Specific exercise group to view (e.g., "bench_press").
+                  If omitted, returns all baselines.
+
+    Returns:
+        JSON with current baselines, pending progressions, and history.
+
+    Usage:
+        get_strength_baseline()  # View all
+        get_strength_baseline("bench_press")  # View specific
+    """
+    try:
+        baseline = _get_strength_baseline_data()
+
+        if exercise:
+            # Normalize exercise name
+            exercise_key = exercise.lower().replace(' ', '_')
+
+            if exercise_key not in baseline.get('exercises', {}):
+                return json.dumps({
+                    "status": "not_found",
+                    "exercise": exercise,
+                    "available": list(baseline.get('exercises', {}).keys())
+                })
+
+            exercise_data = baseline['exercises'][exercise_key]
+            return json.dumps({
+                "exercise": exercise_key,
+                "canonical_name": exercise_data.get('canonical_name'),
+                "preferred_variation": exercise_data.get('preferred_variation'),
+                "current": exercise_data.get('current'),
+                "pending_progression": exercise_data.get('progression'),
+                "recent_history": exercise_data.get('history', [])[-5:]
+            }, indent=2)
+
+        # Return summary of all exercises
+        exercises_summary = {}
+        pending_progressions = []
+
+        for ex_key, ex_data in baseline.get('exercises', {}).items():
+            current = ex_data.get('current', {})
+            progression = ex_data.get('progression')
+
+            exercises_summary[ex_key] = {
+                'current_weight_kg': current.get('weight_kg'),
+                'current_reps': current.get('reps'),
+                'current_sets': current.get('sets'),
+                'preferred_variation': ex_data.get('preferred_variation'),
+                'last_performed': current.get('last_performed'),
+                'has_pending_progression': progression is not None and progression.get('status') == 'pending'
+            }
+
+            if progression and progression.get('status') == 'pending':
+                pending_progressions.append({
+                    'exercise': ex_key,
+                    'current_kg': current.get('weight_kg'),
+                    'suggested_kg': progression.get('suggested_weight_kg'),
+                    'rationale': progression.get('rationale')
+                })
+
+        return json.dumps({
+            "last_synced": baseline.get('last_synced'),
+            "exercises": exercises_summary,
+            "pending_progressions": pending_progressions,
+            "total_exercises_tracked": len(exercises_summary)
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def approve_progression(exercise: str) -> str:
+    """
+    Approve a suggested weight progression for an exercise.
+
+    When a progression is approved, the suggested weight becomes the new
+    baseline and will be used in future workout plans.
+
+    Args:
+        exercise: Exercise group to approve progression for (e.g., "bench_press")
+
+    Returns:
+        JSON confirmation with old and new weights.
+
+    Usage:
+        approve_progression("bench_press")
+    """
+    try:
+        baseline = _get_strength_baseline_data()
+        exercise_key = exercise.lower().replace(' ', '_')
+
+        if exercise_key not in baseline.get('exercises', {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Exercise '{exercise}' not found in baseline",
+                "available": list(baseline.get('exercises', {}).keys())
+            })
+
+        exercise_data = baseline['exercises'][exercise_key]
+        progression = exercise_data.get('progression')
+
+        if not progression or progression.get('status') != 'pending':
+            return json.dumps({
+                "status": "error",
+                "message": f"No pending progression for '{exercise}'"
+            })
+
+        # Get old and new weights
+        old_weight = exercise_data['current'].get('weight_kg', 0)
+        new_weight = progression['suggested_weight_kg']
+
+        # Update current weight
+        exercise_data['current']['weight_kg'] = new_weight
+
+        # Mark progression as approved
+        exercise_data['progression']['status'] = 'approved'
+        exercise_data['progression']['approved_date'] = date.today().isoformat()
+
+        # Save
+        _save_strength_baseline(baseline)
+
+        return json.dumps({
+            "status": "success",
+            "exercise": exercise_key,
+            "old_weight_kg": old_weight,
+            "new_weight_kg": new_weight,
+            "message": f"{exercise.replace('_', ' ').title()} progression approved. Next session: {exercise_data['current'].get('sets', 3)}x{exercise_data['current'].get('reps', 12)} @ {new_weight}kg"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def set_exercise_preference(exercise_group: str, preferred_variation: str) -> str:
+    """
+    Set the preferred variation for an exercise group.
+
+    When building workouts, the system will use your preferred variation
+    instead of a generic exercise name.
+
+    Args:
+        exercise_group: Canonical group (e.g., "BENCH_PRESS", "ROW")
+        preferred_variation: Specific exercise name (e.g., "BARBELL_BENCH_PRESS")
+
+    Returns:
+        JSON confirmation with updated preference.
+
+    Usage:
+        set_exercise_preference("BENCH_PRESS", "BARBELL_BENCH_PRESS")
+    """
+    from config import DEFAULT_EQUIVALENCE_GROUPS
+
+    try:
+        baseline = _get_strength_baseline_data()
+        exercise_key = exercise_group.lower().replace(' ', '_')
+
+        # Validate the group exists
+        all_groups = {**DEFAULT_EQUIVALENCE_GROUPS, **baseline.get('equivalence_groups', {})}
+        group_upper = exercise_group.upper()
+
+        if group_upper not in all_groups:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unknown exercise group: {exercise_group}",
+                "available_groups": list(all_groups.keys())
+            })
+
+        # Validate the variation is in the group
+        if preferred_variation not in all_groups[group_upper]:
+            return json.dumps({
+                "status": "error",
+                "message": f"'{preferred_variation}' is not in the {group_upper} group",
+                "available_variations": all_groups[group_upper]
+            })
+
+        # Update or create the exercise entry
+        if exercise_key not in baseline['exercises']:
+            baseline['exercises'][exercise_key] = {
+                'canonical_name': group_upper,
+                'preferred_variation': preferred_variation,
+                'current': None,
+                'history': [],
+                'progression': None
+            }
+        else:
+            baseline['exercises'][exercise_key]['preferred_variation'] = preferred_variation
+
+        # Save
+        _save_strength_baseline(baseline)
+
+        return json.dumps({
+            "status": "success",
+            "exercise_group": group_upper,
+            "preferred_variation": preferred_variation,
+            "message": f"Future {group_upper.lower().replace('_', ' ')} exercises will use {preferred_variation}"
+        }, indent=2)
 
     except Exception as e:
         return json.dumps({"error": str(e)})
