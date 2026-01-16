@@ -27,6 +27,7 @@ from config import (
     ATHLETE_BASELINE_FILE,
     TRAINING_CONFIG_FILE,
     ATHLETE_FILE,
+    CTL_TARGETS,
 )
 from fitness import (
     load_fitness_history,
@@ -37,6 +38,7 @@ from fitness import (
     get_fitness_trend,
     update_fitness_history,
     get_sleep_summary,
+    calculate_ctl_target,
 )
 from datetime import date, timedelta
 from typing import Any, Union
@@ -1243,6 +1245,315 @@ def set_ftp(
 
 
 @mcp.tool()
+def analyze_ftp_test(activity_id: str = None) -> str:
+    """
+    Analyze a completed FTP cycling test in detail.
+
+    Provides structured analysis including:
+    - Protocol phases (warmup, blowout, recovery, test, cooldown)
+    - Pacing analysis (power consistency, surges, crashes)
+    - FTP estimate with adjustment factor
+    - Coach recommendation
+
+    Args:
+        activity_id: Specific activity ID. If omitted, finds most recent FTP test
+                     (looks for cycling activities with 'ftp', 'test', or 'threshold' in name).
+
+    Returns:
+        Structured JSON with complete test analysis for coaching decisions.
+    """
+    try:
+        client = get_garmin_client()
+        today = date.today()
+
+        # 1. FIND TEST ACTIVITY
+        if activity_id:
+            target_activity_id = int(activity_id)
+            # Fetch activity details
+            week_ago = today - timedelta(days=30)
+            raw_activities = client.get_activities_by_date(
+                week_ago.isoformat(),
+                today.isoformat()
+            )
+            activity_summary = None
+            for act in raw_activities:
+                if act.get('activityId') == target_activity_id:
+                    activity_summary = act
+                    break
+            if not activity_summary:
+                return json.dumps({
+                    'status': 'not_found',
+                    'error': f'Activity {activity_id} not found in last 30 days'
+                })
+        else:
+            # Search recent activities for FTP test
+            week_ago = today - timedelta(days=30)
+            raw_activities = client.get_activities_by_date(
+                week_ago.isoformat(),
+                today.isoformat()
+            )
+
+            # Filter: cycling + name contains FTP-related keywords
+            ftp_keywords = ['ftp', 'test', 'threshold', '20min', '20-min', 'baseline']
+            ftp_tests = [
+                a for a in raw_activities
+                if a.get('activityType', {}).get('typeKey') in ['cycling', 'indoor_cycling']
+                and any(keyword in a.get('activityName', '').lower() for keyword in ftp_keywords)
+            ]
+
+            if not ftp_tests:
+                return json.dumps({
+                    'status': 'not_found',
+                    'error': 'No FTP tests found in last 30 days. Look for cycling activities with "ftp", "test", or "threshold" in name.'
+                })
+
+            activity_summary = ftp_tests[0]  # Most recent
+            target_activity_id = activity_summary.get('activityId')
+
+        # 2. FETCH LAP DATA
+        try:
+            splits = client.get_activity_splits(target_activity_id)
+            laps = splits.get('lapDTOs', [])
+        except Exception:
+            laps = []
+
+        # 3. EXTRACT SESSION SUMMARY
+        session_summary = {
+            'total_duration_mins': round(activity_summary.get('duration', 0) / 60, 1),
+            'total_distance_km': round(activity_summary.get('distance', 0) / 1000, 1),
+            'avg_power': activity_summary.get('avgPower'),
+            'max_power': activity_summary.get('maxPower'),
+            'norm_power': activity_summary.get('normPower'),
+            'avg_hr': activity_summary.get('averageHR'),
+            'max_hr': activity_summary.get('maxHR'),
+            'avg_cadence': activity_summary.get('averageBikingCadenceInRevPerMinute'),
+            'max_20min_power': activity_summary.get('max20MinPower'),
+        }
+
+        # 4. PARSE PROTOCOL PHASES FROM LAPS
+        protocol_phases = []
+        phase_map = {
+            'WARMUP': 'warmup',
+            'ACTIVE': 'active',
+            'RECOVERY': 'recovery',
+            'COOLDOWN': 'cooldown',
+            'REST': 'rest',
+        }
+
+        for lap in laps:
+            intensity = lap.get('intensityType', 'ACTIVE')
+            phase_name = phase_map.get(intensity, 'active')
+
+            protocol_phases.append({
+                'phase': phase_name,
+                'duration_mins': round(lap.get('duration', 0) / 60, 1),
+                'avg_power': lap.get('averagePower'),
+                'max_power': lap.get('maxPower'),
+                'min_power': lap.get('minPower'),
+                'norm_power': lap.get('normalizedPower'),
+                'avg_hr': lap.get('averageHR'),
+                'max_hr': lap.get('maxHR'),
+                'avg_cadence': lap.get('averageBikeCadence'),
+            })
+
+        # 5. IDENTIFY TEST PORTION
+        # Test laps are ACTIVE laps after recovery (typically laps 4+ in standard FTP test)
+        # Find recovery lap, then get subsequent ACTIVE laps
+        recovery_idx = None
+        for i, phase in enumerate(protocol_phases):
+            if phase['phase'] == 'recovery' and phase['duration_mins'] >= 3:
+                recovery_idx = i
+                break
+
+        test_laps = []
+        if recovery_idx is not None:
+            for phase in protocol_phases[recovery_idx + 1:]:
+                if phase['phase'] == 'active':
+                    test_laps.append(phase)
+                elif phase['phase'] == 'cooldown':
+                    break
+
+        # Calculate test metrics
+        if test_laps:
+            test_duration = sum(lap['duration_mins'] for lap in test_laps)
+            test_powers = [lap['avg_power'] for lap in test_laps if lap['avg_power']]
+            test_avg_power = round(sum(p * d for p, d in zip(
+                [lap['avg_power'] for lap in test_laps if lap['avg_power']],
+                [lap['duration_mins'] for lap in test_laps if lap['avg_power']]
+            )) / test_duration, 0) if test_powers else None
+
+            max_powers = [lap['max_power'] for lap in test_laps if lap['max_power']]
+            min_powers = [lap['min_power'] for lap in test_laps if lap['min_power']]
+            test_max_power = max(max_powers) if max_powers else None
+            test_min_power = min(min_powers) if min_powers else None
+
+            # Pacing analysis
+            if len(test_laps) >= 2:
+                first_half = test_laps[:len(test_laps)//2]
+                second_half = test_laps[len(test_laps)//2:]
+
+                first_half_avg = round(sum(l['avg_power'] for l in first_half if l['avg_power']) / len(first_half), 0) if first_half else None
+                second_half_avg = round(sum(l['avg_power'] for l in second_half if l['avg_power']) / len(second_half), 0) if second_half else None
+            else:
+                first_half_avg = test_avg_power
+                second_half_avg = test_avg_power
+
+            # Detect surges and crashes
+            surge_detected = test_max_power and test_avg_power and test_max_power > test_avg_power * 1.30
+            crash_detected = test_min_power is not None and test_min_power < 100
+
+            # Pacing verdict
+            if crash_detected and surge_detected:
+                pacing_verdict = f"Surged to {test_max_power}W then crashed to {test_min_power}W. Pacing error."
+            elif crash_detected:
+                pacing_verdict = f"Power dropped to {test_min_power}W. Blew up before completion."
+            elif surge_detected:
+                pacing_verdict = f"Large surge to {test_max_power}W detected. Consider steadier pacing."
+            elif first_half_avg and second_half_avg and abs(first_half_avg - second_half_avg) <= 5:
+                pacing_verdict = "Excellent pacing - very consistent power throughout."
+            elif first_half_avg and second_half_avg and first_half_avg > second_half_avg:
+                pacing_verdict = f"Started too hard ({first_half_avg}W) and faded ({second_half_avg}W)."
+            else:
+                pacing_verdict = "Pacing acceptable."
+
+            # Test completion
+            target_duration = 20  # Standard FTP test
+            test_completed = test_duration >= target_duration - 1  # Allow 1 min tolerance
+            completion_pct = round(min(100, test_duration / target_duration * 100), 1)
+
+        else:
+            # Fallback if can't identify test laps
+            test_duration = 0
+            test_avg_power = session_summary.get('avg_power')
+            test_max_power = session_summary.get('max_power')
+            test_min_power = None
+            first_half_avg = None
+            second_half_avg = None
+            surge_detected = False
+            crash_detected = False
+            pacing_verdict = "Could not identify test portion from laps."
+            test_completed = False
+            completion_pct = 0
+
+        # 6. ESTIMATE FTP
+        # Use max_20min_power if available, otherwise estimate from test portion
+        if session_summary.get('max_20min_power'):
+            raw_power = round(session_summary['max_20min_power'], 0)
+            adjustment_factor = 0.95
+            method = '20min_garmin'
+        elif test_avg_power and test_duration >= 18:
+            raw_power = test_avg_power
+            adjustment_factor = 0.95
+            method = '20min_test'
+        elif test_avg_power and test_duration >= 13:
+            raw_power = test_avg_power
+            adjustment_factor = 0.88  # 15-min adjustment
+            method = f'{int(test_duration)}min_adjusted'
+        elif test_avg_power and test_duration >= 8:
+            raw_power = test_avg_power
+            adjustment_factor = 0.85  # 10-min adjustment
+            method = f'{int(test_duration)}min_adjusted'
+        else:
+            raw_power = test_avg_power or session_summary.get('avg_power')
+            adjustment_factor = 0.80  # Very conservative
+            method = 'estimated_conservative'
+
+        estimated_ftp = int(raw_power * adjustment_factor) if raw_power else None
+
+        # Confidence level
+        if test_completed and not crash_detected:
+            confidence = 'high'
+        elif test_duration >= 15 and not crash_detected:
+            confidence = 'medium'
+        elif crash_detected:
+            confidence = 'low'
+        else:
+            confidence = 'low'
+
+        # 7. COACH RECOMMENDATION
+        if crash_detected:
+            suggested_ftp = int(estimated_ftp * 0.95) if estimated_ftp else None  # Extra conservative
+            rationale = f"Athlete crashed during test. Set conservative FTP to ensure proper zone training."
+            retest_weeks = 4
+        elif not test_completed:
+            suggested_ftp = int(estimated_ftp * 0.97) if estimated_ftp else None
+            rationale = f"Test incomplete ({completion_pct}%). Slightly conservative FTP recommended."
+            retest_weeks = 6
+        else:
+            suggested_ftp = estimated_ftp
+            rationale = "Clean test completion. FTP estimate is reliable."
+            retest_weeks = 8
+
+        # 8. IDENTIFY BLOWOUT PHASE (first ACTIVE lap before recovery)
+        blowout_phase = None
+        for i, phase in enumerate(protocol_phases):
+            if phase['phase'] == 'active' and recovery_idx and i < recovery_idx:
+                blowout_phase = phase
+                break
+
+        # Build result
+        result = {
+            'status': 'success',
+            'activity_id': target_activity_id,
+            'test_date': activity_summary.get('startTimeLocal', '')[:10],
+            'test_name': activity_summary.get('activityName'),
+
+            'session_summary': session_summary,
+            'protocol_phases': protocol_phases,
+
+            'test_analysis': {
+                'test_duration_mins': round(test_duration, 1) if test_duration else None,
+                'test_avg_power': test_avg_power,
+                'test_max_power': test_max_power,
+                'test_min_power': test_min_power,
+                'test_completed': test_completed,
+                'completion_pct': completion_pct,
+
+                'pacing': {
+                    'first_half_avg': first_half_avg,
+                    'second_half_avg': second_half_avg,
+                    'power_drop': round(first_half_avg - second_half_avg, 0) if first_half_avg and second_half_avg else None,
+                    'surge_detected': surge_detected,
+                    'crash_detected': crash_detected,
+                    'pacing_verdict': pacing_verdict,
+                },
+
+                'blowout_phase': {
+                    'duration_mins': blowout_phase['duration_mins'] if blowout_phase else None,
+                    'avg_power': blowout_phase['avg_power'] if blowout_phase else None,
+                    'max_power': blowout_phase['max_power'] if blowout_phase else None,
+                    'effective': blowout_phase['max_power'] > 300 if blowout_phase and blowout_phase.get('max_power') else None,
+                } if blowout_phase else None,
+
+                'hr_analysis': {
+                    'peak_hr': session_summary.get('max_hr'),
+                    'avg_hr': session_summary.get('avg_hr'),
+                    'max_effort_likely': session_summary.get('max_hr') and session_summary['max_hr'] >= 180,
+                },
+            },
+
+            'ftp_estimate': {
+                'method': method,
+                'raw_power': raw_power,
+                'adjustment_factor': adjustment_factor,
+                'estimated_ftp': estimated_ftp,
+                'confidence': confidence,
+            },
+
+            'coach_recommendation': {
+                'suggested_ftp': suggested_ftp,
+                'rationale': rationale,
+                'retest_in_weeks': retest_weeks,
+            },
+        }
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        return json.dumps({'status': 'error', 'error': str(e)})
+
+
+@mcp.tool()
 def get_methodology() -> str:
     """
     Returns the complete training methodology.
@@ -2059,7 +2370,7 @@ def push_plan_to_garmin() -> str:
             expanded_sessions = []
             for session in sessions:
                 if 'sessions' in session and isinstance(session.get('sessions'), list):
-                    # Get parent-level exercises (for strength sessions)
+                    # Get parent-level fields (for nested sessions)
                     parent_exercises = session.get('exercises', [])
                     parent_intensity = session.get('intensity', 'easy')
                     # Extract sub-sessions
@@ -2076,6 +2387,9 @@ def push_plan_to_garmin() -> str:
                         # Copy exercises to strength sub-sessions
                         if sub.get('type', '').lower() == 'strength' and parent_exercises:
                             sub['exercises'] = parent_exercises
+                        # Copy protocol for test sessions (FTP, threshold tests)
+                        if 'protocol' in sub or 'protocol' in session:
+                            sub['protocol'] = sub.get('protocol', session.get('protocol', []))
                         expanded_sessions.append(sub)
                 else:
                     expanded_sessions.append(session)
@@ -2753,6 +3067,298 @@ def get_compliance_report(days: int = 7) -> str:
 
 
 @mcp.tool()
+def get_coaching_score() -> str:
+    """
+    Calculate overall coaching effectiveness score.
+
+    Measures how well the coaching is working across 4 dimensions:
+    - Progress (40%): Is the athlete on track for their goals? (CTL trajectory)
+    - Health (30%): Is the athlete staying healthy? (injuries, ACWR)
+    - Achievability (20%): Is the plan realistic? (compliance rate)
+    - Adaptation (10%): Are we learning what works? (response patterns)
+
+    This is a META-TOOL for coaching self-assessment. Use to evaluate
+    whether the coaching approach is effective and identify weak areas.
+
+    Returns:
+        JSON with component scores, overall score, and coaching feedback.
+    """
+    try:
+        client = get_garmin_client()
+        today = date.today()
+
+        # Get fitness data for progress calculation
+        history = load_fitness_history()
+        daily_loads = history.get('daily_loads', {})
+        fitness_data = calculate_fitness_metrics(daily_loads) if daily_loads else {}
+        current_ctl = fitness_data.get('ctl', 0) if fitness_data else 0
+
+        # Get 4-week CTL trend from snapshots
+        snapshots = history.get('snapshots', [])
+        ctl_4wk_ago = None
+        for snapshot in snapshots:
+            snapshot_date = date.fromisoformat(snapshot['date'])
+            if (today - snapshot_date).days >= 28:
+                ctl_4wk_ago = snapshot.get('ctl', 0)
+                break
+        ctl_gain_4wk = current_ctl - (ctl_4wk_ago or current_ctl)
+
+        # Get A-race target
+        training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
+        if training_config_path.exists():
+            with open(training_config_path) as f:
+                training_config = json.load(f)
+        else:
+            training_config = {}
+
+        events = training_config.get('events', [])
+        a_race = next((e for e in events if e.get('priority') == 'A'), None)
+
+        # Calculate progress score (40% weight)
+        progress_score = 50  # Default
+        progress_data = {
+            'current_ctl': round(current_ctl, 1),
+            'ctl_gain_4wk': round(ctl_gain_4wk, 1),
+            'target_ctl': None,
+            'days_remaining': None,
+            'trajectory': 'unknown',
+        }
+
+        if a_race:
+            race_type = a_race.get('type', 'default')
+            target_config = CTL_TARGETS.get(race_type, CTL_TARGETS['default'])
+            target_ctl = target_config['ideal']
+            progress_data['target_ctl'] = target_ctl
+
+            try:
+                race_dt = date.fromisoformat(a_race.get('date'))
+                days_remaining = (race_dt - today).days
+                progress_data['days_remaining'] = days_remaining
+
+                if days_remaining > 0:
+                    # Calculate required CTL gain rate
+                    required_gain = target_ctl - current_ctl
+                    weeks_remaining = days_remaining / 7
+
+                    if required_gain <= 0:
+                        progress_score = 100
+                        progress_data['trajectory'] = 'ahead'
+                    elif weeks_remaining > 0:
+                        # Check if current gain rate is sufficient
+                        required_weekly_gain = required_gain / weeks_remaining
+                        actual_weekly_gain = ctl_gain_4wk / 4
+                        if actual_weekly_gain >= required_weekly_gain:
+                            progress_score = 90
+                            progress_data['trajectory'] = 'on_track'
+                        elif actual_weekly_gain >= required_weekly_gain * 0.7:
+                            progress_score = 70
+                            progress_data['trajectory'] = 'slightly_behind'
+                        else:
+                            progress_score = 50
+                            progress_data['trajectory'] = 'behind'
+            except (ValueError, TypeError):
+                pass
+
+        # Calculate health score (30% weight)
+        health_score = 90  # Default - assume healthy
+        health_data = {
+            'injuries_active': 0,
+            'acwr_status': 'unknown',
+            'acwr': None,
+            'overtraining_risk': 'low',
+        }
+
+        # Check injuries (active OR improving with restrictions)
+        athlete_path = DATA_DIR / ATHLETE_FILE
+        if athlete_path.exists():
+            with open(athlete_path) as f:
+                athlete = json.load(f)
+            # Count injuries that are active OR improving but still have restrictions
+            relevant_injuries = [
+                i for i in athlete.get('injury_history', [])
+                if i.get('status') in ['active', 'improving']
+            ]
+            active_injuries = [i for i in relevant_injuries if i.get('status') == 'active']
+            improving_injuries = [i for i in relevant_injuries if i.get('status') == 'improving']
+
+            health_data['injuries_active'] = len(active_injuries)
+            health_data['injuries_improving'] = len(improving_injuries)
+            health_data['restricted_activities'] = []
+
+            # Collect all restricted activities
+            for inj in relevant_injuries:
+                restrictions = inj.get('restricted_activities', [])
+                health_data['restricted_activities'].extend(restrictions)
+            health_data['restricted_activities'] = list(set(health_data['restricted_activities']))
+
+            # Score impact: active = -20, improving = -10
+            if len(active_injuries) > 0:
+                health_score -= 20 * len(active_injuries)
+            if len(improving_injuries) > 0:
+                health_score -= 10 * len(improving_injuries)  # Less impact but still counts
+
+        # Check ACWR
+        if fitness_data:
+            acwr = fitness_data.get('acwr', 1.0)
+            acwr_status = fitness_data.get('acwr_status', 'optimal')
+            health_data['acwr'] = round(acwr, 2)
+            health_data['acwr_status'] = acwr_status
+
+            if acwr_status == 'danger':
+                health_score -= 30
+                health_data['overtraining_risk'] = 'high'
+            elif acwr_status == 'elevated':
+                health_score -= 15
+                health_data['overtraining_risk'] = 'moderate'
+            elif acwr_status == 'low':
+                health_data['overtraining_risk'] = 'low'  # Undertrained, not dangerous
+
+        health_score = max(0, health_score)
+
+        # Calculate achievability score (20% weight)
+        # Based on compliance rate over last 4 weeks
+        start_date = today - timedelta(days=28)
+        raw_activities = client.get_activities_by_date(
+            start_date.isoformat(),
+            today.isoformat()
+        )
+        activities = parse_activities(raw_activities)
+        compliance = check_weekly_compliance(activities)
+
+        achievability_score = 70  # Default
+        achievability_data = {
+            'compliance_rate': None,
+            'strength_compliant': compliance.get('strength', {}).get('compliant', True),
+            'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
+        }
+
+        # Simplified compliance rate calculation
+        pillars_total = 0
+        pillars_met = 0
+        for pillar in ['strength', 'mobility', 'long_effort']:
+            if pillar in compliance:
+                pillars_total += 1
+                if compliance[pillar].get('compliant', False):
+                    pillars_met += 1
+
+        if pillars_total > 0:
+            compliance_rate = pillars_met / pillars_total * 100
+            achievability_data['compliance_rate'] = round(compliance_rate, 0)
+            if compliance_rate >= 90:
+                achievability_score = 95
+            elif compliance_rate >= 75:
+                achievability_score = 80
+            elif compliance_rate >= 60:
+                achievability_score = 65
+            else:
+                achievability_score = 50
+
+        # Calculate adaptation score (10% weight)
+        adaptation_score = 50  # Default - no data
+        adaptation_data = {
+            'responses_logged': 0,
+            'patterns_identified': 0,
+            'positive_responses': 0,
+            'negative_responses': 0,
+        }
+
+        try:
+            log = load_coaching_log()
+            responses = log.get('athlete_responses', [])
+            adaptation_data['responses_logged'] = len(responses)
+
+            # Count patterns
+            patterns = set()
+            positive_count = 0
+            negative_count = 0
+            for r in responses:
+                if r.get('pattern'):
+                    patterns.add(r['pattern'])
+                response_type = r.get('response', '')
+                if 'positive' in response_type.lower() or 'good' in response_type.lower():
+                    positive_count += 1
+                elif 'negative' in response_type.lower() or 'poor' in response_type.lower():
+                    negative_count += 1
+
+            adaptation_data['patterns_identified'] = len(patterns)
+            adaptation_data['positive_responses'] = positive_count
+            adaptation_data['negative_responses'] = negative_count
+
+            # Score based on data richness
+            if len(responses) >= 10:
+                adaptation_score = 80
+            elif len(responses) >= 5:
+                adaptation_score = 65
+            elif len(responses) >= 1:
+                adaptation_score = 50
+            else:
+                adaptation_score = 30  # No data is a problem
+        except Exception:
+            pass
+
+        # Calculate overall score (weighted average)
+        overall_score = (
+            progress_score * 0.4 +
+            health_score * 0.3 +
+            achievability_score * 0.2 +
+            adaptation_score * 0.1
+        )
+
+        # Generate coaching feedback (DATA not prescriptions)
+        feedback = []
+        if progress_data['trajectory'] == 'behind':
+            feedback.append(f"CTL trajectory behind target (gained {ctl_gain_4wk:.1f} in 4 weeks)")
+        elif progress_data['trajectory'] == 'on_track':
+            feedback.append(f"CTL building well (+{ctl_gain_4wk:.1f} in 4 weeks)")
+        elif progress_data['trajectory'] == 'ahead':
+            feedback.append("Already at or above target CTL")
+
+        if health_data['injuries_active'] > 0:
+            feedback.append(f"{health_data['injuries_active']} active injury/injuries")
+        if health_data['overtraining_risk'] == 'high':
+            feedback.append("High overtraining risk (ACWR elevated)")
+
+        if achievability_data['compliance_rate'] and achievability_data['compliance_rate'] >= 80:
+            feedback.append("High compliance suggests realistic plan")
+        elif achievability_data['compliance_rate'] and achievability_data['compliance_rate'] < 60:
+            feedback.append("Low compliance - plan may be too ambitious")
+
+        if adaptation_data['responses_logged'] < 5:
+            feedback.append("Limited athlete response data - log more patterns")
+
+        return json.dumps({
+            'overall_score': round(overall_score, 0),
+            'trend': 'improving' if ctl_gain_4wk > 0 else 'declining' if ctl_gain_4wk < 0 else 'stable',
+            'components': {
+                'progress': {
+                    'score': progress_score,
+                    'weight': '40%',
+                    'data': progress_data,
+                },
+                'health': {
+                    'score': health_score,
+                    'weight': '30%',
+                    'data': health_data,
+                },
+                'achievability': {
+                    'score': achievability_score,
+                    'weight': '20%',
+                    'data': achievability_data,
+                },
+                'adaptation': {
+                    'score': adaptation_score,
+                    'weight': '10%',
+                    'data': adaptation_data,
+                },
+            },
+            'feedback': feedback,
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
 def get_coaching_snapshot() -> str:
     """
     MANDATORY FIRST CALL before making any coaching recommendations.
@@ -2842,19 +3448,108 @@ def get_coaching_snapshot() -> str:
             methodology.get('race_templates', {})
         )
 
-        # 8. Active injuries
+        # 8. Active + improving injuries (both need attention)
         athlete_path = DATA_DIR / ATHLETE_FILE
         if athlete_path.exists():
             with open(athlete_path) as f:
                 athlete = json.load(f)
             injuries = athlete.get('injury_history', [])
-            active_injuries = [i for i in injuries if i.get('status') == 'active']
+            # Include BOTH active AND improving - improving still have restrictions and rehab
+            relevant_injuries = [
+                i for i in injuries
+                if i.get('status') in ['active', 'improving']
+            ]
         else:
-            active_injuries = []
+            relevant_injuries = []
 
         # 9. Intensity distribution (last 7 days)
         athlete_hr_zones = get_athlete_hr_zones()
         intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
+
+        # 9b. Adaptation signals - DATA for LLM to reason about personalization
+        # These signals help the LLM decide where in the load_increase_guidance range to operate
+        adaptation_signals = _build_adaptation_signals(
+            sleep_data=sleep_data,
+            recovery=recovery,
+            compliance=compliance,
+            daily_loads=daily_loads,
+            today=today
+        )
+
+        # 10. Volume data (CTL targeting for A-race) - DATA ONLY, no prescriptions
+        volume_data = None
+        events = training_config.get('events', [])
+        a_race = next((e for e in events if e.get('priority') == 'A'), None)
+        if a_race and isinstance(fitness_metrics, dict) and fitness_metrics.get('ctl'):
+            current_ctl = fitness_metrics.get('ctl', 0)
+            # Calculate TSS trend from daily loads (last 4 weeks)
+            last_week_tss = sum(
+                daily_loads.get((today - timedelta(days=i)).isoformat(), 0)
+                for i in range(7)
+            )
+            # Calculate 4-week TSS trend
+            tss_trend_4wk = []
+            for week in range(4):
+                week_start = week * 7
+                week_end = (week + 1) * 7
+                week_tss = sum(
+                    daily_loads.get((today - timedelta(days=i)).isoformat(), 0)
+                    for i in range(week_start, week_end)
+                )
+                tss_trend_4wk.append(round(week_tss, 0))
+            tss_trend_4wk.reverse()  # Oldest first
+
+            ctl_target = calculate_ctl_target(
+                race_date=a_race.get('date'),
+                race_type=a_race.get('type', 'default'),
+                current_ctl=current_ctl,
+                current_weekly_tss=last_week_tss if last_week_tss > 0 else None
+            )
+            if not ctl_target.get('error'):
+                # ACWR facts only (no prescriptions)
+                acwr = fitness_metrics.get('acwr', 1.0)
+                acwr_status = fitness_metrics.get('acwr_status', 'optimal')
+
+                # Volume data - FACTS and RANGES only, LLM decides what to do
+                volume_data = {
+                    # Race context
+                    'a_race': a_race.get('name'),
+                    'race_date': ctl_target.get('race_date'),
+                    'days_until_race': ctl_target.get('days_until_race'),
+                    'weeks_until_race': ctl_target.get('weeks_until_race'),
+
+                    # CTL facts
+                    'current_ctl': current_ctl,
+                    'target_ctl': {
+                        'min': ctl_target.get('target_ctl_min'),
+                        'ideal': ctl_target.get('target_ctl_ideal'),
+                    },
+                    'ctl_gap': ctl_target.get('ctl_gap'),
+                    'on_track': ctl_target.get('on_track'),
+
+                    # Weekly TSS facts and ranges
+                    'weekly_tss_to_reach_target': {
+                        'required': ctl_target.get('weekly_tss_required'),
+                        'hours_estimate': ctl_target.get('weekly_hours_required'),
+                    },
+                    'last_week_tss': round(last_week_tss, 0) if last_week_tss else None,
+                    'tss_trend_4wk': tss_trend_4wk,
+
+                    # Load increase guidance as RANGES (LLM chooses based on adaptation signals)
+                    'load_increase_guidance': {
+                        'conservative_pct': 10,   # For poor recovery/sleep
+                        'standard_pct': 15,       # Baseline guidance
+                        'aggressive_pct': 25,     # For excellent adaptation signals
+                    },
+
+                    # ACWR facts only
+                    'acwr': {
+                        'current': round(acwr, 2),
+                        'status': acwr_status,  # low/optimal/elevated/danger
+                        'optimal_range': [0.8, 1.3],
+                        'risk_threshold': 1.5,
+                    },
+                }
 
         snapshot = {
             'snapshot_date': today.isoformat(),
@@ -2877,15 +3572,20 @@ def get_coaching_snapshot() -> str:
 
             'fitness_metrics': fitness_metrics,
 
+            'volume_data': volume_data,
+
             'compliance': compliance,
 
             'recovery': recovery,
 
             'sleep': sleep_data,
 
+            'adaptation_signals': adaptation_signals,
+
             'sport_priorities': sport_priorities,
 
-            'active_injuries': active_injuries,
+            # All injuries that need attention (active OR improving - both have restrictions/rehab)
+            'injuries': relevant_injuries,
 
             'intensity_distribution': intensity_dist,
 
@@ -2896,8 +3596,9 @@ def get_coaching_snapshot() -> str:
                 'has_fitness_data': bool(daily_loads),
                 'acwr_safe': fitness_metrics.get('acwr_status') in ['optimal', 'low'] if isinstance(fitness_metrics, dict) else False,
                 'compliance_ok': compliance.get('overall_compliant', False),
-                'no_blocking_injuries': len([i for i in active_injuries if i.get('severity') == 'severe']) == 0,
+                'no_blocking_injuries': len([i for i in relevant_injuries if i.get('severity') == 'severe']) == 0,
                 'sleep_adequate': sleep_data.get('status') == 'adequate' if sleep_data else False,
+                'has_injuries_needing_rehab': any(i.get('rehab_protocol') for i in relevant_injuries),
             },
         }
 
@@ -3093,6 +3794,109 @@ def _readiness_to_recommendation(level: str) -> str:
         'POOR': 'Very low recovery - rest day recommended',
     }
     return recommendations.get(level, 'Check Garmin for details')
+
+
+def _build_adaptation_signals(
+    sleep_data: dict,
+    recovery: dict,
+    compliance: dict,
+    daily_loads: dict,
+    today: date
+) -> dict:
+    """
+    Build adaptation signals for LLM personalization decisions.
+
+    These signals help the LLM decide where in the load_increase_guidance
+    range to operate (conservative/standard/aggressive).
+
+    Returns DATA only - no prescriptions.
+    """
+    # 1. Sleep trends
+    sleep_signals = {
+        'avg_7d_hrs': sleep_data.get('avg_duration_hrs') if sleep_data else None,
+        'avg_score_7d': sleep_data.get('avg_score') if sleep_data else None,
+        'recent_avg_hrs': sleep_data.get('recent_avg_duration') if sleep_data else None,
+        'recent_trend': sleep_data.get('recent_trend', 0) if sleep_data else 0,  # Positive = improving
+        'status': sleep_data.get('status') if sleep_data else 'unknown',
+        'acute_status': sleep_data.get('acute_status') if sleep_data else 'unknown',
+        'deficit_days_7d': sleep_data.get('poor_quality_nights', 0) if sleep_data else 0,
+    }
+
+    # Determine sleep trend direction
+    if sleep_signals['recent_trend'] and sleep_signals['recent_trend'] > 0.3:
+        sleep_signals['trend'] = 'improving'
+    elif sleep_signals['recent_trend'] and sleep_signals['recent_trend'] < -0.3:
+        sleep_signals['trend'] = 'declining'
+    else:
+        sleep_signals['trend'] = 'stable'
+
+    # 2. Recovery signals (from Garmin readiness)
+    recovery_signals = {
+        'readiness_score': recovery.get('score') if recovery else None,
+        'readiness_level': recovery.get('level') if recovery else None,
+        'hrv_status': recovery.get('hrv_status') if recovery else None,
+    }
+
+    # Infer HRV trend from level (simplified - would need history for true trend)
+    hrv_level = recovery_signals.get('hrv_status', '')
+    if hrv_level in ['BALANCED', 'GOOD']:
+        recovery_signals['hrv_trend'] = 'stable'
+    elif hrv_level in ['LOW', 'POOR']:
+        recovery_signals['hrv_trend'] = 'declining'
+    else:
+        recovery_signals['hrv_trend'] = 'unknown'
+
+    # 3. Compliance signals
+    compliance_signals = {
+        'overall_compliant': compliance.get('overall_compliant', False),
+        'strength_compliant': compliance.get('strength', {}).get('compliant', True),
+        'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
+    }
+
+    # Calculate compliance rate (simplified - based on current week's pillars)
+    pillars_total = 0
+    pillars_met = 0
+    for pillar in ['strength', 'mobility', 'long_effort']:
+        if pillar in compliance:
+            pillars_total += 1
+            if compliance[pillar].get('compliant', False):
+                pillars_met += 1
+    compliance_signals['rate_this_week'] = round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
+
+    # 4. Adaptation patterns (from coaching log)
+    try:
+        log = load_coaching_log()
+        responses = log.get('athlete_responses', [])
+
+        # Extract key patterns
+        patterns = {}
+        for r in responses:
+            pattern = r.get('pattern')
+            if pattern:
+                patterns[pattern] = patterns.get(pattern, 0) + 1
+
+        adaptation_patterns = {
+            'handles_volume_well': patterns.get('handles_volume_well', 0) > patterns.get('struggles_with_volume', 0),
+            'recovers_quickly': patterns.get('recovers_quickly', 0) > patterns.get('slow_recovery', 0),
+            'needs_extra_rest_after_intensity': patterns.get('needs_recovery_after_intensity', 0) > 0,
+            'patterns_logged': len(patterns),
+            'total_responses': len(responses),
+        }
+    except Exception:
+        adaptation_patterns = {
+            'handles_volume_well': None,  # Unknown - no data
+            'recovers_quickly': None,
+            'needs_extra_rest_after_intensity': None,
+            'patterns_logged': 0,
+            'total_responses': 0,
+        }
+
+    return {
+        'sleep': sleep_signals,
+        'recovery': recovery_signals,
+        'compliance': compliance_signals,
+        'adaptation_patterns': adaptation_patterns,
+    }
 
 
 def _analyze_sport_priorities(events: list, current_block: dict, race_templates: dict) -> dict:

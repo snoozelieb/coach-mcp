@@ -27,6 +27,9 @@ from config import (
     ACWR_DANGER_THRESHOLD,
     MIN_DAYS_FOR_CTL,
     MIN_DAYS_FOR_TRENDS,
+    CTL_TARGETS,
+    TSS_PER_HOUR_ESTIMATE,
+    MAX_WEEKLY_LOAD_INCREASE_PCT,
 )
 
 
@@ -187,6 +190,104 @@ def calculate_fitness_metrics(
         'days_with_data': days_with_data,
         'data_sufficient': days_with_data >= MIN_DAYS_FOR_CTL,
         'as_of_date': as_of_date.isoformat(),
+    }
+
+
+def calculate_ctl_target(
+    race_date: str,
+    race_type: str,
+    current_ctl: float,
+    current_weekly_tss: float = None
+) -> dict[str, Any]:
+    """
+    Calculate target CTL for race day and required weekly training.
+
+    Uses CTL modeling to determine:
+    - Target CTL based on race type
+    - Weekly TSS required to reach target
+    - Whether current training is on track
+    - Safe load increase limits
+
+    Args:
+        race_date: Race date in YYYY-MM-DD format
+        race_type: Type of race (from CTL_TARGETS keys)
+        current_ctl: Current chronic training load
+        current_weekly_tss: Recent weekly TSS (optional, for pace assessment)
+
+    Returns:
+        Dict with target_ctl, weekly_tss_required, hours_required, on_track, etc.
+    """
+    # Parse race date
+    try:
+        race_dt = date.fromisoformat(race_date)
+    except (ValueError, TypeError):
+        return {"error": f"Invalid race date: {race_date}"}
+
+    today = date.today()
+    days_until_race = (race_dt - today).days
+
+    if days_until_race <= 0:
+        return {"error": "Race date is in the past"}
+
+    # Get target CTL for race type
+    target_config = CTL_TARGETS.get(race_type, CTL_TARGETS["default"])
+    target_ctl_min = target_config["min"]
+    target_ctl_ideal = target_config["ideal"]
+
+    # Use ideal target, but min is acceptable
+    target_ctl = target_ctl_ideal
+    ctl_gap = target_ctl - current_ctl
+
+    # Calculate required daily TSS to reach target
+    # CTL formula: CTL_new = CTL_old + (TSS - CTL_old) / time_constant
+    # Rearranging: TSS = CTL_new * time_constant - CTL_old * (time_constant - 1)
+    # Simplified: To raise CTL by X over D days, need avg daily TSS of approximately:
+    # daily_tss = target_ctl + (ctl_gap * CTL_TIME_CONSTANT_DAYS / days_until_race)
+
+    if days_until_race >= CTL_TIME_CONSTANT_DAYS:
+        # Enough time - gradual build
+        # Required TSS per day to hit target (exponential decay formula)
+        required_daily_tss = target_ctl + (ctl_gap * CTL_TIME_CONSTANT_DAYS / days_until_race)
+    else:
+        # Not much time - need higher TSS but be careful
+        required_daily_tss = target_ctl * 1.2  # Aim higher since less time for adaptation
+
+    required_weekly_tss = round(required_daily_tss * 7, 0)
+    required_weekly_hours = round(required_weekly_tss / TSS_PER_HOUR_ESTIMATE, 1)
+
+    # Assess if on track
+    on_track = current_ctl >= target_ctl_min
+    ctl_deficit = max(0, target_ctl_min - current_ctl)
+
+    # Calculate safe increase from current load
+    if current_weekly_tss and current_weekly_tss > 0:
+        max_safe_tss = current_weekly_tss * (1 + MAX_WEEKLY_LOAD_INCREASE_PCT / 100)
+        recommended_tss = min(required_weekly_tss, max_safe_tss)
+        safe_to_increase = required_weekly_tss <= max_safe_tss
+    else:
+        max_safe_tss = required_weekly_tss
+        recommended_tss = required_weekly_tss
+        safe_to_increase = True
+
+    # Return DATA only - no prescriptions, no directives
+    # LLM uses load_increase_guidance ranges to decide based on adaptation signals
+    return {
+        "race_date": race_date,
+        "race_type": race_type,
+        "race_type_description": target_config.get("description", ""),
+        "days_until_race": days_until_race,
+        "weeks_until_race": round(days_until_race / 7, 1),
+        "current_ctl": current_ctl,
+        "target_ctl_min": target_ctl_min,
+        "target_ctl_ideal": target_ctl_ideal,
+        "ctl_gap": round(ctl_gap, 1),
+        "on_track": on_track,
+        "ctl_deficit": round(ctl_deficit, 1),
+        "weekly_tss_required": required_weekly_tss,
+        "weekly_hours_required": required_weekly_hours,
+        "daily_tss_required": round(required_daily_tss, 1),
+        "current_weekly_tss": current_weekly_tss,
+        "max_safe_weekly_tss": round(max_safe_tss, 0) if current_weekly_tss else None,
     }
 
 
@@ -527,6 +628,11 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
                 light_secs = dto.get('lightSleepSeconds', 0)
                 awake_secs = dto.get('awakeSleepSeconds', 0)
 
+                # Extract nap data for this day
+                nap_secs = dto.get('napTimeSeconds', 0) or 0
+                nap_dtos = dto.get('dailyNapDTOS', []) or []
+                nap_count = len(nap_dtos)
+
                 record = {
                     'date': d.isoformat(),
                     'duration_hrs': round(duration_secs / 3600, 1),
@@ -546,6 +652,9 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
                     # Recovery indicators
                     'avg_hr': dto.get('avgHeartRate'),
                     'respiration': dto.get('averageRespirationValue'),
+                    # Nap data
+                    'nap_mins': round(nap_secs / 60, 0),
+                    'nap_count': nap_count,
                 }
                 sleep_records.append(record)
 
@@ -564,12 +673,35 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
     if not sleep_records:
         return {'status': 'no_data', 'note': 'Could not fetch sleep data'}
 
-    # Calculate averages
+    # Calculate averages (7-day)
     avg_duration = round(sum(r['duration_hrs'] for r in sleep_records) / len(sleep_records), 1)
     scores_with_values = [r['score'] for r in sleep_records if r.get('score')]
     avg_score = round(sum(scores_with_values) / len(scores_with_values), 0) if scores_with_values else None
     avg_deep_pct = round(sum(r['deep_pct'] for r in sleep_records) / len(sleep_records), 0)
     avg_rem_pct = round(sum(r['rem_pct'] for r in sleep_records) / len(sleep_records), 0)
+
+    # Nap totals
+    total_nap_mins = sum(r.get('nap_mins', 0) for r in sleep_records)
+    today_nap_mins = sleep_records[0].get('nap_mins', 0) if sleep_records else 0
+
+    # ACUTE READINESS: Recent nights matter more for "can I do an FTP test tomorrow?"
+    # Weight last 2-3 nights heavily for acute training decisions
+    recent_nights = sleep_records[:3]  # Last 3 nights (most recent first)
+    if recent_nights:
+        recent_scores = [r['score'] for r in recent_nights if r.get('score')]
+        recent_avg_score = round(sum(recent_scores) / len(recent_scores), 0) if recent_scores else None
+        recent_avg_duration = round(sum(r['duration_hrs'] for r in recent_nights) / len(recent_nights), 1)
+        recent_avg_deep = round(sum(r['deep_pct'] for r in recent_nights) / len(recent_nights), 0)
+        # Trend: is sleep improving? (positive = getting better)
+        if len(recent_nights) >= 2:
+            trend = recent_nights[0]['duration_hrs'] - recent_nights[-1]['duration_hrs']
+        else:
+            trend = 0
+    else:
+        recent_avg_score = avg_score
+        recent_avg_duration = avg_duration
+        recent_avg_deep = avg_deep_pct
+        trend = 0
 
     # Use personalized need if available, otherwise use athlete default
     if personalized_need_mins:
@@ -607,79 +739,130 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
         if variance > 2:
             quality_issues.append(f'Inconsistent sleep ({variance:.1f}hr variance) - poor sleep hygiene')
 
-    # Combined status based on BOTH quantity AND quality
-    # This is the key change - quality can override duration assessment
+    # CHRONIC STATUS: 7-day average for overall training load decisions
     quantity_ok = avg_duration >= (target_hrs - 0.5)  # Within 30min of target
     quality_ok = avg_score and avg_score >= 70 and avg_deep_pct >= 15
 
+    # ACUTE STATUS: Recent nights (last 2-3) for "can I do hard session tomorrow?"
+    # High scores (80+) with good deep sleep can override moderate duration shortfall
+    recent_quality_excellent = recent_avg_score and recent_avg_score >= 80 and recent_avg_deep >= 18
+    recent_quality_good = recent_avg_score and recent_avg_score >= 75 and recent_avg_deep >= 15
+    recent_duration_ok = recent_avg_duration >= 6.5
+    improving_trend = trend > 0.3  # Getting noticeably more sleep
+
+    # Nap bonus: a nap today adds to acute recovery capacity
+    nap_recovery_boost = today_nap_mins >= 15  # 15+ min nap counts
+
+    # CHRONIC status (7-day) - unchanged thresholds
     if avg_duration < 6:
-        status = 'severe_deficit'
+        chronic_status = 'severe_deficit'
     elif avg_duration < 6.5 or (avg_score and avg_score < 50):
-        status = 'severe_deficit' if not quality_ok else 'deficit'
+        chronic_status = 'severe_deficit' if not quality_ok else 'deficit'
     elif avg_duration < target_hrs - 0.5:
-        status = 'deficit'
+        chronic_status = 'deficit'
     elif avg_duration < target_hrs:
-        status = 'borderline' if quality_ok else 'deficit'
+        chronic_status = 'borderline' if quality_ok else 'deficit'
     elif quality_ok:
-        status = 'adequate'
+        chronic_status = 'adequate'
     else:
-        status = 'quality_issue'  # Duration OK but quality poor
+        chronic_status = 'quality_issue'
 
-    # Generate recommendation based on combined assessment
-    if status == 'severe_deficit':
-        recommendation = f'CRITICAL: Severe sleep deficit. Training is catabolic. Prioritize sleep over ALL training.'
-    elif status == 'deficit':
-        recommendation = f'Sleep deficit ({weekly_deficit:.0f}hrs/week vs your need of {target_hrs}hrs/night). No max efforts until resolved.'
-    elif status == 'quality_issue':
-        recommendation = f'Duration OK but quality poor. Focus on sleep hygiene: consistent bedtime, no screens, cool room.'
-    elif status == 'borderline':
-        recommendation = f'Close to target but not quite there. Add 30 mins tonight. {quality_issues[0] if quality_issues else ""}'
+    # ACUTE status (recent nights) - can be better than chronic if recent sleep is good
+    # Key insight: 6.5hrs with score 86 is BETTER than 7.5hrs with score 60
+    if recent_quality_excellent and recent_duration_ok:
+        acute_status = 'ready'  # Good to go for hard efforts
+    elif recent_quality_good and (recent_duration_ok or nap_recovery_boost):
+        acute_status = 'ready'  # Scores override moderate duration shortfall
+    elif recent_quality_good and improving_trend:
+        acute_status = 'cautious'  # Trending right way, proceed with monitoring
+    elif recent_avg_duration < 6 and not nap_recovery_boost:
+        acute_status = 'not_ready'  # Recent nights too short
     else:
-        recommendation = 'Sleep adequate for training adaptation. Full training supported.'
+        acute_status = 'cautious'  # Default to cautious
 
-    # Training modifications - based on COMBINED status
-    if status in ['severe_deficit']:
+    # Final status combines both views - use the more relevant one for context
+    # Chronic status drives volume decisions, acute status drives intensity decisions
+    status = chronic_status  # Keep backward compatibility
+
+    # Generate recommendation based on BOTH chronic and acute status
+    # Chronic status commentary
+    if chronic_status == 'severe_deficit':
+        chronic_note = f'CRITICAL: Severe sleep deficit. Training is catabolic.'
+    elif chronic_status == 'deficit':
+        chronic_note = f'Sleep deficit ({weekly_deficit:.0f}hrs/week vs target {target_hrs}hrs/night).'
+    elif chronic_status == 'quality_issue':
+        chronic_note = f'Duration OK but quality poor. Focus on sleep hygiene.'
+    elif chronic_status == 'borderline':
+        chronic_note = f'Close to target. Add 30 mins tonight.'
+    else:
+        chronic_note = 'Sleep adequate for training adaptation.'
+
+    # Acute readiness commentary
+    if acute_status == 'ready':
+        if nap_recovery_boost:
+            acute_note = f'Recent sleep good (avg score {recent_avg_score}, {recent_avg_duration}hrs) + nap today. Ready for hard efforts.'
+        else:
+            acute_note = f'Recent sleep good (avg score {recent_avg_score}, {recent_avg_duration}hrs). Ready for hard efforts.'
+    elif acute_status == 'cautious':
+        acute_note = f'Recent sleep mixed. Proceed with intensity but monitor how you feel.'
+    else:
+        acute_note = f'Recent sleep poor ({recent_avg_duration}hrs avg). Skip max efforts today.'
+
+    # Combined recommendation
+    if acute_status == 'ready' and chronic_status in ['deficit', 'borderline']:
+        recommendation = f'{chronic_note} But recent nights are solid - {acute_note.lower()}'
+    elif acute_status == 'not_ready':
+        recommendation = f'{acute_note} {chronic_note}'
+    else:
+        recommendation = f'{chronic_note} {acute_note}'
+
+    # Training modifications - ACUTE status drives intensity, CHRONIC drives volume
+    # Key change: use acute_status for skip_sessions decisions
+    if chronic_status == 'severe_deficit':
+        # Severe chronic deficit overrides everything
         training_modifications = {
             'intensity_cap': 'recovery_only',
             'skip_sessions': ['ftp_test', 'intervals', 'hiit', 'tempo', 'threshold', 'race', 'time_trial'],
             'allowed_sessions': ['easy_ride', 'yoga', 'mobility', 'walking', 'easy_swim'],
             'early_am_workouts': 'BANNED - sleep is medicine right now',
-            'volume_modifier': 0.5,  # 50% of planned volume max
+            'volume_modifier': 0.5,
             'rationale': 'Severe deficit: your body cannot adapt. Training adds stress without benefit.',
         }
-    elif status in ['deficit', 'quality_issue']:
-        training_modifications = {
-            'intensity_cap': 'moderate',
-            'skip_sessions': ['ftp_test', 'max_efforts', 'race_simulation', 'vo2max'],
-            'allowed_sessions': ['easy_ride', 'strength', 'mobility', 'easy_run', 'swim', 'tempo_short'],
-            'early_am_workouts': 'AVOID - prioritize sleep first',
-            'volume_modifier': 0.8,  # 80% of planned volume
-            'rationale': 'Deficit: adaptation capacity reduced. Save hard efforts for when rested.',
-        }
-    elif status == 'borderline':
-        training_modifications = {
-            'intensity_cap': 'normal_with_monitoring',
-            'skip_sessions': [],
-            'allowed_sessions': ['all'],
-            'early_am_workouts': 'Only if 7+ hrs achieved',
-            'volume_modifier': 1.0,
-            'rationale': 'Borderline: can train but prioritize sleep tonight for tomorrow.',
-        }
-    else:
+    elif acute_status == 'ready':
+        # Recent nights are good - allow hard efforts even if chronic shows deficit
         training_modifications = {
             'intensity_cap': 'none',
             'skip_sessions': [],
             'allowed_sessions': ['all'],
-            'early_am_workouts': 'OK',
-            'volume_modifier': 1.0,
-            'rationale': 'Sleep supports full training adaptation.',
+            'early_am_workouts': 'OK if slept 7+ hrs last night',
+            'volume_modifier': 0.9 if chronic_status == 'deficit' else 1.0,  # Slightly reduce volume if chronic deficit
+            'rationale': f'Recent sleep supports hard efforts (score {recent_avg_score}, {recent_avg_duration}hrs avg).',
+        }
+    elif acute_status == 'cautious':
+        training_modifications = {
+            'intensity_cap': 'moderate',
+            'skip_sessions': ['race_simulation', 'vo2max'],  # Skip only the hardest
+            'allowed_sessions': ['ftp_test', 'intervals', 'strength', 'tempo', 'easy_ride', 'mobility'],
+            'early_am_workouts': 'Only if 7+ hrs achieved',
+            'volume_modifier': 0.85,
+            'rationale': 'Mixed recent sleep. FTP test OK but monitor fatigue.',
+        }
+    else:  # acute_status == 'not_ready'
+        training_modifications = {
+            'intensity_cap': 'low',
+            'skip_sessions': ['ftp_test', 'max_efforts', 'race_simulation', 'vo2max', 'intervals'],
+            'allowed_sessions': ['easy_ride', 'strength', 'mobility', 'easy_run', 'swim'],
+            'early_am_workouts': 'AVOID - prioritize sleep',
+            'volume_modifier': 0.7,
+            'rationale': 'Recent sleep inadequate. Save hard efforts for when rested.',
         }
 
     return {
-        'status': status,
+        'status': status,  # Chronic status (backward compatible)
+        'acute_status': acute_status,  # NEW: ready/cautious/not_ready for hard efforts
         'days_analyzed': len(sleep_records),
 
-        # Quantity
+        # Quantity (7-day average)
         'avg_duration_hrs': avg_duration,
         'target_hrs': target_hrs,
         'target_source': target_source,
@@ -691,13 +874,24 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
         'need_feedback': need_feedback,  # e.g., "HIGHLY_INCREASED"
         'training_impact_on_sleep': training_impact,  # How chronic load affects sleep need
 
-        # Quality
+        # Quality (7-day)
         'avg_score': avg_score,
         'avg_deep_pct': avg_deep_pct,
         'avg_rem_pct': avg_rem_pct,
         'poor_quality_nights': poor_quality_nights,
         'fair_quality_nights': fair_quality_nights,
         'quality_issues': quality_issues,
+
+        # NEW: Recent nights analysis (for acute decisions)
+        'recent_avg_score': recent_avg_score,
+        'recent_avg_duration': recent_avg_duration,
+        'recent_avg_deep': recent_avg_deep,
+        'recent_trend': round(trend, 1),  # Positive = improving
+
+        # NEW: Nap data
+        'today_nap_mins': today_nap_mins,
+        'weekly_nap_mins': total_nap_mins,
+        'nap_recovery_boost': nap_recovery_boost,
 
         # Recent nights (detailed)
         'recent': sleep_records[:3],

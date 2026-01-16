@@ -39,6 +39,30 @@ INTENSITY_LOW_TARGET_PCT = 80      # Zone 1-2 (recovery + aerobic)
 INTENSITY_MODERATE_TARGET_PCT = 15 # Zone 3 (tempo)
 INTENSITY_HIGH_TARGET_PCT = 5      # Zone 4-5 (threshold + VO2max)
 
+# CTL targets by race type (based on typical demands)
+# These are target CTL values to be race-ready
+CTL_TARGETS = {
+    "multi_day_mtb": {"min": 55, "ideal": 65, "description": "3-day MTB stage race (e.g., sani2c)"},
+    "road_cycling": {"min": 45, "ideal": 55, "description": "Road race 80-120km"},
+    "running_marathon": {"min": 50, "ideal": 60, "description": "Marathon (42km)"},
+    "running_ultra": {"min": 60, "ideal": 75, "description": "Ultra marathon (50km+)"},
+    "running_half": {"min": 40, "ideal": 50, "description": "Half marathon"},
+    "triathlon_olympic": {"min": 50, "ideal": 60, "description": "Olympic triathlon"},
+    "triathlon_half": {"min": 55, "ideal": 70, "description": "70.3 triathlon"},
+    "triathlon_full": {"min": 65, "ideal": 80, "description": "Ironman triathlon"},
+    "casual": {"min": 25, "ideal": 35, "description": "Recreational fitness"},
+    "default": {"min": 40, "ideal": 50, "description": "General endurance event"},
+}
+
+# TSS to hours approximation (varies by intensity, this is average)
+TSS_PER_HOUR_ESTIMATE = 50  # Typical Z2 endurance work
+TSS_PER_HOUR_EASY = 35      # Recovery/Z1 work
+TSS_PER_HOUR_HARD = 80      # Interval/threshold work
+
+# Safe load increase limits (injury prevention)
+MAX_WEEKLY_LOAD_INCREASE_PCT = 15  # Don't increase > 15% week over week
+MAX_ACUTE_LOAD_SPIKE_PCT = 20      # Single day spike limit
+
 # Minimum data requirements
 MIN_DAYS_FOR_CTL = 14      # Need at least 2 weeks for meaningful CTL
 MIN_DAYS_FOR_TRENDS = 28   # Need 4 weeks for trend analysis

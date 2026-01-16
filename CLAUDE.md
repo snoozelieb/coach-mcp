@@ -163,6 +163,75 @@ Based on ACWR (Acute:Chronic Workload Ratio) research:
 
 The `get_fitness_status()` tool tracks this automatically and provides recommendations.
 
+## Personalizing Load Decisions
+
+The `volume_data.load_increase_guidance` in coaching snapshot provides a RANGE, not a single value:
+- **conservative_pct: 10%** - Use when adaptation signals are poor
+- **standard_pct: 15%** - Baseline guidance
+- **aggressive_pct: 25%** - Use when adaptation signals are excellent
+
+**Choose where in the range based on `adaptation_signals`:**
+
+| Signal | → Conservative (10%) | → Standard (15%) | → Aggressive (25%) |
+|--------|---------------------|------------------|-------------------|
+| Sleep avg < 6.5hr | ✓ | | |
+| Sleep avg 6.5-7.5hr | | ✓ | |
+| Sleep avg > 7.5hr + improving trend | | | ✓ |
+| Compliance rate < 70% | ✓ | | |
+| Compliance rate 70-85% | | ✓ | |
+| Compliance rate > 85% | | | ✓ |
+| HRV declining | ✓ | | |
+| HRV stable | | ✓ | |
+| HRV improving | | | ✓ |
+| Pattern: "handles_volume_well" = true | | | ✓ |
+| Pattern: "needs_extra_rest_after_intensity" = true | ✓ | | |
+
+**Decision rules:**
+1. If ANY red flag present (sleep < 6.5hr, HRV declining, compliance < 60%) → Conservative
+2. If 2+ signals point aggressive AND no red flags → can push to aggressive
+3. Default to standard when signals are mixed or unknown
+
+**Always record your reasoning** using `log_coaching_decision()` so future sessions understand why you pushed hard or backed off.
+
+## Using Adaptation Patterns
+
+Before making load decisions, check `adaptation_signals.adaptation_patterns`.
+
+These patterns are learned from `record_athlete_response()` calls over time:
+- If `handles_volume_well` = true → can be more aggressive on volume
+- If `recovers_quickly` = true → shorter rest between hard sessions OK
+- If `needs_extra_rest_after_intensity` = true → add recovery day after intervals
+
+**Building patterns over time:**
+After completed training blocks, use `record_athlete_response()` to capture:
+- How did they respond to this week's load?
+- What worked? What didn't?
+- Any unexpected fatigue or exceptional freshness?
+
+This creates a feedback loop for increasingly personalized coaching. The more responses logged, the better the adaptation_patterns become.
+
+**When patterns are empty (new athlete):**
+Start with standard load increases. Be conservative until you learn how they respond. Log responses after every week to build the pattern database.
+
+## Coaching Score
+
+Use `get_coaching_score()` to evaluate coaching effectiveness across 4 dimensions:
+
+| Component | Weight | Measures |
+|-----------|--------|----------|
+| Progress | 40% | CTL trajectory toward A-race goal |
+| Health | 30% | Injuries, ACWR status, overtraining risk |
+| Achievability | 20% | Compliance rate (is plan realistic?) |
+| Adaptation | 10% | Response patterns logged (are we learning?) |
+
+**Interpret the scores:**
+- **90+**: Excellent coaching - athlete progressing safely
+- **75-89**: Good coaching - minor areas to address
+- **60-74**: Adequate - review weak components
+- **<60**: Problems - significant coaching adjustments needed
+
+**Check coaching score periodically** (weekly or after major plan changes) to ensure the coaching approach is working.
+
 ## Commands
 
 ```bash
@@ -194,9 +263,11 @@ Understanding which tool to use and when prevents redundant data fetching and en
 - Current weekly plan
 - Actual activities (planned vs completed)
 - Fitness metrics (CTL/ATL/TSB/ACWR)
+- **volume_data** - CTL targets, weekly TSS ranges, load_increase_guidance (DATA not prescriptions)
 - Compliance status
-- Sleep analysis with training modifications
+- Sleep analysis
 - Recovery status
+- **adaptation_signals** - Sleep trends, recovery trends, compliance trends, adaptation patterns
 - Sport priority breakdown
 - Active injuries
 
@@ -238,6 +309,18 @@ Understanding which tool to use and when prevents redundant data fetching and en
 
 **Use for pillar-focused analysis.**
 
+### 5. `get_coaching_score()` - Coaching Effectiveness Check
+
+**When:** Periodic self-assessment, after major plan changes, weekly review
+
+**Returns:** Coaching effectiveness across 4 dimensions:
+- Progress score (CTL trajectory)
+- Health score (injuries, ACWR)
+- Achievability score (compliance rate)
+- Adaptation score (response patterns logged)
+
+**Use to evaluate whether your coaching approach is working.**
+
 ### Tool Selection Guide
 
 | Question | Tool to Use |
@@ -248,6 +331,8 @@ Understanding which tool to use and when prevents redundant data fetching and en
 | "Plan next week from scratch" | `get_planning_context()` |
 | "How's my sleep affecting training?" | `get_coaching_snapshot()` |
 | "What's my fitness trending?" | `get_load_status()` |
+| "Is my coaching effective?" | `get_coaching_score()` |
+| "Should I push harder or back off?" | Check `adaptation_signals` in snapshot |
 
 ## MCP Tools Reference
 

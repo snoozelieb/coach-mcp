@@ -78,6 +78,7 @@ DEFAULT_REST_SECS = 45
 # Target type definitions
 TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1}
 TARGET_HR = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 2}
+TARGET_CADENCE = {"workoutTargetTypeId": 3, "workoutTargetTypeKey": "cadence.zone", "displayOrder": 3}
 TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 
 # Session types that map to cycling
@@ -97,6 +98,9 @@ SWIMMING_TYPES = {"swim", "swimming", "pool"}
 
 # Session types to skip (not pushable to Garmin)
 SKIP_TYPES = {"rest", "rest_or_easy"}
+
+# Test session types (special handling)
+TEST_TYPES = {"ftp_test", "threshold_test"}
 
 # Intensity to HR zone mapping
 INTENSITY_ZONE_MAP = {
@@ -238,7 +242,9 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
         return None
 
     # Determine sport and build appropriate workout
-    if session_type in CYCLING_TYPES or "ride" in session_type or "cycling" in session_type:
+    if session_type in TEST_TYPES or "ftp_test" in session_type:
+        return build_ftp_test_workout(session, date)
+    elif session_type in CYCLING_TYPES or "ride" in session_type or "cycling" in session_type:
         return build_cycling_workout(session, date)
     elif session_type in RUNNING_TYPES or "run" in session_type:
         return build_running_workout(session, date)
@@ -250,6 +256,122 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
         return build_strength_workout(session, date)
 
     return None
+
+
+def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
+    """
+    Build an FTP test workout with proper protocol phases and cadence targets.
+
+    Creates a structured 5-phase workout with RPM guidance:
+    1. Warmup (15 min) - 90-100 RPM easy spinning
+    2. Blowout (5 min) - 100-110 RPM all-out effort to deplete anaerobic
+    3. Recovery (5 min) - 80-90 RPM easy spinning
+    4. Test (20 min) - 85-95 RPM sustainable cadence for threshold effort
+    5. Cooldown (5 min) - 80-90 RPM easy spinning
+
+    The blowout phase is critical - it prevents anaerobic contribution
+    from inflating the 20-minute power number.
+
+    Cadence targets are used because they're independent of power output,
+    making the workout accessible to beginners who don't have FTP yet.
+    """
+    description = session.get("description", "FTP Test")
+    protocol = session.get("protocol", [])
+
+    # Default FTP test structure with cadence targets if no protocol provided
+    # Blowout is 3 x 1-min ALL OUT with 1-min recovery between (5 min total)
+    if not protocol:
+        protocol = [
+            # Warmup: 15 min easy
+            {"phase": "warmup", "duration_mins": 15, "cadence_min": 90, "cadence_max": 100,
+             "notes": "Easy spin @ 90-100rpm"},
+            # Blowout: 3 x 1-min ALL OUT with 1-min recovery between
+            {"phase": "blowout", "duration_mins": 1, "cadence_min": 100, "cadence_max": 110,
+             "notes": "ALL OUT 1/3 - GO!"},
+            {"phase": "recovery", "duration_mins": 1, "cadence_min": 80, "cadence_max": 90,
+             "notes": "Easy spin"},
+            {"phase": "blowout", "duration_mins": 1, "cadence_min": 100, "cadence_max": 110,
+             "notes": "ALL OUT 2/3 - GO!"},
+            {"phase": "recovery", "duration_mins": 1, "cadence_min": 80, "cadence_max": 90,
+             "notes": "Easy spin"},
+            {"phase": "blowout", "duration_mins": 1, "cadence_min": 100, "cadence_max": 110,
+             "notes": "ALL OUT 3/3 - DONE!"},
+            # Main recovery: 5 min before test
+            {"phase": "recovery", "duration_mins": 5, "cadence_min": 80, "cadence_max": 90,
+             "notes": "Easy spin. Let HR drop."},
+            # Test: 20 min max effort
+            {"phase": "test", "duration_mins": 20, "cadence_min": 85, "cadence_max": 95,
+             "notes": "20min MAX - steady pace!"},
+            # Cooldown
+            {"phase": "cooldown", "duration_mins": 5, "cadence_min": 80, "cadence_max": 90,
+             "notes": "Easy spin. Cool down."}
+        ]
+
+    workout_name = description[:40]
+    steps = []
+    step_order = 1
+    total_secs = 0
+
+    for phase in protocol:
+        phase_name = phase.get("phase", phase.get("name", "interval")).lower()
+        duration_mins = phase.get("duration_mins", 5)
+        duration_secs = duration_mins * 60
+        total_secs += duration_secs
+        notes = phase.get("notes", "")
+
+        # Get cadence targets if specified
+        cadence_min = phase.get("cadence_min")
+        cadence_max = phase.get("cadence_max")
+
+        # Map phase to step type
+        if phase_name == "warmup":
+            step_type = STEP_WARMUP
+        elif phase_name == "cooldown":
+            step_type = STEP_COOLDOWN
+        elif phase_name == "recovery":
+            step_type = STEP_RECOVERY
+        else:
+            step_type = STEP_INTERVAL
+
+        # Create step - use cadence target if provided, otherwise no target
+        if cadence_min and cadence_max:
+            step = ExecutableStep(
+                stepOrder=step_order,
+                stepType=step_type,
+                endCondition=END_TIME,
+                endConditionValue=duration_secs,
+                targetType=TARGET_CADENCE,
+                targetValueOne=cadence_min,
+                targetValueTwo=cadence_max
+            )
+        else:
+            step = ExecutableStep(
+                stepOrder=step_order,
+                stepType=step_type,
+                endCondition=END_TIME,
+                endConditionValue=duration_secs,
+                targetType=TARGET_NONE
+            )
+
+        # Add description/notes for the phase
+        if notes:
+            step.description = notes[:50]  # Garmin has character limits
+
+        steps.append(step)
+        step_order += 1
+
+    return CyclingWorkout(
+        workoutName=workout_name,
+        description="FTP Test: Warmup > Blowout > Recovery > 20min Test > Cooldown",
+        estimatedDurationInSecs=int(total_secs),
+        workoutSegments=[
+            WorkoutSegment(
+                segmentOrder=1,
+                sportType=CYCLING_SPORT,
+                workoutSteps=steps
+            )
+        ]
+    )
 
 
 def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
