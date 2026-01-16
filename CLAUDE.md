@@ -762,3 +762,25 @@ The AI coach should proactively identify when a new tool would improve coaching 
 - **Return JSON** - Structured data the LLM can reason about
 - **Fail gracefully** - Return `{'error': ...}` not exceptions
 - **Include context** - Return enough info for decisions, not just raw data
+
+## Known Issues / TODO
+
+### 1. Outdoor cycling uses watts instead of HR
+- **Problem:** Outdoor cycling workouts are pushed with watt targets, but athlete has no power meter outdoors (only Wattbike indoors)
+- **Fix:** Detect indoor vs outdoor cycling and use HR zones for outdoor, watts for indoor only
+- **Files:** `workout_builder.py`, `push_plan_to_garmin()`
+
+### 2. Coaching snapshot shows partial data when Garmin API fails
+- **Problem:** `get_coaching_snapshot()` returns with missing recovery/sleep data if Garmin API call fails, instead of retrying
+- **Fix:** Add retry logic or clearly flag missing data and attempt to fetch again before presenting to user
+- **Files:** `server.py` - `get_coaching_snapshot()`
+
+### 3. Rehab sessions not pushed to Garmin calendar
+- **Problem:** Rehab sessions are skipped with "unknown workout type" when pushing to Garmin
+- **Fix:** Add rehab as a supported workout type, or bundle rehab exercises into strength sessions
+- **Files:** `workout_builder.py`, `server.py` - `push_plan_to_garmin()`
+
+### 4. Coach doesn't flag missed sessions
+- **Problem:** When athlete misses a planned session (e.g., PM strength), coach doesn't notice or ask about it
+- **Fix:** In `get_coaching_snapshot()`, compare planned vs actual and surface missed sessions. Coach should proactively ask "You missed X yesterday - what happened?"
+- **Files:** `server.py` - `get_coaching_snapshot()`, coaching behavior in CLAUDE.md
