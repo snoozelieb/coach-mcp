@@ -765,10 +765,10 @@ The AI coach should proactively identify when a new tool would improve coaching 
 
 ## Known Issues / TODO
 
-### 1. Outdoor cycling uses watts instead of HR
+### ~~1. Outdoor cycling uses watts instead of HR~~ FIXED
 - **Problem:** Outdoor cycling workouts are pushed with watt targets, but athlete has no power meter outdoors (only Wattbike indoors)
-- **Fix:** Detect indoor vs outdoor cycling and use HR zones for outdoor, watts for indoor only
-- **Files:** `workout_builder.py`, `push_plan_to_garmin()`
+- **Fix:** Added `is_indoor_cycling()` detection. Indoor (Wattbike/trainer) uses power zones, outdoor uses HR zones.
+- **Files:** `workout_builder.py` - `build_cycling_workout()`
 
 ### 2. Coaching snapshot shows partial data when Garmin API fails
 - **Problem:** `get_coaching_snapshot()` returns with missing recovery/sleep data if Garmin API call fails, instead of retrying
@@ -784,3 +784,13 @@ The AI coach should proactively identify when a new tool would improve coaching 
 - **Problem:** When athlete misses a planned session (e.g., PM strength), coach doesn't notice or ask about it
 - **Fix:** In `get_coaching_snapshot()`, compare planned vs actual and surface missed sessions. Coach should proactively ask "You missed X yesterday - what happened?"
 - **Files:** `server.py` - `get_coaching_snapshot()`, coaching behavior in CLAUDE.md
+
+### ~~5. Strength workouts missing rest after warmup~~ FIXED
+- **Problem:** Strength sessions go from warmup straight into the first working set with no lap/rest marker
+- **Fix:** Added REST step (lap button) after warmup, before first exercise.
+- **Files:** `workout_builder.py` - `build_strength_workout()`
+
+### ~~6. Long outdoor rides shouldn't have warmup section~~ FIXED
+- **Problem:** Long outdoor rides include a warmup section which messes with lap timing on Garmin
+- **Fix:** Added `is_long_outdoor_ride()` detection. Long Z2 rides (90+ min easy) skip warmup/cooldown.
+- **Files:** `workout_builder.py` - `build_cycling_workout()`

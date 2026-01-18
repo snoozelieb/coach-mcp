@@ -2378,8 +2378,20 @@ def push_plan_to_garmin() -> str:
                         # Skip optional sessions like pool_sauna
                         if sub.get('time') == 'optional':
                             continue
-                        # Copy parent description if sub doesn't have one
-                        if 'description' not in sub:
+                        # Generate proper description for strength sub-sessions
+                        if sub.get('type', '').lower() == 'strength' and 'description' not in sub:
+                            focus = sub.get('focus', '')
+                            if focus:
+                                # Convert focus like "lower_posterior" to "Lower Posterior Strength"
+                                focus_name = focus.replace('_', ' ').title()
+                                sub['description'] = f"{focus_name} Strength"
+                            else:
+                                sub['description'] = "Strength Training"
+                        # Generate proper description for rehab sub-sessions
+                        elif sub.get('type', '').lower() == 'rehab' and 'description' not in sub:
+                            sub['description'] = "Ankle Rehab"
+                        # Copy parent description if sub doesn't have one (non-strength/rehab)
+                        elif 'description' not in sub:
                             sub['description'] = sub.get('notes', session.get('description', ''))
                         # Copy parent intensity if sub doesn't have one
                         if 'intensity' not in sub:
@@ -2390,6 +2402,16 @@ def push_plan_to_garmin() -> str:
                         # Copy protocol for test sessions (FTP, threshold tests)
                         if 'protocol' in sub or 'protocol' in session:
                             sub['protocol'] = sub.get('protocol', session.get('protocol', []))
+                        # Copy structure to indoor cycling sub-sessions (for technique/interval workouts)
+                        if session.get('structure') and sub.get('type', '').lower() in ['indoor_cycling', 'wattbike', 'trainer']:
+                            sub['structure'] = session['structure']
+                            # Also copy FTP and power_targets if present
+                            if session.get('ftp'):
+                                sub['ftp'] = session['ftp']
+                            if session.get('power_targets'):
+                                sub['power_targets'] = session['power_targets']
+                            if session.get('technique_goals'):
+                                sub['technique_goals'] = session['technique_goals']
                         expanded_sessions.append(sub)
                 else:
                     expanded_sessions.append(session)
@@ -2432,8 +2454,8 @@ def push_plan_to_garmin() -> str:
                     elif workout_type == 'running':
                         upload_result = client.upload_running_workout(workout)
                         workout_name = workout.workoutName
-                    elif workout_type in ['yoga', 'strength', 'swimming']:
-                        # Yoga, strength, and swimming use generic upload with dict format
+                    elif workout_type in ['yoga', 'strength', 'swimming', 'pilates']:
+                        # Yoga, strength, swimming, pilates use generic upload with dict format
                         upload_result = client.upload_workout(workout)
                         workout_name = workout.get('workoutName', 'Workout')
                     else:
@@ -5117,18 +5139,19 @@ def sync_strength_session(activity_id: str = None) -> str:
             exercise_baseline = baseline['exercises'][group_key]
             previous = exercise_baseline.get('current')
 
-            # Check for PR
-            if previous and weight_kg > previous.get('weight_kg', 0):
+            # Check for PR (handle None values with 'or 0')
+            previous_weight = (previous.get('weight_kg') or 0) if previous else 0
+            if previous and weight_kg > previous_weight:
                 prs.append({
                     'exercise': group_key,
-                    'previous_kg': previous.get('weight_kg'),
+                    'previous_kg': previous_weight,
                     'new_kg': weight_kg,
-                    'improvement_kg': weight_kg - previous.get('weight_kg', 0)
+                    'improvement_kg': weight_kg - previous_weight
                 })
 
-            # Update current
+            # Update current (use previous weight if current is 0, avoid storing None)
             exercise_baseline['current'] = {
-                'weight_kg': weight_kg if weight_kg > 0 else (previous.get('weight_kg') if previous else None),
+                'weight_kg': weight_kg if weight_kg > 0 else previous_weight if previous_weight > 0 else None,
                 'reps': avg_reps,
                 'sets': sets,
                 'last_performed': activity_date

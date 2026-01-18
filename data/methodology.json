@@ -123,6 +123,12 @@
           "notes": "Sustained climbing at race pace. Build climbing endurance"
         },
         {
+          "type": "indoor_technique",
+          "frequency": "1-2x/week in base",
+          "priority": "medium",
+          "notes": "Wattbike technique drills (if available). Pedaling efficiency gains compound over multi-day racing."
+        },
+        {
           "type": "strength",
           "frequency": "2x/week",
           "priority": "high",
@@ -130,8 +136,8 @@
         }
       ],
       "phase_guidance": {
-        "base": "Build saddle time. Easy long rides. Strength and mobility focus.",
-        "build": "Add intensity on climbs. Increase ride duration. Technical skills.",
+        "base": "Build saddle time. Easy long rides. Strength and mobility focus. Add technique work if indoor bike with analytics available.",
+        "build": "Add intensity on climbs. Increase ride duration. Technical skills. Continue technique 1x/week.",
         "peak": "Race-pace efforts. Equipment dialed. Practice nutrition strategy.",
         "taper": "Short sharp rides. Keep legs fresh. Mental preparation."
       }
@@ -244,6 +250,117 @@
         "How intense was the session (RPE)?",
         "Any areas to avoid due to injury?"
       ]
+    }
+  },
+  "training_protocols": {
+    "cycling_technique": {
+      "description": "Indoor cycling technique work using Wattbike analytics (Polar View, PES, L/R balance). Best done during base phase when volume allows for skill development.",
+      "when_to_use": [
+        "Base building phase (time for skill work)",
+        "Athlete has indoor bike with analytics (Wattbike, Stages, etc.)",
+        "Identified pedaling inefficiencies",
+        "Preparing for long events (efficiency gains compound over hours)"
+      ],
+      "key_metrics": {
+        "pes": {
+          "name": "Pedaling Effectiveness Score",
+          "description": "Wattbike metric measuring power application through pedal stroke",
+          "target_beginner": 60,
+          "target_intermediate": 70,
+          "target_advanced": 75,
+          "notes": "Higher PES = less wasted energy, smoother power delivery"
+        },
+        "lr_balance": {
+          "name": "Left/Right Power Balance",
+          "description": "Percentage of power from each leg",
+          "target": "48-52%",
+          "notes": "Perfect balance is rare. Focus on consistency, not perfection."
+        },
+        "polar_view": {
+          "name": "Polar View Display",
+          "description": "Visual representation of power through pedal stroke",
+          "target": "Smooth peanut shape without flat spots or spikes",
+          "notes": "Real-time feedback for technique correction"
+        }
+      },
+      "drill_library": {
+        "single_leg_drills": {
+          "purpose": "Identify and correct dead spots, build neuromuscular patterns",
+          "execution": "Unclip one foot, pedal with single leg. Focus on pulling through bottom of stroke.",
+          "cadence": [55, 65],
+          "duration": "1-2 min per leg",
+          "sets": "4-6 per leg with rest between",
+          "progression": "Start 4x1min, build to 4x2min each leg",
+          "watch_for": "Clunking at top/bottom = dead spots. Smooth = good."
+        },
+        "cadence_pyramids": {
+          "purpose": "Build high-cadence efficiency without bouncing",
+          "execution": "Progressive cadence increase then decrease. Stay seated, quiet upper body.",
+          "cadence_sequence": [95, 100, 105, 110, 115, 120, 115, 110, 105, 100, 95],
+          "interval_duration_mins": 2,
+          "power": "60-65% FTP (maintain steady power throughout)",
+          "watch_for": "Bouncing in saddle, grip tightening, shoulder tension = too fast"
+        },
+        "spin_ups": {
+          "purpose": "Maximum smooth cadence development",
+          "execution": "Gradually increase cadence to max smooth RPM, hold briefly, recover",
+          "target_cadence": [120, 140],
+          "duration_secs": 30,
+          "sets": 3,
+          "recovery_secs": 60,
+          "watch_for": "Find the point where smooth becomes choppy - that's your current limit"
+        },
+        "polar_view_focus": {
+          "purpose": "Real-time technique feedback under moderate load",
+          "execution": "Watch Polar View display, adjust technique to maintain smooth shape",
+          "power": "65-75% FTP",
+          "cadence": [85, 95],
+          "duration_mins": "5-10",
+          "watch_for": "Spikes = power surges. Flat spots = dead spots. Asymmetry = L/R imbalance"
+        }
+      },
+      "session_templates": {
+        "technique_focus": {
+          "description": "Pure technique session - low intensity, high focus",
+          "duration_mins": 60,
+          "tss_estimate": 40,
+          "structure": [
+            {"phase": "warmup", "mins": 10, "notes": "Easy spin, watch Polar View"},
+            {"phase": "single_leg_drills", "mins": 16, "notes": "4x1min each leg with 1min recovery"},
+            {"phase": "recovery", "mins": 3},
+            {"phase": "cadence_pyramid", "mins": 22, "notes": "Full pyramid up and down"},
+            {"phase": "polar_view_focus", "mins": 5, "notes": "Steady power, watch display"},
+            {"phase": "cooldown", "mins": 4}
+          ]
+        },
+        "technique_plus_sweetspot": {
+          "description": "Technique work + quality aerobic training",
+          "duration_mins": 90,
+          "tss_estimate": 85,
+          "structure": [
+            {"phase": "warmup", "mins": 10},
+            {"phase": "activation", "mins": 3, "notes": "Openers at tempo"},
+            {"phase": "sweetspot_intervals", "mins": 36, "notes": "3x12min at 88-93% FTP"},
+            {"phase": "recovery", "mins": 5},
+            {"phase": "technique_drills", "mins": 20, "notes": "Single leg or spin-ups"},
+            {"phase": "cooldown", "mins": 10}
+          ]
+        }
+      },
+      "block_structure": {
+        "duration_weeks": "4-6",
+        "frequency": "2x per week",
+        "progression": [
+          "Week 1-2: Focus on drills, establish baseline PES/balance",
+          "Week 3-4: Add cadence work, track improvements",
+          "Week 5-6: Integrate with intensity, measure technique under load"
+        ],
+        "success_criteria": [
+          "PES improvement of 5+ points",
+          "L/R balance within 2% of target",
+          "Smooth cadence up to 110+ RPM without bouncing"
+        ]
+      }
     }
   }
 }

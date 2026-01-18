@@ -79,19 +79,49 @@ DEFAULT_REST_SECS = 45
 TARGET_NONE = {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1}
 TARGET_HR = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 2}
 TARGET_CADENCE = {"workoutTargetTypeId": 3, "workoutTargetTypeKey": "cadence.zone", "displayOrder": 3}
+TARGET_POWER = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "power.zone", "displayOrder": 4}
 TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 
 # Session types that map to cycling
-CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride", "ftp_test"}
+CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride", "ftp_test", "indoor_cycling", "wattbike", "trainer", "tempo_ride"}
+
+# Indoor cycling types - use power targets (athlete has Wattbike indoors)
+INDOOR_CYCLING_TYPES = {"indoor_cycling", "wattbike", "trainer", "ftp_test"}
+
+# Long outdoor ride types - skip warmup section (messes with lap timing)
+LONG_OUTDOOR_RIDE_TYPES = {"long_ride", "long_mtb_ride"}
 
 # Session types that map to running
 RUNNING_TYPES = {"run", "long_run", "easy_run", "running", "trail_run", "interval_run"}
 
-# Session types that map to yoga
-YOGA_TYPES = {"yoga", "mobility", "stretching", "pilates"}
+# Session types that map to yoga/pilates
+YOGA_TYPES = {"yoga", "mobility", "stretching"}
+
+# Session types that map to pilates (used for rehab/mobility work)
+PILATES_TYPES = {"pilates", "rehab", "rehabilitation"}
 
 # Session types that map to strength
-STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights"}
+STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights", "strength_plus_rehab"}
+
+# Garmin valid exercise categories - map non-standard to valid ones
+# Valid Garmin categories: BENCH_PRESS, ROW, PULL_UP, LATERAL_RAISE, CURL,
+# TRICEPS_EXTENSION, CORE, DEADLIFT, SQUAT, SHOULDER_PRESS, LUNGE, CARDIO, OTHER
+# Note: HIP and CALF are NOT valid - use SQUAT or OTHER for leg exercises
+GARMIN_CATEGORY_MAP = {
+    "GLUTE": "SQUAT",           # Hip/glute exercises -> SQUAT
+    "CALF_RAISE": "SQUAT",      # Calf raises -> SQUAT (OTHER doesn't work)
+    "HIP_STABILITY": "SQUAT",   # Hip stability -> SQUAT
+    "HIP": "SQUAT",             # Generic hip -> SQUAT
+    "CALF": "SQUAT",            # Calf -> SQUAT
+    "HAMSTRING": "DEADLIFT",
+    "CHEST": "BENCH_PRESS",
+    "BACK": "ROW",
+    "BICEPS": "CURL",
+    "TRICEPS": "TRICEPS_EXTENSION",
+    "SHOULDERS": "SHOULDER_PRESS",
+    "ABS": "CORE",
+    "LEGS": "SQUAT",
+}
 
 # Session types that map to swimming
 SWIMMING_TYPES = {"swim", "swimming", "pool"}
@@ -132,6 +162,108 @@ def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
     if zone_range and len(zone_range) == 2:
         return (zone_range[0], zone_range[1])
     return None
+
+
+# Power zone mapping (intensity -> power zone key)
+INTENSITY_POWER_ZONE_MAP = {
+    "recovery": "z1_recovery",
+    "easy": "z2_endurance",
+    "tempo": "z3_tempo",
+    "threshold": "z4_threshold",
+    "hard": "z4_threshold",
+    "sweet_spot": "z3_tempo",  # Sweet spot is upper Z3 to lower Z4
+    "intervals": "z5_vo2max",
+    "max_effort": "z6_anaerobic",
+}
+
+
+def get_athlete_power_zones() -> dict:
+    """Load athlete power zones from athlete.json."""
+    athlete_path = Path(__file__).parent / "data" / "athlete.json"
+    try:
+        with open(athlete_path) as f:
+            athlete = json.load(f)
+        return athlete.get("personal", {}).get("power_zones", {})
+    except:
+        return {}
+
+
+def get_power_target_for_intensity(intensity: str) -> tuple[int, int] | None:
+    """
+    Get power range (low, high) in watts for a given intensity.
+
+    Returns (low_watts, high_watts) or None if power zones not configured.
+    """
+    power_zones = get_athlete_power_zones()
+    if not power_zones:
+        return None
+
+    zone_key = INTENSITY_POWER_ZONE_MAP.get(intensity.lower(), "z2_endurance")
+    zone_range = power_zones.get(zone_key)
+
+    if zone_range and len(zone_range) == 2:
+        low_watts = zone_range[0]
+        high_watts = zone_range[1]
+        # Handle None in z7 upper bound
+        if high_watts is None:
+            high_watts = low_watts + 100  # Cap at +100W above lower bound
+        return (low_watts, high_watts)
+
+    return None
+
+
+def is_indoor_cycling(session: dict) -> bool:
+    """
+    Determine if a cycling session is indoor (use power) or outdoor (use HR).
+
+    Indoor indicators:
+    - Session type contains 'indoor', 'wattbike', 'trainer'
+    - Session has 'indoor: true' field
+    - FTP tests are always indoor
+    """
+    session_type = session.get("type", "").lower()
+
+    # Check explicit indoor types
+    if session_type in INDOOR_CYCLING_TYPES:
+        return True
+
+    # Check for 'indoor' in type name
+    if "indoor" in session_type or "wattbike" in session_type or "trainer" in session_type:
+        return True
+
+    # Check explicit indoor flag
+    if session.get("indoor", False):
+        return True
+
+    return False
+
+
+def is_simple_outdoor_ride(session: dict) -> bool:
+    """
+    Determine if this is a simple outdoor ride that should skip warmup.
+
+    Simple outdoor rides (single zone, no structure) don't need warmup sections.
+    Athlete warms up naturally. Adding warmup/cooldown messes with lap timing.
+
+    Skip warmup if:
+    - Outdoor (not indoor)
+    - No 'structure' field (no intervals/tempo sections defined)
+    - Single intensity ride (easy, recovery, endurance, z2)
+
+    Keep warmup for:
+    - Indoor rides (structured training on Wattbike)
+    - Structured rides with intervals/tempo (have 'structure' field)
+    """
+    # Don't skip warmup for indoor rides - they're structured training
+    if is_indoor_cycling(session):
+        return False
+
+    # If ride has a 'structure' field, it's a structured workout - keep sections
+    if session.get("structure"):
+        return False
+
+    # Simple outdoor rides - skip warmup
+    return True
 
 
 # Running pace zone mapping (intensity -> pace zone key)
@@ -252,6 +384,8 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
         return build_swimming_workout(session, date)
     elif session_type in YOGA_TYPES:
         return build_yoga_workout(session, date)
+    elif session_type in PILATES_TYPES:
+        return build_pilates_workout(session, date)
     elif session_type in STRENGTH_TYPES:
         return build_strength_workout(session, date)
 
@@ -277,6 +411,12 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
     """
     description = session.get("description", "FTP Test")
     protocol = session.get("protocol", [])
+
+    # FTP tests are always indoor - add tag to name (skip if already tagged)
+    if "(Indoor)" in description or "(Outdoor)" in description:
+        workout_name = description[:40]
+    else:
+        workout_name = f"{description[:32]} (Indoor)"
 
     # Default FTP test structure with cadence targets if no protocol provided
     # Blowout is 3 x 1-min ALL OUT with 1-min recovery between (5 min total)
@@ -307,7 +447,6 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
              "notes": "Easy spin. Cool down."}
         ]
 
-    workout_name = description[:40]
     steps = []
     step_order = 1
     total_secs = 0
@@ -375,65 +514,255 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
 
 
 def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
-    """Build a cycling workout from a plan session with HR zone targets."""
+    """
+    Build a cycling workout from a plan session.
+
+    Target selection:
+    - Indoor cycling (Wattbike/trainer): Use POWER targets
+    - Outdoor cycling: Use HR targets
+
+    Warmup handling:
+    - Long outdoor rides (90+ min easy): Skip warmup/cooldown (messes with laps)
+    - Other rides: Include warmup and cooldown
+    """
     duration_mins = session.get("duration_mins", 60)
     description = session.get("description", "Cycling workout")
     intensity = session.get("intensity", "easy")
 
-    # Calculate segment durations (in seconds)
+    # Calculate total duration
     total_secs = duration_mins * 60
-    warmup_secs = min(600, total_secs * 0.1)  # 10 min or 10% max
-    cooldown_secs = min(300, total_secs * 0.05)  # 5 min or 5% max
-    main_secs = total_secs - warmup_secs - cooldown_secs
 
-    # Create workout name from description
-    workout_name = description[:40]
+    # Determine if indoor (power) or outdoor (HR)
+    indoor = is_indoor_cycling(session)
 
-    # Get HR zone target for the main interval
-    hr_target = get_hr_target_for_intensity(intensity)
+    # Create workout name with indoor/outdoor tag for easy planning
+    # Skip if description already has the tag
+    if "(Indoor)" in description or "(Outdoor)" in description:
+        workout_name = description[:40]
+    else:
+        tag = "(Indoor)" if indoor else "(Outdoor)"
+        workout_name = f"{description[:32]} {tag}"
 
-    # Build warmup step (Z1 target)
-    warmup_hr = get_hr_target_for_intensity("recovery")
-    warmup_step = ExecutableStep(
-        stepOrder=1,
-        stepType=STEP_WARMUP,
-        endCondition=END_TIME,
-        endConditionValue=warmup_secs,
-        targetType=TARGET_HR if warmup_hr else TARGET_NONE
-    )
-    if warmup_hr:
-        warmup_step.targetValueOne = warmup_hr[0]
-        warmup_step.targetValueTwo = warmup_hr[1]
+    # Check if this is a structured workout (has phases defined)
+    structure = session.get("structure", [])
 
-    # Build main interval step with HR zone
-    main_step = ExecutableStep(
-        stepOrder=2,
-        stepType=STEP_INTERVAL,
-        endCondition=END_TIME,
-        endConditionValue=main_secs,
-        targetType=TARGET_HR if hr_target else TARGET_NONE
-    )
-    if hr_target:
-        main_step.targetValueOne = hr_target[0]
-        main_step.targetValueTwo = hr_target[1]
+    # If structured indoor session, build from structure
+    if structure and indoor:
+        return build_structured_indoor_workout(session, workout_name, total_secs, structure)
 
-    # Build cooldown step (Z1 target)
-    cooldown_step = ExecutableStep(
-        stepOrder=3,
-        stepType=STEP_COOLDOWN,
-        endCondition=END_TIME,
-        endConditionValue=cooldown_secs,
-        targetType=TARGET_HR if warmup_hr else TARGET_NONE
-    )
-    if warmup_hr:
-        cooldown_step.targetValueOne = warmup_hr[0]
-        cooldown_step.targetValueTwo = warmup_hr[1]
+    # Determine if we should skip warmup (simple outdoor rides without structure)
+    skip_warmup = is_simple_outdoor_ride(session)
 
-    steps = [warmup_step, main_step, cooldown_step]
+    # Get targets based on indoor/outdoor
+    if indoor:
+        # Indoor: use power zones
+        main_target = get_power_target_for_intensity(intensity)
+        warmup_target = get_power_target_for_intensity("recovery")
+        target_type = TARGET_POWER if main_target else TARGET_NONE
+        warmup_target_type = TARGET_POWER if warmup_target else TARGET_NONE
+    else:
+        # Outdoor: use HR zones
+        main_target = get_hr_target_for_intensity(intensity)
+        warmup_target = get_hr_target_for_intensity("recovery")
+        target_type = TARGET_HR if main_target else TARGET_NONE
+        warmup_target_type = TARGET_HR if warmup_target else TARGET_NONE
+
+    steps = []
+    step_order = 1
+
+    if skip_warmup:
+        # Long outdoor ride: single main interval, no warmup/cooldown
+        main_secs = total_secs
+
+        main_step = ExecutableStep(
+            stepOrder=step_order,
+            stepType=STEP_INTERVAL,
+            endCondition=END_TIME,
+            endConditionValue=main_secs,
+            targetType=target_type
+        )
+        if main_target:
+            main_step.targetValueOne = main_target[0]
+            main_step.targetValueTwo = main_target[1]
+
+        steps = [main_step]
+    else:
+        # Regular ride: warmup + main + cooldown
+        warmup_secs = min(600, total_secs * 0.1)  # 10 min or 10% max
+        cooldown_secs = min(300, total_secs * 0.05)  # 5 min or 5% max
+        main_secs = total_secs - warmup_secs - cooldown_secs
+
+        # Build warmup step
+        warmup_step = ExecutableStep(
+            stepOrder=step_order,
+            stepType=STEP_WARMUP,
+            endCondition=END_TIME,
+            endConditionValue=warmup_secs,
+            targetType=warmup_target_type
+        )
+        if warmup_target:
+            warmup_step.targetValueOne = warmup_target[0]
+            warmup_step.targetValueTwo = warmup_target[1]
+        steps.append(warmup_step)
+        step_order += 1
+
+        # Build main interval step
+        main_step = ExecutableStep(
+            stepOrder=step_order,
+            stepType=STEP_INTERVAL,
+            endCondition=END_TIME,
+            endConditionValue=main_secs,
+            targetType=target_type
+        )
+        if main_target:
+            main_step.targetValueOne = main_target[0]
+            main_step.targetValueTwo = main_target[1]
+        steps.append(main_step)
+        step_order += 1
+
+        # Build cooldown step
+        cooldown_step = ExecutableStep(
+            stepOrder=step_order,
+            stepType=STEP_COOLDOWN,
+            endCondition=END_TIME,
+            endConditionValue=cooldown_secs,
+            targetType=warmup_target_type
+        )
+        if warmup_target:
+            cooldown_step.targetValueOne = warmup_target[0]
+            cooldown_step.targetValueTwo = warmup_target[1]
+        steps.append(cooldown_step)
 
     return CyclingWorkout(
         workoutName=workout_name,
         estimatedDurationInSecs=int(total_secs),
+        workoutSegments=[
+            WorkoutSegment(
+                segmentOrder=1,
+                sportType=CYCLING_SPORT,
+                workoutSteps=steps
+            )
+        ]
+    )
+
+
+def build_structured_indoor_workout(session: dict, workout_name: str, total_secs: int, structure: list) -> CyclingWorkout:
+    """
+    Build a structured indoor cycling workout with multiple phases.
+
+    Supports Wattbike technique sessions and interval workouts with:
+    - Power targets (watts or % of FTP)
+    - Cadence targets
+    - Multiple phases (warmup, intervals, recovery, cooldown)
+
+    Structure format:
+    [
+        {"phase": "warmup", "duration_mins": 10, "power_watts": [93, 111], "cadence": [85, 95], "notes": "..."},
+        {"phase": "interval", "duration_mins": 12, "power_pct": 90, "cadence": [85, 95], "notes": "..."},
+        ...
+    ]
+
+    Target priority:
+    1. power_watts - direct watt targets [low, high]
+    2. power_pct - percentage of FTP (calculates watts from session/athlete FTP)
+    3. cadence - cadence targets [low, high] (if no power specified)
+    """
+    # Get FTP from session or athlete profile
+    ftp = session.get("ftp") or session.get("power_targets", {}).get("ftp")
+    if not ftp:
+        power_zones = get_athlete_power_zones()
+        # Estimate FTP from z4 threshold zone if available
+        z4 = power_zones.get("z4_threshold", [])
+        if z4 and len(z4) == 2:
+            ftp = z4[1]  # Upper bound of threshold is roughly FTP
+
+    steps = []
+    step_order = 1
+    calculated_total_secs = 0
+
+    for phase in structure:
+        phase_name = phase.get("phase", "interval").lower()
+        duration_mins = phase.get("duration_mins", 5)
+        duration_secs = duration_mins * 60
+        calculated_total_secs += duration_secs
+        notes = phase.get("notes", "")
+
+        # Get targets
+        power_watts = phase.get("power_watts")  # [low, high] direct watts
+        power_pct = phase.get("power_pct")       # percentage of FTP
+        cadence = phase.get("cadence")           # [low, high] RPM
+
+        # Calculate power target if using percentage
+        if power_pct and ftp and not power_watts:
+            pct = power_pct / 100.0
+            # Create a +/- 5% range around the target percentage
+            low_watts = int(ftp * (pct - 0.05))
+            high_watts = int(ftp * (pct + 0.05))
+            power_watts = [low_watts, high_watts]
+
+        # Map phase name to step type
+        if phase_name == "warmup":
+            step_type = STEP_WARMUP
+        elif phase_name == "cooldown":
+            step_type = STEP_COOLDOWN
+        elif phase_name == "recovery":
+            step_type = STEP_RECOVERY
+        else:
+            # All other phases (interval, activation, cadence_build, single_leg, etc.)
+            step_type = STEP_INTERVAL
+
+        # Determine target type and values
+        # For cadence-focused phases (single leg, cadence drills), prioritize cadence
+        # For power-focused phases (sweet spot, intervals), prioritize power
+        is_cadence_focused = any(x in phase_name for x in ['cadence', 'single_leg', 'spin'])
+
+        if is_cadence_focused and cadence and len(cadence) == 2:
+            # Cadence-focused phases: use cadence target
+            target_type = TARGET_CADENCE
+            target_low = cadence[0]
+            target_high = cadence[1]
+        elif power_watts and len(power_watts) == 2:
+            # Power-focused phases: use power target
+            target_type = TARGET_POWER
+            target_low = power_watts[0]
+            target_high = power_watts[1]
+        elif cadence and len(cadence) == 2:
+            # Fallback to cadence if no power specified
+            target_type = TARGET_CADENCE
+            target_low = cadence[0]
+            target_high = cadence[1]
+        else:
+            target_type = TARGET_NONE
+            target_low = None
+            target_high = None
+
+        # Create the step
+        step = ExecutableStep(
+            stepOrder=step_order,
+            stepType=step_type,
+            endCondition=END_TIME,
+            endConditionValue=duration_secs,
+            targetType=target_type
+        )
+
+        if target_low is not None and target_high is not None:
+            step.targetValueOne = target_low
+            step.targetValueTwo = target_high
+
+        # Add notes as description
+        if notes:
+            step.description = notes[:50]  # Garmin character limit
+
+        steps.append(step)
+        step_order += 1
+
+    # Use calculated total if structure defines it, otherwise use passed total
+    final_total_secs = calculated_total_secs if calculated_total_secs > 0 else total_secs
+
+    return CyclingWorkout(
+        workoutName=workout_name,
+        description=session.get("notes", session.get("purpose", ""))[:255],
+        estimatedDurationInSecs=int(final_total_secs),
         workoutSegments=[
             WorkoutSegment(
                 segmentOrder=1,
@@ -691,6 +1020,56 @@ def build_yoga_workout(session: dict, date: str) -> dict:
     }
 
 
+def build_pilates_workout(session: dict, date: str) -> dict:
+    """
+    Build a pilates workout from a plan session.
+
+    Used for rehab/mobility work that the user tracks as Pilates on Garmin.
+    Simple timed structure.
+    """
+    duration_mins = session.get("duration_mins", 15)
+    description = session.get("description", "")
+    session_type = session.get("type", "").lower()
+
+    # Generate proper name if not provided or if it's just notes
+    if not description or description in ["Rehab/Mobility", "Do at pool or after", "3rd rehab session of week"]:
+        if session_type == "rehab":
+            description = "Ankle Rehab"
+        else:
+            description = "Mobility Session"
+
+    # Calculate segment durations (in seconds)
+    total_secs = duration_mins * 60
+
+    # Create workout name from description
+    workout_name = description[:40]
+
+    # Build simple timed steps
+    steps = [
+        {
+            "type": "ExecutableStepDTO",
+            "stepOrder": 1,
+            "stepType": STEP_INTERVAL,
+            "endCondition": END_TIME,
+            "endConditionValue": float(total_secs),
+            "targetType": TARGET_NONE,
+        }
+    ]
+
+    return {
+        "workoutName": workout_name,
+        "sportType": PILATES_SPORT,
+        "estimatedDurationInSecs": int(total_secs),
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": PILATES_SPORT,
+                "workoutSteps": steps
+            }
+        ]
+    }
+
+
 def load_exercise_library() -> dict:
     """Load the exercise form cues library."""
     from pathlib import Path
@@ -821,10 +1200,22 @@ def build_strength_workout(session: dict, date: str) -> dict:
     })
     step_order += 1
 
+    # Add REST step after warmup (press lap when ready for first exercise)
+    steps.append({
+        "type": "ExecutableStepDTO",
+        "stepOrder": step_order,
+        "stepType": STEP_REST,
+        "endCondition": END_LAP_BUTTON,
+        "targetType": TARGET_NONE,
+    })
+    step_order += 1
+
     # Each exercise becomes a RepeatGroupDTO
     for exercise in exercises:
         ex_name = exercise.get("name", "UNKNOWN")
         category = exercise.get("category", "OTHER")
+        # Map non-standard categories to valid Garmin categories
+        category = GARMIN_CATEGORY_MAP.get(category, category)
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
@@ -927,6 +1318,8 @@ def get_workout_type_name(session: dict) -> str:
         return "swimming"
     elif session_type in YOGA_TYPES:
         return "yoga"
+    elif session_type in PILATES_TYPES:
+        return "pilates"
     elif session_type in STRENGTH_TYPES:
         return "strength"
     elif session_type in SKIP_TYPES:
