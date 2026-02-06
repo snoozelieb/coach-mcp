@@ -1,10 +1,15 @@
 import os
 import logging
+import time
 from datetime import date
-from garminconnect import Garmin
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectTooManyRequestsError,
+)
 from dotenv import load_dotenv
 
-from config import TOKEN_DIR
+from config import TOKEN_DIR, GARMIN_RATE_LIMIT_WAIT_SECS
 
 load_dotenv()
 
@@ -69,18 +74,53 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
     return client
 
 
-def schedule_workout(client: Garmin, workout_id: int, schedule_date: str) -> dict:
+def garmin_api_call(fn, *args, **kwargs):
+    """
+    Execute a Garmin API call with automatic auth retry and rate-limit handling.
+
+    Wraps any function that takes a Garmin client as its first argument.
+    On GarminConnectAuthenticationError (expired session), invalidates the
+    cached client and retries once with a fresh login.
+    On GarminConnectTooManyRequestsError (429), waits and retries once.
+    All other exceptions propagate immediately.
+
+    Args:
+        fn: Callable that receives a Garmin client as first arg, e.g.
+            garmin_api_call(lambda c: c.get_activities_by_date(start, end))
+        *args, **kwargs: Additional positional/keyword args forwarded to fn
+            after the client.
+
+    Returns:
+        The return value of fn(client, *args, **kwargs).
+    """
+    client = get_garmin_client()
+    try:
+        return fn(client, *args, **kwargs)
+    except GarminConnectAuthenticationError:
+        logger.warning("Auth error — refreshing session and retrying...")
+        client = get_garmin_client(force_refresh=True)
+        return fn(client, *args, **kwargs)
+    except GarminConnectTooManyRequestsError:
+        logger.warning(
+            f"Rate limited (429) — waiting {GARMIN_RATE_LIMIT_WAIT_SECS}s and retrying..."
+        )
+        time.sleep(GARMIN_RATE_LIMIT_WAIT_SECS)
+        return fn(client, *args, **kwargs)
+
+
+def schedule_workout(workout_id: int, schedule_date: str) -> dict:
     """
     Schedule a workout to a specific date on Garmin Connect calendar.
 
     Args:
-        client: Authenticated Garmin client
         workout_id: ID of the workout to schedule (from upload_workout)
         schedule_date: Date to schedule (YYYY-MM-DD format)
 
     Returns:
         API response dict
     """
-    url = f"{client.garmin_workouts_schedule_url}/{workout_id}"
-    response = client.garth.post("connectapi", url, json={"date": schedule_date})
-    return response
+    def _schedule(client):
+        url = f"{client.garmin_workouts_schedule_url}/{workout_id}"
+        return client.garth.post("connectapi", url, json={"date": schedule_date})
+
+    return garmin_api_call(_schedule)

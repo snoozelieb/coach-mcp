@@ -31,6 +31,7 @@ from config import (
     TSS_PER_HOUR_ESTIMATE,
     MAX_WEEKLY_LOAD_INCREASE_PCT,
 )
+from garmin_client import garmin_api_call
 
 
 def calculate_training_load(activity: dict[str, Any], athlete_max_hr: int = None) -> float:
@@ -581,7 +582,7 @@ def get_athlete_hr_zones() -> dict[str, list[int]] | None:
     return None
 
 
-def get_sleep_summary(client, today: date, days: int = 7) -> dict:
+def get_sleep_summary(today: date, days: int = 7) -> dict:
     """
     Get comprehensive sleep analysis for the last N days.
 
@@ -597,7 +598,6 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
     Without adequate sleep, training is CATABOLIC not ANABOLIC.
 
     Args:
-        client: Garmin client instance
         today: Current date
         days: Number of days to analyze (default 7)
 
@@ -613,7 +613,7 @@ def get_sleep_summary(client, today: date, days: int = 7) -> dict:
     for i in range(days):
         d = today - timedelta(days=i)
         try:
-            sleep = client.get_sleep_data(d.isoformat())
+            sleep = garmin_api_call(lambda c, ds=d.isoformat(): c.get_sleep_data(ds))
             if sleep and sleep.get('dailySleepDTO'):
                 dto = sleep['dailySleepDTO']
                 scores = dto.get('sleepScores', {})

@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from garmin_client import get_garmin_client, schedule_workout
+from garmin_client import garmin_api_call, schedule_workout
 from rules import check_weekly_compliance, check_safety_rules, get_upcoming_events, load_training_config
 from planner import (
     build_planning_context,
@@ -296,19 +296,20 @@ def refresh_athlete_baseline() -> str:
         JSON summary of the generated baseline.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
         six_months_ago = today - timedelta(days=PROFILE_HISTORY_DAYS)
 
         # Pull 6 months of activities
-        raw_activities = client.get_activities_by_date(
-            six_months_ago.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                six_months_ago.isoformat(),
+                today.isoformat()
+            )
         )
         activities = parse_activities(raw_activities)
 
         # Pull personal records
-        pr_data = client.get_personal_record()
+        pr_data = garmin_api_call(lambda c: c.get_personal_record())
         personal_records = parse_personal_records(pr_data)
 
         # Calculate baseline from activities
@@ -359,12 +360,10 @@ def get_training_readiness(for_date: str = None) -> str:
         sleep_score, recovery_time_hrs, hrv_status, acute_load, feedback.
     """
     try:
-        client = get_garmin_client()
-
         if for_date is None:
             for_date = date.today().isoformat()
 
-        readiness_data = client.get_training_readiness(for_date)
+        readiness_data = garmin_api_call(lambda c: c.get_training_readiness(for_date))
         parsed = parse_training_readiness(readiness_data)
 
         return json.dumps(parsed, indent=2)
@@ -386,19 +385,18 @@ def get_load_status() -> str:
         recommendation, and any warnings.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # Get today's training readiness
-        readiness_data = client.get_training_readiness(today.isoformat())
+        readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
         readiness = parse_training_readiness(readiness_data)
 
         # Get recent activities for load trend
         week_ago = (today - timedelta(days=7)).isoformat()
         two_weeks_ago = (today - timedelta(days=14)).isoformat()
 
-        recent_activities = client.get_activities_by_date(week_ago, today.isoformat())
-        prior_activities = client.get_activities_by_date(two_weeks_ago, week_ago)
+        recent_activities = garmin_api_call(lambda c: c.get_activities_by_date(week_ago, today.isoformat()))
+        prior_activities = garmin_api_call(lambda c: c.get_activities_by_date(two_weeks_ago, week_ago))
 
         # Calculate load trend (simple duration-based)
         recent_duration_mins = sum(
@@ -605,12 +603,11 @@ def refresh_fitness_history(days: int = 180) -> str:
         JSON with summary of updated data and current fitness metrics.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
         start = (today - timedelta(days=days)).isoformat()
 
         # Fetch activities from Garmin
-        raw_activities = client.get_activities_by_date(start, today.isoformat())
+        raw_activities = garmin_api_call(lambda c: c.get_activities_by_date(start, today.isoformat()))
 
         if not raw_activities:
             return json.dumps({
@@ -671,12 +668,11 @@ def get_intensity_distribution(days: int = 28) -> str:
     - Plan intensity for upcoming sessions
     """
     try:
-        client = get_garmin_client()
         today = date.today()
         start = (today - timedelta(days=days)).isoformat()
 
         # Fetch activities
-        raw_activities = client.get_activities_by_date(start, today.isoformat())
+        raw_activities = garmin_api_call(lambda c: c.get_activities_by_date(start, today.isoformat()))
 
         if not raw_activities:
             return json.dumps({
@@ -726,8 +722,7 @@ def get_personal_records() -> str:
     unit, date, and activity_id.
     """
     try:
-        client = get_garmin_client()
-        pr_data = client.get_personal_record()
+        pr_data = garmin_api_call(lambda c: c.get_personal_record())
         parsed = parse_personal_records(pr_data)
 
         return json.dumps(parsed, indent=2)
@@ -750,12 +745,10 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
         distance_km, avg_hr, max_hr, calories, and pace for runs.
     """
     try:
-        client = get_garmin_client()
-
         if end_date is None:
             end_date = date.today().isoformat()
 
-        activities = client.get_activities_by_date(start_date, end_date)
+        activities = garmin_api_call(lambda c: c.get_activities_by_date(start_date, end_date))
         parsed = parse_activities(activities)
 
         return json.dumps(parsed, indent=2)
@@ -776,11 +769,10 @@ def get_daily_metrics() -> str:
         - sleep_score: Sleep quality score
     """
     try:
-        client = get_garmin_client()
         today = date.today().isoformat()
 
-        stats = client.get_user_summary(today)
-        body_battery = client.get_body_battery(today)
+        stats = garmin_api_call(lambda c: c.get_user_summary(today))
+        body_battery = garmin_api_call(lambda c: c.get_body_battery(today))
 
         rhr = parse_resting_heart_rate(stats)
         sleep_score = parse_sleep_score(stats)
@@ -1263,7 +1255,6 @@ def analyze_ftp_test(activity_id: str = None) -> str:
         Structured JSON with complete test analysis for coaching decisions.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # 1. FIND TEST ACTIVITY
@@ -1271,9 +1262,11 @@ def analyze_ftp_test(activity_id: str = None) -> str:
             target_activity_id = int(activity_id)
             # Fetch activity details
             week_ago = today - timedelta(days=30)
-            raw_activities = client.get_activities_by_date(
-                week_ago.isoformat(),
-                today.isoformat()
+            raw_activities = garmin_api_call(
+                lambda c: c.get_activities_by_date(
+                    week_ago.isoformat(),
+                    today.isoformat()
+                )
             )
             activity_summary = None
             for act in raw_activities:
@@ -1288,9 +1281,11 @@ def analyze_ftp_test(activity_id: str = None) -> str:
         else:
             # Search recent activities for FTP test
             week_ago = today - timedelta(days=30)
-            raw_activities = client.get_activities_by_date(
-                week_ago.isoformat(),
-                today.isoformat()
+            raw_activities = garmin_api_call(
+                lambda c: c.get_activities_by_date(
+                    week_ago.isoformat(),
+                    today.isoformat()
+                )
             )
 
             # Filter: cycling + name contains FTP-related keywords
@@ -1312,7 +1307,7 @@ def analyze_ftp_test(activity_id: str = None) -> str:
 
         # 2. FETCH LAP DATA
         try:
-            splits = client.get_activity_splits(target_activity_id)
+            splits = garmin_api_call(lambda c: c.get_activity_splits(target_activity_id))
             laps = splits.get('lapDTOs', [])
         except Exception:
             laps = []
@@ -1674,7 +1669,6 @@ def get_planning_context() -> str:
     Use this before generating or adjusting training plans.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # Load configurations from new file structure
@@ -1684,9 +1678,11 @@ def get_planning_context() -> str:
 
         # Get recent activities (14 days)
         start_14_days = today - timedelta(days=RECENT_ACTIVITY_DAYS)
-        raw_activities = client.get_activities_by_date(
-            start_14_days.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                start_14_days.isoformat(),
+                today.isoformat()
+            )
         )
         recent_activities = parse_activities(raw_activities)
 
@@ -1699,11 +1695,11 @@ def get_planning_context() -> str:
         compliance = check_weekly_compliance(week_activities)
 
         # Get today's recovery metrics
-        readiness_data = client.get_training_readiness(today.isoformat())
+        readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
         today_recovery = parse_training_readiness(readiness_data)
 
-        stats = client.get_user_summary(today.isoformat())
-        body_battery = client.get_body_battery(today.isoformat())
+        stats = garmin_api_call(lambda c: c.get_user_summary(today.isoformat()))
+        body_battery = garmin_api_call(lambda c: c.get_body_battery(today.isoformat()))
 
         today_recovery['rhr'] = parse_resting_heart_rate(stats)
         today_recovery['body_battery'] = parse_body_battery(body_battery)
@@ -1713,8 +1709,8 @@ def get_planning_context() -> str:
         week_ago = (today - timedelta(days=7)).isoformat()
         two_weeks_ago = (today - timedelta(days=14)).isoformat()
 
-        recent_load_activities = client.get_activities_by_date(week_ago, today.isoformat())
-        prior_load_activities = client.get_activities_by_date(two_weeks_ago, week_ago)
+        recent_load_activities = garmin_api_call(lambda c: c.get_activities_by_date(week_ago, today.isoformat()))
+        prior_load_activities = garmin_api_call(lambda c: c.get_activities_by_date(two_weeks_ago, week_ago))
 
         recent_duration_mins = sum(
             a.get('duration', 0) / 60 for a in recent_load_activities
@@ -1997,7 +1993,6 @@ def get_weekly_prescription() -> str:
     """
     try:
         today = date.today()
-        client = get_garmin_client()
 
         # Load all context
         config = load_training_config()
@@ -2021,14 +2016,16 @@ def get_weekly_prescription() -> str:
             pass
 
         # Get today's readiness
-        readiness_data = client.get_training_readiness(today.isoformat())
+        readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
         readiness = parse_training_readiness(readiness_data)
 
         # Get recent compliance
         start_7_days = today - timedelta(days=7)
-        raw_activities = client.get_activities_by_date(
-            start_7_days.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                start_7_days.isoformat(),
+                today.isoformat()
+            )
         )
         recent_activities = parse_activities(raw_activities)
         compliance = check_weekly_compliance(recent_activities)
@@ -2325,7 +2322,6 @@ def push_plan_to_garmin() -> str:
     from workout_builder import build_workout, get_workout_type_name
 
     try:
-        client = get_garmin_client()
         plan = get_current_plan()
 
         if not plan or 'days' not in plan:
@@ -2333,7 +2329,7 @@ def push_plan_to_garmin() -> str:
 
         # DUPLICATE PREVENTION: Delete existing workouts created during plan period
         week_start = plan.get('week_start', '2000-01-01')
-        existing_workouts = client.get_workouts()
+        existing_workouts = garmin_api_call(lambda c: c.get_workouts())
         deleted_count = 0
 
         for workout in existing_workouts:
@@ -2343,7 +2339,11 @@ def push_plan_to_garmin() -> str:
             # Delete workouts created on or after plan start date (likely ours)
             if created >= week_start:
                 try:
-                    client.garth.delete('connectapi', f'/workout-service/workout/{workout_id}', api=True)
+                    garmin_api_call(
+                        lambda c, wid=workout_id: c.garth.delete(
+                            'connectapi', f'/workout-service/workout/{wid}', api=True
+                        )
+                    )
                     deleted_count += 1
                 except:
                     pass
@@ -2449,14 +2449,14 @@ def push_plan_to_garmin() -> str:
                 try:
                     # Upload the workout based on type
                     if workout_type == 'cycling':
-                        upload_result = client.upload_cycling_workout(workout)
+                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_cycling_workout(w))
                         workout_name = workout.workoutName
                     elif workout_type == 'running':
-                        upload_result = client.upload_running_workout(workout)
+                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_running_workout(w))
                         workout_name = workout.workoutName
-                    elif workout_type in ['yoga', 'strength', 'swimming', 'pilates']:
-                        # Yoga, strength, swimming, pilates use generic upload with dict format
-                        upload_result = client.upload_workout(workout)
+                    elif workout_type in ['yoga', 'strength', 'swimming', 'pilates', 'padel']:
+                        # Yoga, strength, swimming, pilates, padel use generic upload with dict format
+                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_workout(w))
                         workout_name = workout.get('workoutName', 'Workout')
                     else:
                         results['skipped'].append({
@@ -2478,7 +2478,7 @@ def push_plan_to_garmin() -> str:
                         continue
 
                     # Schedule the workout to the date
-                    schedule_workout(client, workout_id, date_str)
+                    schedule_workout(workout_id, date_str)
 
                     result_entry = {
                         'date': date_str,
@@ -3050,14 +3050,15 @@ def get_compliance_report(days: int = 7) -> str:
         JSON with compliance status for each pillar, deficits, and safety warnings.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
         start_date = today - timedelta(days=days)
 
         # Get activities for the period
-        raw_activities = client.get_activities_by_date(
-            start_date.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                start_date.isoformat(),
+                today.isoformat()
+            )
         )
         activities = parse_activities(raw_activities)
 
@@ -3106,7 +3107,6 @@ def get_coaching_score() -> str:
         JSON with component scores, overall score, and coaching feedback.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # Get fitness data for progress calculation
@@ -3240,9 +3240,11 @@ def get_coaching_score() -> str:
         # Calculate achievability score (20% weight)
         # Based on compliance rate over last 4 weeks
         start_date = today - timedelta(days=28)
-        raw_activities = client.get_activities_by_date(
-            start_date.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                start_date.isoformat(),
+                today.isoformat()
+            )
         )
         activities = parse_activities(raw_activities)
         compliance = check_weekly_compliance(activities)
@@ -3408,7 +3410,6 @@ def get_coaching_snapshot() -> str:
     """
     try:
         today = date.today()
-        client = get_garmin_client()
 
         # 1. Current Weekly Plan
         current_plan = get_current_plan()
@@ -3420,9 +3421,11 @@ def get_coaching_snapshot() -> str:
         else:
             week_start = today - timedelta(days=today.weekday())  # Monday
 
-        raw_activities = client.get_activities_by_date(
-            week_start.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                week_start.isoformat(),
+                today.isoformat()
+            )
         )
         activities_this_week = parse_activities(raw_activities)
 
@@ -3447,13 +3450,13 @@ def get_coaching_snapshot() -> str:
 
         # 6. Recovery status (today) + Sleep tracking
         try:
-            readiness_data = client.get_training_readiness(today.isoformat())
+            readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
             recovery = _parse_readiness_for_snapshot(readiness_data)
         except Exception:
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
 
         # 6b. Sleep data (last 7 days)
-        sleep_data = get_sleep_summary(client, today, days=7)
+        sleep_data = get_sleep_summary(today, days=7)
 
         # 7. Sport priority breakdown (multi-sport analysis)
         training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -5018,7 +5021,6 @@ def sync_strength_session(activity_id: str = None) -> str:
     from config import WEIGHT_GRAM_TO_KG, DEFAULT_EQUIVALENCE_GROUPS
 
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # Find strength activity to sync
@@ -5027,9 +5029,11 @@ def sync_strength_session(activity_id: str = None) -> str:
         else:
             # Find most recent strength activity
             week_ago = today - timedelta(days=7)
-            raw_activities = client.get_activities_by_date(
-                week_ago.isoformat(),
-                today.isoformat()
+            raw_activities = garmin_api_call(
+                lambda c: c.get_activities_by_date(
+                    week_ago.isoformat(),
+                    today.isoformat()
+                )
             )
             activities = parse_activities(raw_activities)
 
@@ -5049,7 +5053,7 @@ def sync_strength_session(activity_id: str = None) -> str:
 
         # Fetch exercise sets from Garmin
         try:
-            exercise_sets = client.get_activity_exercise_sets(target_activity_id)
+            exercise_sets = garmin_api_call(lambda c: c.get_activity_exercise_sets(target_activity_id))
         except Exception as e:
             return json.dumps({
                 "status": "error",
@@ -5451,14 +5455,15 @@ def generate_strength_workout(
         JSON with exercises, sets, reps, rationale, and auto-adjustments.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
 
         # Get today's and recent activities
         yesterday = today - timedelta(days=1)
-        raw_activities = client.get_activities_by_date(
-            yesterday.isoformat(),
-            today.isoformat()
+        raw_activities = garmin_api_call(
+            lambda c: c.get_activities_by_date(
+                yesterday.isoformat(),
+                today.isoformat()
+            )
         )
         recent_activities = parse_activities(raw_activities)
 
@@ -5871,12 +5876,11 @@ def get_goal_progress(days: int = 14) -> str:
         JSON with progress for each goal category and recommendations.
     """
     try:
-        client = get_garmin_client()
         today = date.today()
         start = (today - timedelta(days=days)).isoformat()
 
         # Get activities
-        raw_activities = client.get_activities_by_date(start, today.isoformat())
+        raw_activities = garmin_api_call(lambda c: c.get_activities_by_date(start, today.isoformat()))
         activities = parse_activities(raw_activities)
 
         # Load training config for goal definitions

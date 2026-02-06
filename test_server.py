@@ -86,8 +86,8 @@ class TestParseBodyBatteryWithRealData:
 
 
 class TestGetDailyMetricsIntegration:
-    @patch('server.get_garmin_client')
-    def test_returns_json_with_real_data(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_returns_json_with_real_data(self, mock_api_call):
         """Test full integration using real fixture data."""
         from server import get_daily_metrics
         import json
@@ -95,7 +95,7 @@ class TestGetDailyMetricsIntegration:
         mock_client = Mock()
         mock_client.get_user_summary.return_value = REAL_STATS
         mock_client.get_body_battery.return_value = REAL_BODY_BATTERY
-        mock_get_client.return_value = mock_client
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = json.loads(get_daily_metrics())
 
@@ -105,26 +105,26 @@ class TestGetDailyMetricsIntegration:
         assert result['sleep_score'] == 'N/A'
         assert 'date' in result
 
-    @patch('server.get_garmin_client')
-    def test_handles_api_error(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_api_error(self, mock_api_call):
         from server import get_daily_metrics
         import json
 
-        mock_get_client.side_effect = Exception("Connection timeout")
+        mock_api_call.side_effect = Exception("Connection timeout")
         result = json.loads(get_daily_metrics())
 
         assert 'error' in result
         assert 'Connection timeout' in result['error']
 
-    @patch('server.get_garmin_client')
-    def test_handles_empty_responses(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_empty_responses(self, mock_api_call):
         from server import get_daily_metrics
         import json
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = {}
         mock_client.get_body_battery.return_value = []
-        mock_get_client.return_value = mock_client
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = json.loads(get_daily_metrics())
 
@@ -226,8 +226,8 @@ class TestParseActivities:
 
 
 class TestGetActivitiesRangeIntegration:
-    @patch('server.get_garmin_client')
-    def test_returns_json_array(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_returns_json_array(self, mock_api_call):
         from server import get_activities_range
 
         mock_client = Mock()
@@ -235,7 +235,7 @@ class TestGetActivitiesRangeIntegration:
             SAMPLE_RUNNING_ACTIVITY,
             SAMPLE_STRENGTH_ACTIVITY,
         ]
-        mock_get_client.return_value = mock_client
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = get_activities_range('2025-12-01', '2025-12-02')
         parsed = json.loads(result)
@@ -244,11 +244,11 @@ class TestGetActivitiesRangeIntegration:
         assert len(parsed) == 2
         assert parsed[0]['type'] == 'running'
 
-    @patch('server.get_garmin_client')
-    def test_handles_api_error(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_api_error(self, mock_api_call):
         from server import get_activities_range
 
-        mock_get_client.side_effect = Exception("API timeout")
+        mock_api_call.side_effect = Exception("API timeout")
         result = get_activities_range('2025-12-01')
         parsed = json.loads(result)
 
@@ -323,13 +323,13 @@ class TestParsePersonalRecords:
 
 
 class TestGetPersonalRecordsIntegration:
-    @patch('server.get_garmin_client')
-    def test_returns_json_array(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_returns_json_array(self, mock_api_call):
         from server import get_personal_records
 
         mock_client = Mock()
         mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
-        mock_get_client.return_value = mock_client
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = get_personal_records()
         parsed = json.loads(result)
@@ -337,11 +337,11 @@ class TestGetPersonalRecordsIntegration:
         assert isinstance(parsed, list)
         assert len(parsed) == 3
 
-    @patch('server.get_garmin_client')
-    def test_handles_api_error(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_api_error(self, mock_api_call):
         from server import get_personal_records
 
-        mock_get_client.side_effect = Exception("Auth failed")
+        mock_api_call.side_effect = Exception("Auth failed")
         result = get_personal_records()
         parsed = json.loads(result)
 
@@ -394,13 +394,13 @@ class TestParseTrainingReadiness:
 
 
 class TestGetTrainingReadinessIntegration:
-    @patch('server.get_garmin_client')
-    def test_returns_json_object(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_returns_json_object(self, mock_api_call):
         from server import get_training_readiness
 
         mock_client = Mock()
         mock_client.get_training_readiness.return_value = SAMPLE_TRAINING_READINESS
-        mock_get_client.return_value = mock_client
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = get_training_readiness('2025-12-01')
         parsed = json.loads(result)
@@ -408,11 +408,11 @@ class TestGetTrainingReadinessIntegration:
         assert parsed['score'] == 72
         assert parsed['level'] == 'HIGH'
 
-    @patch('server.get_garmin_client')
-    def test_handles_api_error(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_api_error(self, mock_api_call):
         from server import get_training_readiness
 
-        mock_get_client.side_effect = Exception("Network error")
+        mock_api_call.side_effect = Exception("Network error")
         result = get_training_readiness()
         parsed = json.loads(result)
 
@@ -496,8 +496,8 @@ class TestCalculateBaseline:
 
 
 class TestRefreshAthleteBaselineIntegration:
-    @patch('server.get_garmin_client')
-    def test_returns_success_summary(self, mock_get_client, tmp_path):
+    @patch('server.garmin_api_call')
+    def test_returns_success_summary(self, mock_api_call, tmp_path):
         from server import refresh_athlete_baseline, DATA_DIR
         import server
 
@@ -512,7 +512,7 @@ class TestRefreshAthleteBaselineIntegration:
                 SAMPLE_STRENGTH_ACTIVITY,
             ]
             mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
-            mock_get_client.return_value = mock_client
+            mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
             result = refresh_athlete_baseline()
             parsed = json.loads(result)
@@ -524,8 +524,8 @@ class TestRefreshAthleteBaselineIntegration:
         finally:
             server.DATA_DIR = original_data_dir
 
-    @patch('server.get_garmin_client')
-    def test_creates_baseline_file(self, mock_get_client, tmp_path):
+    @patch('server.garmin_api_call')
+    def test_creates_baseline_file(self, mock_api_call, tmp_path):
         from server import refresh_athlete_baseline
         import server
 
@@ -536,7 +536,7 @@ class TestRefreshAthleteBaselineIntegration:
             mock_client = Mock()
             mock_client.get_activities_by_date.return_value = [SAMPLE_RUNNING_ACTIVITY]
             mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
-            mock_get_client.return_value = mock_client
+            mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
             refresh_athlete_baseline()
 
@@ -553,11 +553,11 @@ class TestRefreshAthleteBaselineIntegration:
         finally:
             server.DATA_DIR = original_data_dir
 
-    @patch('server.get_garmin_client')
-    def test_handles_api_error(self, mock_get_client):
+    @patch('server.garmin_api_call')
+    def test_handles_api_error(self, mock_api_call):
         from server import refresh_athlete_baseline
 
-        mock_get_client.side_effect = Exception("Auth failed")
+        mock_api_call.side_effect = Exception("Auth failed")
         result = refresh_athlete_baseline()
         parsed = json.loads(result)
 
