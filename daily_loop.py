@@ -29,13 +29,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import MCP server functions directly
-from server import (
-    get_planning_context,
-    get_compliance_report,
-    get_daily_metrics,
-    get_activities_range,
-)
+# Import tool functions directly from their modules
+from tools.planning_tools import get_planning_context
+from tools.coaching_tools import get_compliance_report
+from tools.data_tools import get_daily_metrics, get_activities_range
 from planner import (
     get_current_plan,
     save_weekly_plan,

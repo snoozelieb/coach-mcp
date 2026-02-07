@@ -16,6 +16,7 @@ Also contains helper functions:
 - _generate_sport_blend_recommendation
 """
 
+from collections import defaultdict
 from mcp_app import mcp
 from garmin_client import garmin_api_call
 from parsers import parse_activities

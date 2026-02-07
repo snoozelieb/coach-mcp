@@ -276,11 +276,12 @@ Use `get_coaching_score()` to evaluate coaching effectiveness across 4 dimension
 # Run the MCP server
 python server.py
 
-# Run all tests (83 tests)
-python -m pytest test_server.py test_rules.py test_planner.py -v
+# Run all tests (348 tests)
+python -m pytest -v
 
 # Run tests for specific module
-python -m pytest test_rules.py -v
+python -m pytest tests/test_rules.py -v
+python -m pytest tests/test_coaching_tools.py -v
 
 # Run morning audit (standalone mode)
 python daily_loop.py
@@ -633,9 +634,22 @@ coach-mcp/
 │   ├── coaching_log.json      # MEMORY - coaching decisions, patterns, approvals
 │   ├── exercise_library.json  # FORM - cached exercise form cues for Garmin notes
 │   └── suggestions.json       # Pending LLM suggestions
-├── test_server.py         # Server tests (46 tests)
-├── test_rules.py          # Rules tests (23 tests)
-├── test_planner.py        # Planner tests (14 tests)
+├── tests/
+│   ├── conftest.py            # Shared fixtures and sample data
+│   ├── test_parsers.py        # Parser tests (42 tests)
+│   ├── test_data_tools.py     # Data tool integration tests (3 tests)
+│   ├── test_fitness_tools.py  # Baseline pipeline tests (2 tests)
+│   ├── test_coaching_tools.py # Coaching helper tests (22 tests)
+│   ├── test_decision_tools.py # Decision tool tests (17 tests)
+│   ├── test_strength_tools.py # Strength tool tests (12 tests)
+│   ├── test_athlete_tools.py  # Athlete tool tests (20 tests)
+│   ├── test_rules.py          # Rules tests (23 tests)
+│   ├── test_planner.py        # Planner tests (14 tests)
+│   ├── test_fitness.py        # Fitness calculation tests (47 tests)
+│   ├── test_workout_builder.py # Workout builder tests (109 tests)
+│   ├── test_garmin_retry.py   # Garmin retry tests (10 tests)
+│   └── test_web_utils.py      # Web utils tests (24 tests)
+├── pyproject.toml         # pytest config (testpaths, pythonpath)
 └── test_fixtures.json     # Real Garmin API responses (gitignored)
 ```
 

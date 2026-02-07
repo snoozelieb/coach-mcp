@@ -2,11 +2,9 @@
 Tests for parsers.py - pure parsing functions for Garmin API responses.
 
 These tests have zero MCP dependency and test pure data transformations.
-Migrated from test_server.py to test against parsers module directly.
 """
 import json
 import pytest
-from pathlib import Path
 from parsers import (
     check_setup,
     parse_resting_heart_rate,
@@ -18,112 +16,22 @@ from parsers import (
     parse_personal_records,
     calculate_baseline,
 )
-
-
-# Load real fixture data
-FIXTURES_PATH = Path(__file__).parent / "test_fixtures.json"
-with open(FIXTURES_PATH) as f:
-    FIXTURES = json.load(f)
-
-REAL_STATS = FIXTURES["user_summary"]
-REAL_BODY_BATTERY = FIXTURES["body_battery"]
-
-
-# Sample activity data matching Garmin API structure
-SAMPLE_RUNNING_ACTIVITY = {
-    'activityId': 12345678901,
-    'activityName': 'Morning Run',
-    'startTimeLocal': '2025-12-01T06:30:00.0',
-    'activityType': {
-        'typeId': 1,
-        'typeKey': 'running',
-        'parentTypeId': 17,
-    },
-    'duration': 2700,  # 45 mins in seconds
-    'distance': 8000,  # 8km in meters
-    'averageHR': 145,
-    'maxHR': 168,
-    'calories': 520,
-}
-
-SAMPLE_STRENGTH_ACTIVITY = {
-    'activityId': 12345678902,
-    'activityName': 'Strength Training',
-    'startTimeLocal': '2025-12-02T17:00:00.0',
-    'activityType': {
-        'typeId': 13,
-        'typeKey': 'strength_training',
-        'parentTypeId': 29,
-    },
-    'duration': 3600,  # 60 mins
-    'distance': None,
-    'averageHR': 110,
-    'maxHR': 135,
-    'calories': 380,
-}
-
-
-# Sample personal records data matching Garmin API structure
-SAMPLE_PR_DATA = {
-    'personalRecords': [
-        {
-            'prTypeLabelKey': 'pr_running_fastest_5k_time',
-            'value': 1320,  # 22:00 in seconds
-            'unitKey': 'time',
-            'prStartTimeGmtFormatted': '2025-06-15T08:30:00.0',
-            'activityId': 11111111111,
-        },
-        {
-            'prTypeLabelKey': 'pr_running_fastest_10k_time',
-            'value': 2820,  # 47:00 in seconds
-            'unitKey': 'time',
-            'prStartTimeGmtFormatted': '2025-09-22T07:00:00.0',
-            'activityId': 22222222222,
-        },
-        {
-            'prTypeLabelKey': 'pr_running_longest_distance',
-            'value': 21100,  # 21.1 km
-            'unitKey': 'meter',
-            'prStartTimeGmtFormatted': '2025-10-10T06:00:00.0',
-            'activityId': 33333333333,
-        },
-    ]
-}
-
-
-# Sample training readiness data matching Garmin API structure
-SAMPLE_TRAINING_READINESS = {
-    'calendarDate': '2025-12-01',
-    'score': 72,
-    'level': 'HIGH',
-    'sleepScore': 85,
-    'recoveryTimeInHours': 12,
-    'hrvStatus': 'BALANCED',
-    'acuteLoad': 450.5,
-    'feedbackPhrase': 'Your body is well recovered and ready for a hard workout.',
-}
-
-
-# Sample parsed activities for baseline testing
-SAMPLE_PARSED_ACTIVITIES = [
-    {'date': '2025-11-25', 'type': 'running', 'duration_mins': 45.0},
-    {'date': '2025-11-26', 'type': 'strength_training', 'duration_mins': 60.0},
-    {'date': '2025-11-28', 'type': 'running', 'duration_mins': 30.0},
-    {'date': '2025-12-01', 'type': 'running', 'duration_mins': 60.0},
-    {'date': '2025-12-02', 'type': 'cycling', 'duration_mins': 90.0},
-    {'date': '2025-12-03', 'type': 'strength_training', 'duration_mins': 45.0},
-    {'date': '2025-12-05', 'type': 'running', 'duration_mins': 75.0},
-]
+from conftest import (
+    SAMPLE_RUNNING_ACTIVITY,
+    SAMPLE_STRENGTH_ACTIVITY,
+    SAMPLE_PR_DATA,
+    SAMPLE_TRAINING_READINESS,
+    SAMPLE_PARSED_ACTIVITIES,
+)
 
 
 class TestParseRestingHeartRateWithRealData:
-    def test_parses_real_garmin_response(self):
-        """Test against actual Garmin API response from 2025-12-01."""
-        result = parse_resting_heart_rate(REAL_STATS)
-        assert result == 40  # Actual RHR from that day
+    def test_parses_real_garmin_response(self, garmin_fixtures):
+        result = parse_resting_heart_rate(garmin_fixtures["user_summary"])
+        assert result == 40
 
-    def test_missing_key_returns_na(self):
-        stats_without_rhr = {k: v for k, v in REAL_STATS.items() if k != 'restingHeartRate'}
+    def test_missing_key_returns_na(self, garmin_fixtures):
+        stats_without_rhr = {k: v for k, v in garmin_fixtures["user_summary"].items() if k != 'restingHeartRate'}
         assert parse_resting_heart_rate(stats_without_rhr) == 'N/A'
 
     def test_empty_dict_returns_na(self):
@@ -131,14 +39,12 @@ class TestParseRestingHeartRateWithRealData:
 
 
 class TestParseSleepScoreWithRealData:
-    def test_parses_real_garmin_response(self):
-        """Test against actual Garmin API response from 2025-12-01."""
-        result = parse_sleep_score(REAL_STATS)
-        # sleepScore key not present in this response, so returns N/A
+    def test_parses_real_garmin_response(self, garmin_fixtures):
+        result = parse_sleep_score(garmin_fixtures["user_summary"])
         assert result == 'N/A'
 
-    def test_returns_value_when_present(self):
-        stats_with_sleep = {**REAL_STATS, 'sleepScore': 85}
+    def test_returns_value_when_present(self, garmin_fixtures):
+        stats_with_sleep = {**garmin_fixtures["user_summary"], 'sleepScore': 85}
         assert parse_sleep_score(stats_with_sleep) == 85
 
     def test_empty_dict_returns_na(self):
@@ -146,18 +52,14 @@ class TestParseSleepScoreWithRealData:
 
 
 class TestParseBodyBatteryWithRealData:
-    def test_parses_real_garmin_response(self):
-        """Test against actual Garmin API response from 2025-12-01."""
-        result = parse_body_battery(REAL_BODY_BATTERY)
-        assert result == 33  # Last body battery value from that day
+    def test_parses_real_garmin_response(self, garmin_fixtures):
+        result = parse_body_battery(garmin_fixtures["body_battery"])
+        assert result == 33
 
-    def test_gets_last_value_not_first(self):
-        """Verify we get the most recent (last) reading."""
-        # From fixture: values are [40, 99, 85, 57, 57, 33]
-        # First value is 40, last is 33
-        result = parse_body_battery(REAL_BODY_BATTERY)
-        assert result != 40  # Not the first value
-        assert result == 33  # The last value
+    def test_gets_last_value_not_first(self, garmin_fixtures):
+        result = parse_body_battery(garmin_fixtures["body_battery"])
+        assert result != 40
+        assert result == 33
 
     def test_empty_list_returns_na(self):
         assert parse_body_battery([]) == 'N/A'
@@ -166,7 +68,7 @@ class TestParseBodyBatteryWithRealData:
         assert parse_body_battery(None) == 'N/A'
 
     def test_missing_values_array_returns_na(self):
-        malformed = [{"date": "2025-12-01"}]  # No bodyBatteryValuesArray
+        malformed = [{"date": "2025-12-01"}]
         assert parse_body_battery(malformed) == 'N/A'
 
     def test_empty_values_array_returns_na(self):
