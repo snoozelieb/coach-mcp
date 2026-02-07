@@ -17,7 +17,7 @@ from parsers import parse_activities, parse_training_readiness, parse_personal_r
 from planner import load_athlete, load_methodology
 from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_load_athlete_max_hr, get_athlete_hr_zones, get_fitness_trend,
-                     update_fitness_history)
+                     update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics)
 from config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE
 from datetime import date, timedelta
 import json
@@ -246,8 +246,22 @@ def get_fitness_status(days: int = 90) -> str:
                 'action': 'Call refresh_fitness_history() first',
             })
 
-        # Calculate current metrics
-        metrics = calculate_fitness_metrics(daily_loads)
+        # Calculate current overall metrics (extract flat total loads for v2)
+        total_loads = _extract_total_loads(daily_loads)
+        metrics = calculate_fitness_metrics(total_loads)
+
+        # Calculate per-sport metrics
+        by_sport = {}
+        for sport in ['cycling', 'running', 'strength']:
+            sport_metrics = calculate_sport_fitness_metrics(daily_loads, sport)
+            if sport_metrics.get('days_with_data', 0) > 0:
+                by_sport[sport] = {
+                    'ctl': sport_metrics['ctl'],
+                    'atl': sport_metrics['atl'],
+                    'tsb': sport_metrics['tsb'],
+                    'acwr': sport_metrics['acwr'],
+                    'acwr_status': sport_metrics['acwr_status'],
+                }
 
         # Get trend
         trend = get_fitness_trend(days)
@@ -291,6 +305,13 @@ def get_fitness_status(days: int = 90) -> str:
         elif metrics['acwr_status'] == 'danger':
             recommendations.append("HIGH INJURY RISK - reduce load immediately")
 
+        # Sport-specific insights
+        for sport, sm in by_sport.items():
+            if sm['acwr_status'] == 'danger':
+                insights.append(f"{sport.capitalize()} ACWR danger ({sm['acwr']}) - reduce {sport} load")
+            elif sm['ctl'] == 0 and sm['atl'] == 0:
+                insights.append(f"No {sport} load recorded - return-to-{sport} protocol needed if resuming")
+
         # Trend insights
         if trend['trend'] == 'building':
             insights.append(f"Fitness building (+{trend['ctl_change']} over {trend['period_days']} days)")
@@ -300,15 +321,18 @@ def get_fitness_status(days: int = 90) -> str:
 
         return json.dumps({
             'metrics': {
-                'ctl': metrics['ctl'],
-                'ctl_label': 'Chronic Training Load (Fitness)',
-                'atl': metrics['atl'],
-                'atl_label': 'Acute Training Load (Fatigue)',
-                'tsb': metrics['tsb'],
-                'tsb_label': 'Training Stress Balance (Form)',
-                'acwr': metrics['acwr'],
-                'acwr_status': metrics['acwr_status'],
-                'acwr_label': 'Acute:Chronic Workload Ratio',
+                'overall': {
+                    'ctl': metrics['ctl'],
+                    'ctl_label': 'Chronic Training Load (Fitness)',
+                    'atl': metrics['atl'],
+                    'atl_label': 'Acute Training Load (Fatigue)',
+                    'tsb': metrics['tsb'],
+                    'tsb_label': 'Training Stress Balance (Form)',
+                    'acwr': metrics['acwr'],
+                    'acwr_status': metrics['acwr_status'],
+                    'acwr_label': 'Acute:Chronic Workload Ratio',
+                },
+                'by_sport': by_sport,
             },
             'trend': {
                 'direction': trend['trend'],
@@ -360,14 +384,17 @@ def refresh_fitness_history(days: int = 180) -> str:
         # Parse activities
         activities = parse_activities(raw_activities)
 
-        # Get athlete's max HR for load calculation
+        # Get athlete's max HR and FTP for load calculation
         max_hr = get_load_athlete_max_hr()
+        athlete = load_athlete()
+        ftp = athlete.get('personal', {}).get('ftp') if athlete else None
 
-        # Update fitness history
-        history = update_fitness_history(activities, max_hr)
+        # Update fitness history (v2 sport-aware format)
+        history = update_fitness_history(activities, max_hr, ftp)
 
-        # Calculate current metrics
-        metrics = calculate_fitness_metrics(history.get('daily_loads', {}))
+        # Calculate current metrics from total loads
+        total_loads = _extract_total_loads(history.get('daily_loads', {}))
+        metrics = calculate_fitness_metrics(total_loads)
 
         return json.dumps({
             'status': 'success',

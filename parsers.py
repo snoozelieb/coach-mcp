@@ -102,6 +102,9 @@ def parse_activity(activity: dict[str, Any]) -> dict[str, Any]:
         'avg_hr': activity.get('averageHR'),
         'max_hr': activity.get('maxHR'),
         'calories': activity.get('calories'),
+        'avg_power': activity.get('avgPower'),
+        'max_power': activity.get('maxPower'),
+        'norm_power': activity.get('normPower'),
     }
 
     # Add pace for running activities

@@ -32,11 +32,20 @@ from rules import (
 )
 from fitness import (
     load_fitness_history,
+    save_fitness_history,
     calculate_fitness_metrics,
     calculate_intensity_distribution,
     get_athlete_hr_zones,
+    get_load_athlete_max_hr,
     get_sleep_summary,
     calculate_ctl_target,
+    _extract_total_loads,
+    calculate_sport_fitness_metrics,
+    get_fitness_trend,
+    get_sleep_trend,
+    persist_sleep_data,
+    analyze_activity_patterns,
+    update_fitness_history,
 )
 from config import (
     DATA_DIR,
@@ -44,6 +53,7 @@ from config import (
     ATHLETE_FILE,
     CTL_TARGETS,
     DEFAULT_EQUIVALENCE_GROUPS,
+    get_sport_group,
 )
 from datetime import date, timedelta
 import json
@@ -565,16 +575,20 @@ def get_coaching_score() -> str:
         # Get fitness data for progress calculation
         history = load_fitness_history()
         daily_loads = history.get('daily_loads', {})
-        fitness_data = calculate_fitness_metrics(daily_loads) if daily_loads else {}
+        total_loads = _extract_total_loads(daily_loads) if daily_loads else {}
+        fitness_data = calculate_fitness_metrics(total_loads) if total_loads else {}
         current_ctl = fitness_data.get('ctl', 0) if fitness_data else 0
 
-        # Get 4-week CTL trend from snapshots
+        # Get 4-week CTL trend from snapshots (handle v1 and v2 formats)
         snapshots = history.get('snapshots', [])
         ctl_4wk_ago = None
         for snapshot in snapshots:
             snapshot_date = date.fromisoformat(snapshot['date'])
             if (today - snapshot_date).days >= 28:
-                ctl_4wk_ago = snapshot.get('ctl', 0)
+                if 'total' in snapshot:
+                    ctl_4wk_ago = snapshot['total'].get('ctl', 0)
+                else:
+                    ctl_4wk_ago = snapshot.get('ctl', 0)
                 break
         ctl_gain_4wk = current_ctl - (ctl_4wk_ago or current_ctl)
 
@@ -604,6 +618,20 @@ def get_coaching_score() -> str:
             target_config = CTL_TARGETS.get(race_type, CTL_TARGETS['default'])
             target_ctl = target_config['ideal']
             progress_data['target_ctl'] = target_ctl
+
+            # Use sport-specific CTL for the A-race sport
+            _sport_map = {
+                'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
+                'trail_ultra': 'running', 'running_marathon': 'running',
+                'running_half': 'running', 'running_ultra': 'running',
+            }
+            race_sport = _sport_map.get(race_type)
+            if race_sport and daily_loads:
+                sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
+                if sport_m.get('days_with_data', 0) > 0:
+                    current_ctl = sport_m['ctl']
+                    progress_data['current_ctl'] = round(current_ctl, 1)
+                    progress_data['ctl_source'] = f'{race_sport}_specific'
 
             try:
                 race_dt = date.fromisoformat(a_race.get('date'))
@@ -864,6 +892,28 @@ def get_coaching_snapshot() -> str:
     try:
         today = date.today()
 
+        # 0. Auto-refresh fitness history if stale
+        history = load_fitness_history()
+        last_updated = history.get('last_updated')
+        if last_updated is None or last_updated < (today - timedelta(days=1)).isoformat():
+            try:
+                # Incremental refresh: only fetch since last_updated
+                refresh_start = last_updated or (today - timedelta(days=90)).isoformat()
+                raw_refresh = garmin_api_call(
+                    lambda c: c.get_activities_by_date(refresh_start, today.isoformat())
+                )
+                if raw_refresh:
+                    from parsers import parse_activities as _pa
+                    refreshed_activities = _pa(raw_refresh)
+                    max_hr = get_load_athlete_max_hr()
+                    athlete_data = load_athlete()
+                    ftp = athlete_data.get('personal', {}).get('ftp') if athlete_data else None
+                    history = update_fitness_history(refreshed_activities, max_hr, ftp)
+            except Exception:
+                pass  # Non-fatal: proceed with stale data
+
+        daily_loads = history.get('daily_loads', {})
+
         # 1. Current Weekly Plan
         current_plan = get_current_plan()
 
@@ -885,18 +935,123 @@ def get_coaching_snapshot() -> str:
         # 3. Planned vs Actual comparison
         planned_vs_actual = _compare_planned_actual(current_plan, activities_this_week, today)
 
-        # 4. Fitness metrics
-        history = load_fitness_history()
-        daily_loads = history.get('daily_loads', {})
+        # 4. Fitness metrics — overall + per-sport
+        #
+        # LOAD HIERARCHY (injury prevention order):
+        # 1. OVERALL ACWR — total body stress gate. If overall ACWR > 1.3, back off
+        #    everything regardless of sport-specific numbers.
+        # 2. SPORT-SPECIFIC ACWR — catches sport-specific spikes. An athlete with
+        #    zero running CTL attempting a run has infinite running ACWR even if
+        #    overall ACWR is fine.
+        # 3. SPORT-SPECIFIC CTL — race readiness. Cycling CTL tells you if you're
+        #    ready for sani2c; overall CTL does not.
+        #
+        # The LLM must check ALL three levels before prescribing.
         if daily_loads:
-            fitness_metrics = calculate_fitness_metrics(daily_loads)
-            # Add coaching interpretation
-            fitness_metrics['coaching_insight'] = _interpret_fitness_metrics(fitness_metrics)
+            total_loads = _extract_total_loads(daily_loads)
+            overall_metrics = calculate_fitness_metrics(total_loads)
+
+            # Per-sport metrics
+            sport_fitness = {}
+            for sport in ['cycling', 'running', 'strength']:
+                sm = calculate_sport_fitness_metrics(daily_loads, sport)
+                if sm.get('days_with_data', 0) > 0:
+                    sport_fitness[sport] = {
+                        'ctl': sm['ctl'], 'atl': sm['atl'],
+                        'tsb': sm['tsb'], 'acwr': sm['acwr'],
+                    }
+
+            # Build coaching insight with clear hierarchy
+            insight_parts = []
+            # Overall first (injury gate)
+            overall_acwr = overall_metrics.get('acwr', 0)
+            overall_ctl = overall_metrics.get('ctl', 0)
+            insight_parts.append(
+                f"Overall CTL {overall_ctl} (total body stress). "
+                f"Overall ACWR {overall_acwr} ({overall_metrics.get('acwr_status', 'unknown')}) — "
+                f"this is the PRIMARY injury prevention gate"
+            )
+            # Sport-specific (race readiness + sport-specific spikes)
+            for sp, sm in sport_fitness.items():
+                if sm['ctl'] > 0:
+                    insight_parts.append(f"{sp.capitalize()} CTL {sm['ctl']}, ACWR {sm['acwr']}")
+                else:
+                    insight_parts.append(f"No {sp} chronic load — return-to-{sp} protocol if resuming")
+
+            coaching_insight = '. '.join(insight_parts)
+
+            fitness_metrics = {
+                'overall': {k: v for k, v in overall_metrics.items()},
+                'by_sport': sport_fitness,
+                'load_hierarchy': {
+                    'description': 'Check in order: 1) Overall ACWR (total body injury gate), '
+                                   '2) Sport-specific ACWR (sport spike detection), '
+                                   '3) Sport-specific CTL (race readiness)',
+                    'overall_acwr_safe': overall_metrics.get('acwr_status') in ['optimal', 'low'],
+                    'sport_acwr_concerns': [
+                        sp for sp, sm in sport_fitness.items()
+                        if sm.get('acwr', 0) > 1.3 or (sm['ctl'] == 0 and sm['atl'] > 0)
+                    ],
+                },
+                'coaching_insight': coaching_insight,
+            }
         else:
+            overall_metrics = {}
+            sport_fitness = {}
             fitness_metrics = {
                 'status': 'no_data',
                 'action': 'Run refresh_fitness_history() to backfill from Garmin'
             }
+
+        # 4b. ACWR warnings — overall FIRST, then sport-specific
+        acwr_warnings = []
+
+        # Overall ACWR check (primary injury gate)
+        if overall_metrics:
+            o_acwr = overall_metrics.get('acwr', 0)
+            o_status = overall_metrics.get('acwr_status', 'unknown')
+            if o_status == 'danger':
+                acwr_warnings.append({
+                    'level': 'overall',
+                    'sport': 'all',
+                    'acwr': o_acwr,
+                    'risk': f'Overall ACWR {o_acwr} — HIGH total body injury risk. '
+                            f'Reduce ALL training load before adding any sport-specific volume.',
+                })
+            elif o_status == 'elevated':
+                acwr_warnings.append({
+                    'level': 'overall',
+                    'sport': 'all',
+                    'acwr': o_acwr,
+                    'risk': f'Overall ACWR {o_acwr} — elevated total body load. '
+                            f'Do not add new training stimulus. Maintain or reduce.',
+                })
+
+        # Sport-specific ACWR checks (spike detection)
+        for sport, sm in sport_fitness.items():
+            if sm['ctl'] == 0 and sm['atl'] == 0:
+                acwr_warnings.append({
+                    'level': 'sport',
+                    'sport': sport,
+                    'acwr': 0.0,
+                    'risk': f'Return-to-{sport} protocol required. Zero chronic {sport} load '
+                            f'means ANY {sport} is a spike. Start cautiously.',
+                })
+            elif sm.get('acwr', 0) > 1.5:
+                acwr_warnings.append({
+                    'level': 'sport',
+                    'sport': sport,
+                    'acwr': sm['acwr'],
+                    'risk': f'{sport.capitalize()} ACWR {sm["acwr"]} — HIGH sport-specific injury risk. '
+                            f'Reduce {sport} load even if overall ACWR is safe.',
+                })
+            elif sm.get('acwr', 0) > 1.3:
+                acwr_warnings.append({
+                    'level': 'sport',
+                    'sport': sport,
+                    'acwr': sm['acwr'],
+                    'risk': f'{sport.capitalize()} ACWR {sm["acwr"]} — elevated sport-specific risk.',
+                })
 
         # 5. Compliance status
         compliance = check_weekly_compliance(activities_this_week)
@@ -908,8 +1063,17 @@ def get_coaching_snapshot() -> str:
         except Exception:
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
 
-        # 6b. Sleep data (last 7 days)
+        # 6b. Sleep data (last 7 days) + persist to history
         sleep_data = get_sleep_summary(today, days=7)
+        if sleep_data and sleep_data.get('status') != 'no_data':
+            # Persist sleep records to fitness_history for 30-day trend
+            sleep_recs = sleep_data.get('recent', [])
+            if sleep_recs:
+                history = persist_sleep_data(sleep_recs, history)
+                save_fitness_history(history)
+
+        # 6c. Sleep trend (30-day from persisted data)
+        sleep_trend_30d = get_sleep_trend(history, days=30)
 
         # 7. Sport priority breakdown (multi-sport analysis)
         training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -932,20 +1096,19 @@ def get_coaching_snapshot() -> str:
             with open(athlete_path) as f:
                 athlete = json.load(f)
             injuries = athlete.get('injury_history', [])
-            # Include BOTH active AND improving - improving still have restrictions and rehab
             relevant_injuries = [
                 i for i in injuries
                 if i.get('status') in ['active', 'improving']
             ]
         else:
+            athlete = {}
             relevant_injuries = []
 
         # 9. Intensity distribution (last 7 days)
         athlete_hr_zones = get_athlete_hr_zones()
         intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
 
-        # 9b. Adaptation signals - DATA for LLM to reason about personalization
-        # These signals help the LLM decide where in the load_increase_guidance range to operate
+        # 9b. Adaptation signals
         adaptation_signals = _build_adaptation_signals(
             sleep_data=sleep_data,
             recovery=recovery,
@@ -954,76 +1117,138 @@ def get_coaching_snapshot() -> str:
             today=today
         )
 
-        # 10. Volume data (CTL targeting for A-race) - DATA ONLY, no prescriptions
+        # 9c. Multi-week trends (wire in get_fitness_trend + volume by sport)
+        trends = {}
+        if daily_loads:
+            overall_trend = get_fitness_trend(28)
+            trends['overall_ctl_4wk'] = {
+                'direction': overall_trend.get('trend', 'unknown'),
+                'change': overall_trend.get('ctl_change', 0),
+            }
+            # Volume trajectory (4 weeks, oldest first)
+            volume_4wk = []
+            volume_by_sport_4wk = defaultdict(list)
+            for week in range(3, -1, -1):  # 3=oldest, 0=this week
+                w_start = week * 7
+                w_end = (week + 1) * 7
+                week_total = 0
+                sport_week_totals = defaultdict(float)
+                for i in range(w_start, w_end):
+                    ds = (today - timedelta(days=i)).isoformat()
+                    day_data = daily_loads.get(ds)
+                    if isinstance(day_data, dict):
+                        week_total += day_data.get('total', 0)
+                        for sp, sp_load in day_data.get('by_sport', {}).items():
+                            sport_week_totals[sp] += sp_load
+                    elif isinstance(day_data, (int, float)):
+                        week_total += day_data
+                volume_4wk.append(round(week_total, 0))
+                for sp in ['cycling', 'running', 'strength']:
+                    volume_by_sport_4wk[sp].append(round(sport_week_totals.get(sp, 0), 0))
+            trends['volume_trajectory_4wk'] = volume_4wk
+            trends['volume_by_sport_4wk'] = dict(volume_by_sport_4wk)
+
+        # 9d. Activity pattern analysis
+        activity_patterns = analyze_activity_patterns(daily_loads, today, days=28)
+
+        # 10. Volume data (CTL targeting for A-race) - DATA ONLY
+        #
+        # Shows BOTH overall and sport-specific CTL:
+        # - Sport-specific CTL = race readiness (can you handle sani2c?)
+        # - Overall CTL = total body capacity (can you handle the training volume?)
+        # The LLM must respect both: don't spike overall ACWR chasing sport-specific CTL.
         volume_data = None
         events = training_config.get('events', [])
         a_race = next((e for e in events if e.get('priority') == 'A'), None)
-        if a_race and isinstance(fitness_metrics, dict) and fitness_metrics.get('ctl'):
-            current_ctl = fitness_metrics.get('ctl', 0)
-            # Calculate TSS trend from daily loads (last 4 weeks)
+        if a_race and overall_metrics and overall_metrics.get('ctl'):
+            race_type = a_race.get('type', 'default')
+            _sport_map = {
+                'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
+                'trail_ultra': 'running', 'running_marathon': 'running',
+                'running_half': 'running', 'running_ultra': 'running',
+            }
+            race_sport = _sport_map.get(race_type)
+
+            # Sport-specific CTL for race readiness
+            sport_ctl = None
+            if race_sport and race_sport in sport_fitness:
+                sport_ctl = sport_fitness[race_sport]['ctl']
+
+            # Overall CTL for total body capacity
+            overall_ctl = overall_metrics.get('ctl', 0)
+
+            # Use sport-specific for gap calculation (race readiness)
+            # but surface both so the LLM can reason about total load
+            target_ctl_input = sport_ctl if sport_ctl is not None else overall_ctl
+
+            # Calculate TSS trend from total loads (last 4 weeks)
+            total_loads_flat = _extract_total_loads(daily_loads)
             last_week_tss = sum(
-                daily_loads.get((today - timedelta(days=i)).isoformat(), 0)
+                total_loads_flat.get((today - timedelta(days=i)).isoformat(), 0)
                 for i in range(7)
             )
-            # Calculate 4-week TSS trend
             tss_trend_4wk = []
             for week in range(4):
-                week_start = week * 7
-                week_end = (week + 1) * 7
+                w_start = week * 7
+                w_end = (week + 1) * 7
                 week_tss = sum(
-                    daily_loads.get((today - timedelta(days=i)).isoformat(), 0)
-                    for i in range(week_start, week_end)
+                    total_loads_flat.get((today - timedelta(days=i)).isoformat(), 0)
+                    for i in range(w_start, w_end)
                 )
                 tss_trend_4wk.append(round(week_tss, 0))
-            tss_trend_4wk.reverse()  # Oldest first
+            tss_trend_4wk.reverse()
 
             ctl_target = calculate_ctl_target(
                 race_date=a_race.get('date'),
-                race_type=a_race.get('type', 'default'),
-                current_ctl=current_ctl,
+                race_type=race_type,
+                current_ctl=target_ctl_input,
                 current_weekly_tss=last_week_tss if last_week_tss > 0 else None
             )
             if not ctl_target.get('error'):
-                # ACWR facts only (no prescriptions)
-                acwr = fitness_metrics.get('acwr', 1.0)
-                acwr_status = fitness_metrics.get('acwr_status', 'optimal')
+                o_acwr = overall_metrics.get('acwr', 1.0)
+                o_acwr_status = overall_metrics.get('acwr_status', 'optimal')
 
-                # Volume data - FACTS and RANGES only, LLM decides what to do
                 volume_data = {
-                    # Race context
                     'a_race': a_race.get('name'),
                     'race_date': ctl_target.get('race_date'),
+                    'race_sport': race_sport,
                     'days_until_race': ctl_target.get('days_until_race'),
                     'weeks_until_race': ctl_target.get('weeks_until_race'),
 
-                    # CTL facts
-                    'current_ctl': current_ctl,
+                    # BOTH CTL views — the LLM needs both
+                    'current_ctl': {
+                        'overall': round(overall_ctl, 1),
+                        'sport_specific': round(sport_ctl, 1) if sport_ctl is not None else None,
+                        'sport': race_sport,
+                        'note': (
+                            f'{race_sport.capitalize()} CTL {sport_ctl} shows race-specific fitness. '
+                            f'Overall CTL {overall_ctl} shows total body capacity. '
+                            f'Build {race_sport} CTL but do NOT spike overall ACWR doing it.'
+                        ) if sport_ctl is not None else None,
+                    },
                     'target_ctl': {
                         'min': ctl_target.get('target_ctl_min'),
                         'ideal': ctl_target.get('target_ctl_ideal'),
+                        'compared_against': f'{race_sport}_specific' if sport_ctl is not None else 'overall',
                     },
                     'ctl_gap': ctl_target.get('ctl_gap'),
                     'on_track': ctl_target.get('on_track'),
-
-                    # Weekly TSS facts and ranges
                     'weekly_tss_to_reach_target': {
                         'required': ctl_target.get('weekly_tss_required'),
                         'hours_estimate': ctl_target.get('weekly_hours_required'),
                     },
                     'last_week_tss': round(last_week_tss, 0) if last_week_tss else None,
                     'tss_trend_4wk': tss_trend_4wk,
-
-                    # Load increase guidance as RANGES (LLM chooses based on adaptation signals)
                     'load_increase_guidance': {
-                        'conservative_pct': 10,   # For poor recovery/sleep
-                        'standard_pct': 15,       # Baseline guidance
-                        'aggressive_pct': 25,     # For excellent adaptation signals
+                        'conservative_pct': 10,
+                        'standard_pct': 15,
+                        'aggressive_pct': 25,
+                        'constraint': 'Overall ACWR must stay below 1.3 regardless of sport-specific targets',
                     },
-
-                    # ACWR facts only
                     'acwr': {
-                        'current': round(acwr, 2),
-                        'status': acwr_status,  # low/optimal/elevated/danger
+                        'overall': round(o_acwr, 2),
+                        'overall_status': o_acwr_status,
+                        'sport_specific': round(sport_fitness[race_sport]['acwr'], 2) if race_sport and race_sport in sport_fitness else None,
                         'optimal_range': [0.8, 1.3],
                         'risk_threshold': 1.5,
                     },
@@ -1050,19 +1275,27 @@ def get_coaching_snapshot() -> str:
 
             'fitness_metrics': fitness_metrics,
 
+            'acwr_warnings': acwr_warnings,
+
             'volume_data': volume_data,
 
             'compliance': compliance,
 
             'recovery': recovery,
 
-            'sleep': sleep_data,
+            'sleep': {
+                **(sleep_data if isinstance(sleep_data, dict) else {}),
+                'trend_30d': sleep_trend_30d if sleep_trend_30d.get('status') != 'no_data' else None,
+            } if sleep_data else {'status': 'no_data'},
 
             'adaptation_signals': adaptation_signals,
 
+            'trends': trends,
+
+            'activity_patterns': activity_patterns,
+
             'sport_priorities': sport_priorities,
 
-            # All injuries that need attention (active OR improving - both have restrictions/rehab)
             'injuries': relevant_injuries,
 
             'intensity_distribution': intensity_dist,
@@ -1072,7 +1305,8 @@ def get_coaching_snapshot() -> str:
             'coaching_checklist': {
                 'has_current_plan': bool(current_plan and current_plan.get('days')),
                 'has_fitness_data': bool(daily_loads),
-                'acwr_safe': fitness_metrics.get('acwr_status') in ['optimal', 'low'] if isinstance(fitness_metrics, dict) else False,
+                'acwr_safe': overall_metrics.get('acwr_status') in ['optimal', 'low'] if overall_metrics else False,
+                'sport_acwr_warnings': len(acwr_warnings),
                 'compliance_ok': compliance.get('overall_compliant', False),
                 'no_blocking_injuries': len([i for i in relevant_injuries if i.get('severity') == 'severe']) == 0,
                 'sleep_adequate': sleep_data.get('status') == 'adequate' if sleep_data else False,

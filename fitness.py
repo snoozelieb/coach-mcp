@@ -30,20 +30,27 @@ from config import (
     CTL_TARGETS,
     TSS_PER_HOUR_ESTIMATE,
     MAX_WEEKLY_LOAD_INCREASE_PCT,
+    get_sport_group,
 )
 from garmin_client import garmin_api_call
 
 
-def calculate_training_load(activity: dict[str, Any], athlete_max_hr: int = None) -> float:
+def calculate_training_load(
+    activity: dict[str, Any],
+    athlete_max_hr: int = None,
+    athlete_ftp: int = None,
+) -> float:
     """
     Calculate training load (stress) for a single activity.
 
-    Uses TRIMP-like calculation when HR data available, falls back to
+    Uses power-based TSS for cycling when Normalized Power and FTP are available,
+    TRIMP-like calculation when HR data available, or falls back to
     duration-based estimate otherwise.
 
     Args:
-        activity: Parsed activity dict with duration_mins, avg_hr, max_hr, type
+        activity: Parsed activity dict with duration_mins, avg_hr, max_hr, type, norm_power
         athlete_max_hr: Athlete's max HR for intensity calculation
+        athlete_ftp: Athlete's FTP in watts for power-based TSS
 
     Returns:
         Training load score (arbitrary units, higher = more stress)
@@ -51,9 +58,21 @@ def calculate_training_load(activity: dict[str, Any], athlete_max_hr: int = None
     duration_mins = activity.get('duration_mins', 0) or 0
     avg_hr = activity.get('avg_hr', 0) or 0
     activity_type = activity.get('type', '').lower()
+    norm_power = activity.get('norm_power') or 0
 
     if duration_mins == 0:
         return 0.0
+
+    # Power-based TSS for cycling when NP and FTP are available
+    # TSS = (duration_secs / 3600) * (NP / FTP)^2 * 100
+    sport_group = get_sport_group(activity_type)
+    if sport_group == 'cycling' and norm_power > 0 and athlete_ftp and athlete_ftp > 0:
+        duration_secs = duration_mins * 60
+        intensity_factor = norm_power / athlete_ftp
+        tss = (duration_secs / 3600) * (intensity_factor ** 2) * 100
+        # Scale to match TRIMP-like units (TSS ~100 for 1hr at FTP)
+        load = tss / 10
+        return round(load, 1)
 
     # If we have HR data and athlete max HR, use HR-based calculation
     if avg_hr > 0 and athlete_max_hr and athlete_max_hr > 0:
@@ -87,11 +106,15 @@ def calculate_training_load(activity: dict[str, Any], athlete_max_hr: int = None
     return round(load, 1)
 
 
-def calculate_daily_load(activities: list[dict[str, Any]], athlete_max_hr: int = None) -> float:
+def calculate_daily_load(
+    activities: list[dict[str, Any]],
+    athlete_max_hr: int = None,
+    athlete_ftp: int = None,
+) -> float:
     """
     Calculate total training load for a day's activities.
     """
-    return sum(calculate_training_load(a, athlete_max_hr) for a in activities)
+    return sum(calculate_training_load(a, athlete_max_hr, athlete_ftp) for a in activities)
 
 
 def calculate_ewma(values: list[float], time_constant: int) -> float:
@@ -423,15 +446,71 @@ def calculate_intensity_distribution(
     }
 
 
+def migrate_fitness_history(history: dict[str, Any]) -> dict[str, Any]:
+    """
+    Migrate fitness history from schema v1 (flat) to v2 (sport-aware).
+
+    Non-destructive: old data is preserved, just restructured.
+    v1 daily_loads: {"2026-02-02": 17.1}
+    v2 daily_loads: {"2026-02-02": {"total": 17.1, "by_sport": {}, "activities": []}}
+    """
+    if history.get('schema_version', 0) >= 2:
+        return history  # Already migrated
+
+    daily_loads = history.get('daily_loads', {})
+    migrated_loads = {}
+
+    for date_str, load_val in daily_loads.items():
+        if isinstance(load_val, (int, float)):
+            # v1 format: flat float
+            migrated_loads[date_str] = {
+                'total': load_val,
+                'by_sport': {},  # No sport breakdown for historical data
+                'activities': [],
+            }
+        else:
+            # Already v2 format (dict)
+            migrated_loads[date_str] = load_val
+
+    # Migrate snapshots
+    snapshots = history.get('snapshots', [])
+    migrated_snapshots = []
+    for snap in snapshots:
+        if 'total' not in snap and 'ctl' in snap:
+            # v1 format: flat metrics
+            migrated_snapshots.append({
+                'date': snap['date'],
+                'total': {
+                    'ctl': snap.get('ctl', 0),
+                    'atl': snap.get('atl', 0),
+                    'tsb': snap.get('tsb', 0),
+                    'acwr': snap.get('acwr', 0),
+                },
+            })
+        else:
+            migrated_snapshots.append(snap)
+
+    history['daily_loads'] = migrated_loads
+    history['snapshots'] = migrated_snapshots
+    history['schema_version'] = 2
+    if 'sleep_history' not in history:
+        history['sleep_history'] = []
+
+    return history
+
+
 def load_fitness_history() -> dict[str, Any]:
-    """Load fitness history from file."""
+    """Load fitness history from file, auto-migrating to v2 if needed."""
     history_path = DATA_DIR / FITNESS_HISTORY_FILE
     if history_path.exists():
         with open(history_path) as f:
-            return json.load(f)
+            history = json.load(f)
+        return migrate_fitness_history(history)
     return {
+        'schema_version': 2,
         'daily_loads': {},
         'snapshots': [],
+        'sleep_history': [],
         'last_updated': None,
     }
 
@@ -446,14 +525,16 @@ def save_fitness_history(history: dict[str, Any]) -> None:
 
 def update_fitness_history(
     activities: list[dict[str, Any]],
-    athlete_max_hr: int = None
+    athlete_max_hr: int = None,
+    athlete_ftp: int = None,
 ) -> dict[str, Any]:
     """
-    Update fitness history with new activity data.
+    Update fitness history with new activity data (v2 sport-aware format).
 
     Args:
-        activities: List of activities with date and training data
+        activities: List of parsed activities with date, type, HR, power data
         athlete_max_hr: Athlete's max HR for load calculation
+        athlete_ftp: Athlete's FTP in watts for power-based TSS
 
     Returns:
         Updated fitness history dict
@@ -461,29 +542,69 @@ def update_fitness_history(
     history = load_fitness_history()
     daily_loads = history.get('daily_loads', {})
 
-    # Group activities by date and calculate daily loads
+    # Group activities by date
     activities_by_date = defaultdict(list)
     for activity in activities:
         activity_date = activity.get('date', '')
         if activity_date:
             activities_by_date[activity_date].append(activity)
 
-    # Calculate load for each day
+    # Calculate load for each day in v2 format
     for date_str, day_activities in activities_by_date.items():
-        daily_load = calculate_daily_load(day_activities, athlete_max_hr)
-        daily_loads[date_str] = daily_load
+        by_sport = defaultdict(float)
+        activity_details = []
+
+        for act in day_activities:
+            load = calculate_training_load(act, athlete_max_hr, athlete_ftp)
+            sport = get_sport_group(act.get('type', ''))
+            by_sport[sport] += load
+            activity_details.append({
+                'id': act.get('activity_id'),
+                'type': act.get('type', 'unknown'),
+                'sport': sport,
+                'duration_mins': act.get('duration_mins', 0),
+                'load': load,
+                'avg_hr': act.get('avg_hr'),
+                'norm_power': act.get('norm_power'),
+            })
+
+        total_load = sum(by_sport.values())
+        daily_loads[date_str] = {
+            'total': round(total_load, 1),
+            'by_sport': {k: round(v, 1) for k, v in by_sport.items()},
+            'activities': activity_details,
+        }
 
     history['daily_loads'] = daily_loads
 
-    # Calculate current metrics and add snapshot
-    metrics = calculate_fitness_metrics(daily_loads)
+    # Calculate overall metrics from total loads
+    total_loads_flat = _extract_total_loads(daily_loads)
+    metrics = calculate_fitness_metrics(total_loads_flat)
+
+    # Calculate per-sport metrics for the snapshot
+    sport_metrics = {}
+    for sport in ['cycling', 'running', 'strength']:
+        sport_loads = _extract_sport_loads(daily_loads, sport)
+        if any(v > 0 for v in sport_loads.values()):
+            sm = calculate_fitness_metrics(sport_loads)
+            sport_metrics[sport] = {
+                'ctl': sm['ctl'],
+                'atl': sm['atl'],
+                'tsb': sm['tsb'],
+                'acwr': sm['acwr'],
+            }
+
+    # Build v2 snapshot
     snapshot = {
         'date': metrics['as_of_date'],
-        'ctl': metrics['ctl'],
-        'atl': metrics['atl'],
-        'tsb': metrics['tsb'],
-        'acwr': metrics['acwr'],
+        'total': {
+            'ctl': metrics['ctl'],
+            'atl': metrics['atl'],
+            'tsb': metrics['tsb'],
+            'acwr': metrics['acwr'],
+        },
     }
+    snapshot.update(sport_metrics)
 
     # Keep last 90 days of snapshots
     snapshots = history.get('snapshots', [])
@@ -494,6 +615,268 @@ def update_fitness_history(
 
     save_fitness_history(history)
     return history
+
+
+def _extract_total_loads(daily_loads: dict[str, Any]) -> dict[str, float]:
+    """Extract flat {date: total_load} from v2 daily_loads for overall CTL/ATL."""
+    flat = {}
+    for date_str, val in daily_loads.items():
+        if isinstance(val, dict):
+            flat[date_str] = val.get('total', 0.0)
+        else:
+            flat[date_str] = float(val)  # v1 fallback
+    return flat
+
+
+def _extract_sport_loads(daily_loads: dict[str, Any], sport: str) -> dict[str, float]:
+    """Extract flat {date: sport_load} from v2 daily_loads for sport-specific CTL/ATL."""
+    flat = {}
+    for date_str, val in daily_loads.items():
+        if isinstance(val, dict):
+            flat[date_str] = val.get('by_sport', {}).get(sport, 0.0)
+        else:
+            flat[date_str] = 0.0  # v1 data has no sport breakdown
+    return flat
+
+
+def calculate_sport_fitness_metrics(
+    daily_loads: dict[str, Any],
+    sport: str,
+    as_of_date: date = None,
+) -> dict[str, Any]:
+    """
+    Calculate CTL/ATL/TSB/ACWR for a specific sport.
+
+    Extracts that sport's load from each day's by_sport dict and runs
+    the same EWMA calculation used for overall metrics.
+
+    Args:
+        daily_loads: v2 daily_loads dict
+        sport: Sport group name ('cycling', 'running', 'strength')
+        as_of_date: Calculate as of this date (default: today)
+
+    Returns:
+        Dict with sport-specific ctl, atl, tsb, acwr, acwr_status
+    """
+    sport_loads = _extract_sport_loads(daily_loads, sport)
+    metrics = calculate_fitness_metrics(sport_loads, as_of_date)
+    return metrics
+
+
+def get_sleep_trend(history: dict[str, Any] = None, days: int = 30) -> dict[str, Any]:
+    """
+    Get sleep trend from persisted sleep_history.
+
+    Args:
+        history: Fitness history dict (loads from file if None)
+        days: Number of days to analyze (default 30)
+
+    Returns:
+        Dict with avg_duration, avg_score, direction, weeks_in_deficit
+    """
+    if history is None:
+        history = load_fitness_history()
+
+    sleep_records = history.get('sleep_history', [])
+    if not sleep_records:
+        return {
+            'status': 'no_data',
+            'note': 'No persisted sleep data. Sleep history builds as coaching snapshots are taken.',
+        }
+
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    recent = sorted(
+        [r for r in sleep_records if r.get('date', '') >= cutoff],
+        key=lambda r: r.get('date', ''),
+    )
+
+    if not recent:
+        return {
+            'status': 'no_data',
+            'note': f'No sleep data in last {days} days',
+        }
+
+    avg_duration = round(
+        sum(r.get('duration_hrs', 0) for r in recent) / len(recent), 1
+    )
+    scores = [r.get('score') for r in recent if r.get('score')]
+    avg_score = round(sum(scores) / len(scores), 0) if scores else None
+
+    # Determine direction by comparing first half vs second half
+    mid = len(recent) // 2
+    if mid >= 2:
+        first_half_avg = sum(r.get('duration_hrs', 0) for r in recent[:mid]) / mid
+        second_half_avg = sum(r.get('duration_hrs', 0) for r in recent[mid:]) / (len(recent) - mid)
+        diff = second_half_avg - first_half_avg
+        if diff > 0.3:
+            direction = 'improving'
+        elif diff < -0.3:
+            direction = 'declining'
+        else:
+            direction = 'stable'
+    else:
+        direction = 'unknown'
+
+    # Count weeks in deficit (avg < 7hrs per week)
+    weeks_in_deficit = 0
+    week_groups = defaultdict(list)
+    for r in recent:
+        try:
+            d = date.fromisoformat(r['date'])
+            week_key = d.isocalendar()[1]
+            week_groups[week_key].append(r.get('duration_hrs', 0))
+        except (ValueError, KeyError):
+            pass
+
+    for week_durations in week_groups.values():
+        if week_durations:
+            week_avg = sum(week_durations) / len(week_durations)
+            if week_avg < 7.0:
+                weeks_in_deficit += 1
+
+    return {
+        'avg_duration': avg_duration,
+        'avg_score': avg_score,
+        'direction': direction,
+        'weeks_in_deficit': weeks_in_deficit,
+        'days_analyzed': len(recent),
+    }
+
+
+def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None) -> dict[str, Any]:
+    """
+    Save nightly sleep records to fitness_history.json → sleep_history.
+
+    Stores: date, duration_hrs, score, deep_pct, rem_pct, avg_hr.
+    Maintains a rolling 30-day window (auto-prunes older entries).
+
+    Args:
+        sleep_records: List of sleep record dicts from get_sleep_summary
+        history: Fitness history dict (loads from file if None)
+
+    Returns:
+        Updated fitness history dict
+    """
+    if history is None:
+        history = load_fitness_history()
+
+    existing = history.get('sleep_history', [])
+    existing_dates = {r['date'] for r in existing}
+
+    for rec in sleep_records:
+        rec_date = rec.get('date')
+        if not rec_date or rec_date in existing_dates:
+            continue
+        existing.append({
+            'date': rec_date,
+            'duration_hrs': rec.get('duration_hrs'),
+            'score': rec.get('score'),
+            'deep_pct': rec.get('deep_pct'),
+            'rem_pct': rec.get('rem_pct'),
+            'avg_hr': rec.get('avg_hr'),
+        })
+        existing_dates.add(rec_date)
+
+    # Prune to 30 days
+    cutoff = (date.today() - timedelta(days=30)).isoformat()
+    existing = [r for r in existing if r.get('date', '') >= cutoff]
+    existing.sort(key=lambda r: r.get('date', ''))
+
+    history['sleep_history'] = existing
+    return history
+
+
+def analyze_activity_patterns(
+    daily_loads: dict[str, Any],
+    today: date = None,
+    days: int = 28,
+) -> dict[str, Any]:
+    """
+    Analyze activity patterns from stored fitness history.
+
+    Returns last activity date by sport, sessions per week by sport,
+    and alerts for concerning patterns.
+    """
+    if today is None:
+        today = date.today()
+
+    cutoff = (today - timedelta(days=days)).isoformat()
+
+    # Track last activity and weekly sessions per sport
+    last_activity_by_sport = {}
+    weekly_sessions = defaultdict(lambda: defaultdict(int))
+
+    for date_str, day_data in daily_loads.items():
+        if date_str < cutoff:
+            continue
+        if not isinstance(day_data, dict):
+            continue
+
+        for act in day_data.get('activities', []):
+            sport = act.get('sport', 'other')
+            act_date = date_str
+
+            # Track last activity
+            if sport not in last_activity_by_sport or act_date > last_activity_by_sport[sport]:
+                last_activity_by_sport[sport] = act_date
+
+            # Track weekly counts
+            try:
+                d = date.fromisoformat(date_str)
+                week_idx = (today - d).days // 7  # 0 = this week, 1 = last week, etc.
+                if week_idx < 4:
+                    weekly_sessions[sport][week_idx] += 1
+            except ValueError:
+                pass
+
+    # Build last_activity summary
+    last_activity_summary = {}
+    for sport, last_date in last_activity_by_sport.items():
+        try:
+            d = date.fromisoformat(last_date)
+            days_ago = (today - d).days
+        except ValueError:
+            days_ago = None
+        last_activity_summary[sport] = {
+            'date': last_date,
+            'days_ago': days_ago,
+        }
+
+    # Build sessions per week (4 weeks, oldest first)
+    sessions_per_week = {}
+    for sport in ['cycling', 'running', 'strength']:
+        weeks = []
+        for week_idx in range(3, -1, -1):  # oldest to newest
+            weeks.append(weekly_sessions[sport].get(week_idx, 0))
+        sessions_per_week[sport] = weeks
+
+    # Generate alerts
+    alerts = []
+    for sport in ['cycling', 'running', 'strength']:
+        info = last_activity_summary.get(sport)
+        if info and info['days_ago'] is not None and info['days_ago'] > 14:
+            alerts.append(
+                f"No {sport} in {info['days_ago']} days. "
+                f"Return-to-{sport} protocol may be needed."
+            )
+        elif sport not in last_activity_summary and sport != 'strength':
+            alerts.append(
+                f"No {sport} activity recorded in last {days} days."
+            )
+
+        # Check trending down
+        weeks = sessions_per_week.get(sport, [0, 0, 0, 0])
+        if len(weeks) >= 3 and weeks[-1] < weeks[-3] and weeks[-3] > 0:
+            alerts.append(
+                f"{sport.capitalize()} sessions trending down: "
+                f"{weeks[-3]}→{weeks[-1]}/week over last 3 weeks."
+            )
+
+    return {
+        'last_activity_by_sport': last_activity_summary,
+        'sessions_per_week_4wk': sessions_per_week,
+        'alerts': alerts,
+    }
 
 
 def get_fitness_trend(days: int = 28) -> dict[str, Any]:
@@ -529,9 +912,14 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
             'note': f'Need more data points in last {days} days',
         }
 
-    # Calculate trend
-    first_ctl = recent_snapshots[0]['ctl']
-    last_ctl = recent_snapshots[-1]['ctl']
+    # Calculate trend (handle both v1 flat and v2 nested snapshots)
+    def _snap_ctl(snap):
+        if 'total' in snap:
+            return snap['total'].get('ctl', 0)
+        return snap.get('ctl', 0)
+
+    first_ctl = _snap_ctl(recent_snapshots[0])
+    last_ctl = _snap_ctl(recent_snapshots[-1])
     ctl_change = last_ctl - first_ctl
 
     if ctl_change > 5:

@@ -169,6 +169,28 @@ DEFAULT_EQUIVALENCE_GROUPS = {
 }
 
 # Activity restrictions by injury type (common patterns)
+# Sport group mapping for sport-specific fitness tracking
+# Groups align with race calendar (cycling A-race, running events) and training pillars
+SPORT_GROUPS = {
+    'cycling': ['cycling', 'mountain_biking', 'indoor_cycling', 'virtual_ride',
+                'gravel_cycling', 'road_biking'],
+    'running': ['running', 'trail_running', 'treadmill_running', 'track_running'],
+    'strength': ['strength_training', 'indoor_cardio', 'functional_strength'],
+    'other': [],  # catchall for padel, ultimate_disc, yoga, pilates, swimming, etc.
+}
+
+# Inverse lookup built from SPORT_GROUPS
+_ACTIVITY_TO_SPORT = {}
+for _group, _types in SPORT_GROUPS.items():
+    for _t in _types:
+        _ACTIVITY_TO_SPORT[_t] = _group
+
+
+def get_sport_group(activity_type: str) -> str:
+    """Return the sport group for an activity type ('cycling', 'running', 'strength', or 'other')."""
+    return _ACTIVITY_TO_SPORT.get(activity_type, 'other')
+
+
 INJURY_ACTIVITY_RESTRICTIONS = {
     "tendinitis": {
         "avoid": ["running", "jumping", "high_impact"],

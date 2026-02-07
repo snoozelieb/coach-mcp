@@ -100,6 +100,40 @@ This prevents the coaching error of prescribing without understanding current st
 - The coach must see current state before recommending changes = GOOD
 - The snapshot enforces this by bundling everything in one call
 
+### Load Hierarchy (Injury Prevention Order)
+
+**CRITICAL: Check these three levels IN ORDER before prescribing any training.**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  LEVEL 1: OVERALL ACWR (total body injury gate)            │
+│  ├── Sum of ALL training stress across ALL sports           │
+│  ├── If overall ACWR > 1.3 → back off EVERYTHING           │
+│  ├── You can't chase cycling CTL if total body is spiking   │
+│  └── This is the PRIMARY safety check                       │
+│                                                             │
+│  LEVEL 2: SPORT-SPECIFIC ACWR (spike detection)            │
+│  ├── Catches: "athlete hasn't run in 4 weeks, now wants to" │
+│  ├── Zero chronic load + any acute = infinite ACWR          │
+│  ├── Even if overall ACWR is safe, a sport spike is risky   │
+│  └── Triggers return-to-sport protocols                     │
+│                                                             │
+│  LEVEL 3: SPORT-SPECIFIC CTL (race readiness)              │
+│  ├── "Is cycling fitness sufficient for sani2c?"            │
+│  ├── Overall CTL ≠ sport readiness (different muscles)      │
+│  ├── Use this for gap-to-target calculations                │
+│  └── Build toward target WITHOUT violating Level 1 or 2     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Example:** Overall CTL 17.2, Cycling CTL 8.8, Running CTL 0.3
+- Overall ACWR 0.62 → safe to increase total load
+- Running ACWR 0.0 → return-to-run protocol required (even though overall is safe)
+- Cycling CTL gap to sani2c target: 56.2 points → need structured cycling build
+- BUT: adding cycling + strength + running in one week could spike overall ACWR
+
+The `fitness_metrics` section in the snapshot includes a `load_hierarchy` field with these checks pre-computed. The `volume_data` section shows BOTH overall and sport-specific CTL.
+
 ### Multi-Sport Handling
 
 When an athlete has races in multiple sports (e.g., cycling A-race + running B-race):
@@ -116,6 +150,10 @@ When an athlete has races in multiple sports (e.g., cycling A-race + running B-r
    - `long_mtb_ride` for cycling races
    - `long_trail_run` for running races
    - Prioritize based on sport priority analysis
+
+4. **Volume Constraint**: Total weekly load must respect overall ACWR
+   - Don't spike total body stress chasing sport-specific CTL
+   - If adding a new sport (e.g., returning to running), reduce another to keep overall stable
 
 ### Adaptive Coaching Flow
 

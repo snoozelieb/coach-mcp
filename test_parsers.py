@@ -217,6 +217,46 @@ class TestParseActivity:
         assert result['duration_mins'] == 0.0
         assert result['distance_km'] is None
 
+    def test_parses_power_data_when_present(self):
+        activity_with_power = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'avgPower': 200,
+            'maxPower': 350,
+            'normPower': 220,
+        }
+        result = parse_activity(activity_with_power)
+
+        assert result['avg_power'] == 200
+        assert result['max_power'] == 350
+        assert result['norm_power'] == 220
+
+    def test_power_fields_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+
+        assert result['avg_power'] is None
+        assert result['max_power'] is None
+        assert result['norm_power'] is None
+
+    def test_power_fields_present_for_cycling(self):
+        cycling_activity = {
+            'activityId': 99999,
+            'activityName': 'Wattbike Session',
+            'startTimeLocal': '2025-12-01T08:00:00.0',
+            'activityType': {'typeKey': 'indoor_cycling', 'parentTypeId': 2},
+            'duration': 3600,
+            'distance': 25000,
+            'averageHR': 140,
+            'maxHR': 165,
+            'avgPower': 180,
+            'maxPower': 310,
+            'normPower': 195,
+        }
+        result = parse_activity(cycling_activity)
+
+        assert result['type'] == 'indoor_cycling'
+        assert result['avg_power'] == 180
+        assert result['norm_power'] == 195
+
 
 class TestParseActivities:
     def test_parses_list_of_activities(self):
