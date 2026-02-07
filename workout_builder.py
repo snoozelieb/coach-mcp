@@ -58,6 +58,12 @@ SWIMMING_SPORT = {
     "displayOrder": 4
 }
 
+PADEL_SPORT = {
+    "sportTypeId": 219,
+    "sportTypeKey": "paddelball",
+    "displayOrder": 219
+}
+
 # Step type definitions
 STEP_WARMUP = {"stepTypeId": 1, "stepTypeKey": "warmup", "displayOrder": 1}
 STEP_COOLDOWN = {"stepTypeId": 2, "stepTypeKey": "cooldown", "displayOrder": 2}
@@ -125,6 +131,9 @@ GARMIN_CATEGORY_MAP = {
 
 # Session types that map to swimming
 SWIMMING_TYPES = {"swim", "swimming", "pool"}
+
+# Session types that map to padel
+PADEL_TYPES = {"padel", "paddelball", "paddle"}
 
 # Session types to skip (not pushable to Garmin)
 SKIP_TYPES = {"rest", "rest_or_easy"}
@@ -388,6 +397,8 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
         return build_pilates_workout(session, date)
     elif session_type in STRENGTH_TYPES:
         return build_strength_workout(session, date)
+    elif session_type in PADEL_TYPES:
+        return build_padel_workout(session, date)
 
     return None
 
@@ -1070,6 +1081,52 @@ def build_pilates_workout(session: dict, date: str) -> dict:
     }
 
 
+def build_padel_workout(session: dict, date: str) -> dict:
+    """
+    Build a padel workout from a plan session.
+
+    Padel workouts use a simple timed structure since the activity
+    duration is variable based on game play.
+    """
+    duration_mins = session.get("duration_mins", 90)
+    description = session.get("description", "")
+    notes = session.get("notes", "")
+
+    # Generate workout name
+    if description and description.lower() != "padel":
+        workout_name = description[:40]
+    else:
+        workout_name = "Padel Session"
+
+    # Calculate segment duration (in seconds)
+    total_secs = duration_mins * 60
+
+    # Build simple timed step
+    steps = [
+        {
+            "type": "ExecutableStepDTO",
+            "stepOrder": 1,
+            "stepType": STEP_INTERVAL,
+            "endCondition": END_TIME,
+            "endConditionValue": float(total_secs),
+            "targetType": TARGET_NONE,
+        }
+    ]
+
+    return {
+        "workoutName": workout_name,
+        "sportType": PADEL_SPORT,
+        "estimatedDurationInSecs": int(total_secs),
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": PADEL_SPORT,
+                "workoutSteps": steps
+            }
+        ]
+    }
+
+
 def load_exercise_library() -> dict:
     """Load the exercise form cues library."""
     from pathlib import Path
@@ -1322,6 +1379,8 @@ def get_workout_type_name(session: dict) -> str:
         return "pilates"
     elif session_type in STRENGTH_TYPES:
         return "strength"
+    elif session_type in PADEL_TYPES:
+        return "padel"
     elif session_type in SKIP_TYPES:
         return "skipped"
     return "unknown"

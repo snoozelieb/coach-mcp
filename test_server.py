@@ -86,10 +86,10 @@ class TestParseBodyBatteryWithRealData:
 
 
 class TestGetDailyMetricsIntegration:
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_returns_json_with_real_data(self, mock_api_call):
         """Test full integration using real fixture data."""
-        from server import get_daily_metrics
+        from tools.data_tools import get_daily_metrics
         import json
 
         mock_client = Mock()
@@ -105,9 +105,9 @@ class TestGetDailyMetricsIntegration:
         assert result['sleep_score'] == 'N/A'
         assert 'date' in result
 
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_handles_api_error(self, mock_api_call):
-        from server import get_daily_metrics
+        from tools.data_tools import get_daily_metrics
         import json
 
         mock_api_call.side_effect = Exception("Connection timeout")
@@ -116,9 +116,9 @@ class TestGetDailyMetricsIntegration:
         assert 'error' in result
         assert 'Connection timeout' in result['error']
 
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_handles_empty_responses(self, mock_api_call):
-        from server import get_daily_metrics
+        from tools.data_tools import get_daily_metrics
         import json
 
         mock_client = Mock()
@@ -226,9 +226,9 @@ class TestParseActivities:
 
 
 class TestGetActivitiesRangeIntegration:
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_returns_json_array(self, mock_api_call):
-        from server import get_activities_range
+        from tools.data_tools import get_activities_range
 
         mock_client = Mock()
         mock_client.get_activities_by_date.return_value = [
@@ -244,9 +244,9 @@ class TestGetActivitiesRangeIntegration:
         assert len(parsed) == 2
         assert parsed[0]['type'] == 'running'
 
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_handles_api_error(self, mock_api_call):
-        from server import get_activities_range
+        from tools.data_tools import get_activities_range
 
         mock_api_call.side_effect = Exception("API timeout")
         result = get_activities_range('2025-12-01')
@@ -323,9 +323,9 @@ class TestParsePersonalRecords:
 
 
 class TestGetPersonalRecordsIntegration:
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_returns_json_array(self, mock_api_call):
-        from server import get_personal_records
+        from tools.data_tools import get_personal_records
 
         mock_client = Mock()
         mock_client.get_personal_record.return_value = SAMPLE_PR_DATA
@@ -337,9 +337,9 @@ class TestGetPersonalRecordsIntegration:
         assert isinstance(parsed, list)
         assert len(parsed) == 3
 
-    @patch('server.garmin_api_call')
+    @patch('tools.data_tools.garmin_api_call')
     def test_handles_api_error(self, mock_api_call):
-        from server import get_personal_records
+        from tools.data_tools import get_personal_records
 
         mock_api_call.side_effect = Exception("Auth failed")
         result = get_personal_records()
@@ -394,9 +394,9 @@ class TestParseTrainingReadiness:
 
 
 class TestGetTrainingReadinessIntegration:
-    @patch('server.garmin_api_call')
+    @patch('tools.fitness_tools.garmin_api_call')
     def test_returns_json_object(self, mock_api_call):
-        from server import get_training_readiness
+        from tools.fitness_tools import get_training_readiness
 
         mock_client = Mock()
         mock_client.get_training_readiness.return_value = SAMPLE_TRAINING_READINESS
@@ -408,9 +408,9 @@ class TestGetTrainingReadinessIntegration:
         assert parsed['score'] == 72
         assert parsed['level'] == 'HIGH'
 
-    @patch('server.garmin_api_call')
+    @patch('tools.fitness_tools.garmin_api_call')
     def test_handles_api_error(self, mock_api_call):
-        from server import get_training_readiness
+        from tools.fitness_tools import get_training_readiness
 
         mock_api_call.side_effect = Exception("Network error")
         result = get_training_readiness()
@@ -496,14 +496,14 @@ class TestCalculateBaseline:
 
 
 class TestRefreshAthleteBaselineIntegration:
-    @patch('server.garmin_api_call')
+    @patch('tools.fitness_tools.garmin_api_call')
     def test_returns_success_summary(self, mock_api_call, tmp_path):
-        from server import refresh_athlete_baseline, DATA_DIR
-        import server
+        from tools.fitness_tools import refresh_athlete_baseline
+        import tools.fitness_tools as fitness_mod
 
         # Temporarily redirect DATA_DIR to tmp_path
-        original_data_dir = server.DATA_DIR
-        server.DATA_DIR = tmp_path
+        original_data_dir = fitness_mod.DATA_DIR
+        fitness_mod.DATA_DIR = tmp_path
 
         try:
             mock_client = Mock()
@@ -522,15 +522,15 @@ class TestRefreshAthleteBaselineIntegration:
             assert parsed['personal_records_count'] == 3
             assert 'avg_weekly_volume_hrs' in parsed
         finally:
-            server.DATA_DIR = original_data_dir
+            fitness_mod.DATA_DIR = original_data_dir
 
-    @patch('server.garmin_api_call')
+    @patch('tools.fitness_tools.garmin_api_call')
     def test_creates_baseline_file(self, mock_api_call, tmp_path):
-        from server import refresh_athlete_baseline
-        import server
+        from tools.fitness_tools import refresh_athlete_baseline
+        import tools.fitness_tools as fitness_mod
 
-        original_data_dir = server.DATA_DIR
-        server.DATA_DIR = tmp_path
+        original_data_dir = fitness_mod.DATA_DIR
+        fitness_mod.DATA_DIR = tmp_path
 
         try:
             mock_client = Mock()
@@ -551,11 +551,11 @@ class TestRefreshAthleteBaselineIntegration:
             assert 'personal_records' in profile
             assert 'last_refreshed' in profile
         finally:
-            server.DATA_DIR = original_data_dir
+            fitness_mod.DATA_DIR = original_data_dir
 
-    @patch('server.garmin_api_call')
+    @patch('tools.fitness_tools.garmin_api_call')
     def test_handles_api_error(self, mock_api_call):
-        from server import refresh_athlete_baseline
+        from tools.fitness_tools import refresh_athlete_baseline
 
         mock_api_call.side_effect = Exception("Auth failed")
         result = refresh_athlete_baseline()

@@ -74,6 +74,12 @@ def load_coaching_log() -> dict[str, Any]:
     return load_json_file(COACHING_LOG_FILE)
 
 
+def save_coaching_log(log: dict[str, Any]) -> None:
+    """Save the coaching log file."""
+    log.setdefault('metadata', {})['last_updated'] = date.today().isoformat()
+    save_json_file(COACHING_LOG_FILE, log)
+
+
 def get_coaching_context() -> dict[str, Any]:
     """
     Get coaching context for LLM continuity.
