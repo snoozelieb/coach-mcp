@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Note:** Coaching identity is embedded in the MCP server itself via `SERVER_INSTRUCTIONS` in `mcp_app.py`. Any MCP client receives coaching identity at connection time. This file supplements with development context for Claude Code sessions.
+
 ## Project Overview
 
 An **adaptive AI training coach** MCP server that:
@@ -44,154 +46,104 @@ An **adaptive AI training coach** MCP server that:
 
 **Remember:** Athletes hire coaches because they DON'T know what's best. Your job is to know for them.
 
+## Curiosity Protocol
+
+**When data looks unusual, ASK before concluding.** The snapshot surfaces anomalies — your job is to be curious about them, not auto-resolve them.
+
+- **Type mismatch** (plan says "race", actual is "cycling"): "That doesn't look like a race — what happened?"
+- **Duration >50% off** from plan: "You cut that short — by choice or circumstance?"
+- **Activity on rest day**: "You did X on a rest day — feeling good or restless?"
+- **Missing session** on training day: "Missed session — skip or life got in the way?"
+- **Unusually high/low HR** for the activity type: "HR was X during Y — are you feeling OK?"
+- **Event type is 'race'** but no race was planned: "Garmin tagged this as a race — was it?"
+
+The snapshot flags these automatically as anomalies in the planned-vs-actual comparison. **Never silently resolve an anomaly** — always check with the athlete first. A coach who assumes is worse than one who asks.
+
 ## Science-Based Coaching Model
 
-The coach operates at multiple timeframes, adapting plans while keeping long-term goals in sight:
+The coach operates at multiple timeframes:
 
 ```
-SEASON (months)           ← Where are we going?
-├── get_periodization_status()
-├── A-race target, phase sequence
-└── Fitness trajectory (CTL building toward race)
+SEASON (months)           <- Where are we going?
+├── A-race target, phase sequence, fitness trajectory
 
-BLOCK (4-8 weeks)         ← What phase are we in?
+BLOCK (4-8 weeks)         <- What phase are we in?
 ├── Phase: base/build/peak/taper
 ├── Intensity distribution targets (80/20)
-└── Volume trend (building/maintaining/reducing)
 
-WEEK                      ← What should this week look like?
-├── get_weekly_prescription()
+WEEK                      <- What should this week look like?
 ├── Volume target (adjusted for ACWR)
 ├── Key sessions to prioritize
-└── Constraints (injuries, life events)
 
-DAY                       ← What should today look like?
-├── get_training_readiness()
-├── Adapt based on readiness score
-└── Conversation with athlete
+DAY                       <- What should today look like?
+├── Adapt based on readiness + conversation
 ```
 
-**Key Principle: The conversation IS the coaching.** Tools provide data and structure. The LLM provides intelligence and adaptation. When life gets in the way, the coach adjusts while keeping the athlete on track for their goals.
+**Key Principle: The conversation IS the coaching.** Tools provide data and structure. The LLM provides intelligence and adaptation.
 
 ### MANDATORY Coaching Sequence
 
-**CRITICAL: Before making ANY coaching recommendations, you MUST call `get_coaching_snapshot()` first.**
+**CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
-This prevents the coaching error of prescribing without understanding current state.
+This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation signals, sport priorities, active injuries.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  BEFORE ANY RECOMMENDATION, CALL get_coaching_snapshot()   │
-│                                                             │
-│  This returns:                                              │
-│  ├── Current weekly plan (what's planned)                   │
-│  ├── Activities this week (what's actual)                   │
-│  ├── Planned vs actual (gaps/completion rate)               │
-│  ├── Fitness metrics (CTL, ATL, TSB, ACWR)                  │
-│  ├── Compliance status (pillars met/missing)                │
-│  ├── Recovery status (today's readiness)                    │
-│  ├── Sport priority breakdown (multi-sport blending)        │
-│  └── Active injuries and restrictions                       │
-└─────────────────────────────────────────────────────────────┘
-```
+### Load Hierarchy (Injury Prevention)
 
-**Why this matters:**
-- The coach proposed a plan without checking the existing plan = BAD
-- The coach must see current state before recommending changes = GOOD
-- The snapshot enforces this by bundling everything in one call
+**Check these three levels IN ORDER before prescribing any training:**
 
-### Load Hierarchy (Injury Prevention Order)
+1. **OVERALL ACWR** (total body injury gate) — if > 1.3, back off EVERYTHING
+2. **SPORT-SPECIFIC ACWR** (spike detection) — catches "hasn't run in 4 weeks, now wants to"
+3. **SPORT-SPECIFIC CTL** (race readiness) — build toward target WITHOUT violating levels 1 or 2
 
-**CRITICAL: Check these three levels IN ORDER before prescribing any training.**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  LEVEL 1: OVERALL ACWR (total body injury gate)            │
-│  ├── Sum of ALL training stress across ALL sports           │
-│  ├── If overall ACWR > 1.3 → back off EVERYTHING           │
-│  ├── You can't chase cycling CTL if total body is spiking   │
-│  └── This is the PRIMARY safety check                       │
-│                                                             │
-│  LEVEL 2: SPORT-SPECIFIC ACWR (spike detection)            │
-│  ├── Catches: "athlete hasn't run in 4 weeks, now wants to" │
-│  ├── Zero chronic load + any acute = infinite ACWR          │
-│  ├── Even if overall ACWR is safe, a sport spike is risky   │
-│  └── Triggers return-to-sport protocols                     │
-│                                                             │
-│  LEVEL 3: SPORT-SPECIFIC CTL (race readiness)              │
-│  ├── "Is cycling fitness sufficient for sani2c?"            │
-│  ├── Overall CTL ≠ sport readiness (different muscles)      │
-│  ├── Use this for gap-to-target calculations                │
-│  └── Build toward target WITHOUT violating Level 1 or 2     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Example:** Overall CTL 17.2, Cycling CTL 8.8, Running CTL 0.3
-- Overall ACWR 0.62 → safe to increase total load
-- Running ACWR 0.0 → return-to-run protocol required (even though overall is safe)
-- Cycling CTL gap to sani2c target: 56.2 points → need structured cycling build
-- BUT: adding cycling + strength + running in one week could spike overall ACWR
-
-The `fitness_metrics` section in the snapshot includes a `load_hierarchy` field with these checks pre-computed. The `volume_data` section shows BOTH overall and sport-specific CTL.
+The snapshot includes `fitness_metrics.acwr_status` (structured: `{value, zone, safe}`) and `load_hierarchy` with these checks pre-computed.
 
 ### Multi-Sport Handling
 
-When an athlete has races in multiple sports (e.g., cycling A-race + running B-race):
+When an athlete has races in multiple sports:
 
-1. **Sport Priority Analysis**: `get_coaching_snapshot()` calculates volume distribution
-   - Weights based on: race priority (A>B>C>D) × time proximity (closer = higher weight)
-   - Example: Cycling A-race 114 days away + Running B-race 45 days away → Running gets more volume NOW
-
-2. **Shared Sessions**: Strength, mobility, recovery benefit ALL sports
-   - Schedule these regardless of sport focus
-   - They don't compete for sport-specific volume
-
-3. **Sport-Specific Sessions**: Key sessions from race templates
-   - `long_mtb_ride` for cycling races
-   - `long_trail_run` for running races
-   - Prioritize based on sport priority analysis
-
-4. **Volume Constraint**: Total weekly load must respect overall ACWR
-   - Don't spike total body stress chasing sport-specific CTL
-   - If adding a new sport (e.g., returning to running), reduce another to keep overall stable
-
-### Adaptive Coaching Flow
-
-1. **Start of any coaching conversation**: Call `get_coaching_snapshot()` FIRST
-2. **Analyze the snapshot**: What's the current state? What's working? What's missing?
-3. **Planning**: Build/adjust plan based on snapshot + athlete conversation
-4. **Adaptation**: When things change (missed session, feeling great/terrible), check snapshot again
-5. **End of week**: Check compliance, update fitness history, plan next week
+1. **Sport Priority Analysis**: Snapshot calculates volume distribution weighted by race priority x time proximity
+2. **Shared Sessions**: Strength, mobility, recovery benefit ALL sports — schedule regardless of sport focus
+3. **Sport-Specific Sessions**: Key sessions from race templates, prioritized by sport priority
+4. **Volume Constraint**: Total weekly load must respect overall ACWR — don't spike total body stress chasing sport-specific CTL
 
 ### Sleep as Foundation (Training Gate)
 
-**Sleep is not just a metric - it's a GATE for training decisions.**
+Sleep is a GATE for training decisions, not just a metric. Without adequate sleep, training becomes catabolic:
+- High-intensity intervals most affected (effect size -1.57)
+- Strength/power least affected (effect size -0.39)
+- Early AM workouts that cut into sleep are COUNTERPRODUCTIVE (effect size -1.17)
 
-Without adequate sleep, training becomes CATABOLIC (breakdown) not ANABOLIC (building):
-- ↓ Testosterone, ↓ Growth Hormone, ↑ Cortisol
-- ↑ Inflammatory markers, impaired glycogen resynthesis
-- **Adaptation literally cannot happen**
+The snapshot includes sleep data with `avg_hours`, `scores`, and `deficit_flag`. Use these to decide what training is appropriate — the LLM reasons about the athlete's specific context rather than following fixed thresholds.
 
-Research shows performance impact by exercise type (effect size):
-- High-intensity intervals: **-1.57** (most affected)
-- Skill/coordination: -1.06
-- Aerobic endurance: -0.54
-- Strength/power: -0.39 (least affected)
+### Personalizing Load Decisions
 
-**Sleep Status → Training Modifications:**
+The `volume_data.load_increase_guidance` provides a range: conservative (10%), standard (15%), aggressive (25%).
 
-| Status | Avg Sleep | Training Cap | Skip | Notes |
-|--------|-----------|--------------|------|-------|
-| Adequate | ≥7.5hrs | None | - | Full training |
-| Borderline | 7-7.5hrs | Caution | - | Monitor, prioritize sleep |
-| **Deficit** | 6.5-7hrs | Moderate | FTP tests, max efforts | No adaptation capacity |
-| Severe | <6.5hrs | Recovery only | All intensity | Rest until sleep improves |
+Choose where in the range based on `adaptation_signals`:
+- **Red flags** (sleep < 6.5hr, HRV declining, compliance < 60%) -> Conservative
+- **Green signals** (sleep > 7.5hr improving, compliance > 85%, HRV improving) -> Aggressive
+- **Mixed/unknown** -> Standard
 
-**Critical:** Early AM workouts that cut into sleep are COUNTERPRODUCTIVE (effect size -1.17). Sleeping in is more valuable than the workout.
+Always record reasoning with `log_coaching_decision()`.
 
-The `get_coaching_snapshot()` tool now includes `sleep.training_modifications` with specific guidance.
+### Adaptation Patterns
 
-### Load Management (Injury Prevention)
+Check `adaptation_signals.adaptation_patterns` before load decisions. These are learned from `record_athlete_response()` calls:
+- `handles_volume_well` -> more aggressive on volume
+- `recovers_quickly` -> shorter rest between hard sessions
+- `needs_extra_rest_after_intensity` -> add recovery day after intervals
+
+New athlete with empty patterns? Start conservative. Log responses after every week.
+
+### Coaching Score
+
+Use `get_coaching_score()` periodically to evaluate effectiveness:
+- Progress (40%): CTL trajectory toward A-race goal
+- Health (30%): Injuries, ACWR status
+- Achievability (20%): Compliance rate
+- Adaptation (10%): Response patterns logged
+
+### Load Management (ACWR Reference)
 
 Based on ACWR (Acute:Chronic Workload Ratio) research:
 - **0.8-1.3**: Sweet spot - safe to train normally
@@ -199,650 +151,145 @@ Based on ACWR (Acute:Chronic Workload Ratio) research:
 - **> 1.3**: Elevated risk - reduce intensity
 - **> 1.5**: High risk - mandatory load reduction
 
-The `get_fitness_status()` tool tracks this automatically and provides recommendations.
+The snapshot provides `fitness_metrics.acwr_status` with `{value, zone, safe}` — the zone labels map to these research-backed thresholds.
 
-## Personalizing Load Decisions
+### Coaching Continuity
 
-The `volume_data.load_increase_guidance` in coaching snapshot provides a RANGE, not a single value:
-- **conservative_pct: 10%** - Use when adaptation signals are poor
-- **standard_pct: 15%** - Baseline guidance
-- **aggressive_pct: 25%** - Use when adaptation signals are excellent
+Coaching decisions persist across sessions via `coaching_log.json`:
+1. **Session start**: Call `get_active_decisions()` to load previous decisions
+2. **During planning**: Previous decisions should influence recommendations
+3. **Significant choices**: Call `log_coaching_decision()` to persist rationale
+4. **Major changes** (phase transition, >15% volume change): Use `propose_major_change()` for user approval
+5. **After completed sessions**: Call `record_athlete_response()` to track patterns
 
-**Choose where in the range based on `adaptation_signals`:**
+### Tool Selection Quick Reference
 
-| Signal | → Conservative (10%) | → Standard (15%) | → Aggressive (25%) |
-|--------|---------------------|------------------|-------------------|
-| Sleep avg < 6.5hr | ✓ | | |
-| Sleep avg 6.5-7.5hr | | ✓ | |
-| Sleep avg > 7.5hr + improving trend | | | ✓ |
-| Compliance rate < 70% | ✓ | | |
-| Compliance rate 70-85% | | ✓ | |
-| Compliance rate > 85% | | | ✓ |
-| HRV declining | ✓ | | |
-| HRV stable | | ✓ | |
-| HRV improving | | | ✓ |
-| Pattern: "handles_volume_well" = true | | | ✓ |
-| Pattern: "needs_extra_rest_after_intensity" = true | ✓ | | |
+| Question | Tool |
+|----------|------|
+| Any coaching recommendation | `get_coaching_snapshot()` (MANDATORY first) |
+| Plan next week from scratch | `get_planning_context()` |
+| Quick load/ACWR check | `get_load_status()` |
+| Pillar compliance | `get_compliance_report()` |
+| Coaching self-assessment | `get_coaching_score()` |
+| Push harder or back off? | Check `adaptation_signals` in snapshot |
 
-**Decision rules:**
-1. If ANY red flag present (sleep < 6.5hr, HRV declining, compliance < 60%) → Conservative
-2. If 2+ signals point aggressive AND no red flags → can push to aggressive
-3. Default to standard when signals are mixed or unknown
+### Adaptive Coaching Flow
 
-**Always record your reasoning** using `log_coaching_decision()` so future sessions understand why you pushed hard or backed off.
-
-## Using Adaptation Patterns
-
-Before making load decisions, check `adaptation_signals.adaptation_patterns`.
-
-These patterns are learned from `record_athlete_response()` calls over time:
-- If `handles_volume_well` = true → can be more aggressive on volume
-- If `recovers_quickly` = true → shorter rest between hard sessions OK
-- If `needs_extra_rest_after_intensity` = true → add recovery day after intervals
-
-**Building patterns over time:**
-After completed training blocks, use `record_athlete_response()` to capture:
-- How did they respond to this week's load?
-- What worked? What didn't?
-- Any unexpected fatigue or exceptional freshness?
-
-This creates a feedback loop for increasingly personalized coaching. The more responses logged, the better the adaptation_patterns become.
-
-**When patterns are empty (new athlete):**
-Start with standard load increases. Be conservative until you learn how they respond. Log responses after every week to build the pattern database.
-
-## Coaching Score
-
-Use `get_coaching_score()` to evaluate coaching effectiveness across 4 dimensions:
-
-| Component | Weight | Measures |
-|-----------|--------|----------|
-| Progress | 40% | CTL trajectory toward A-race goal |
-| Health | 30% | Injuries, ACWR status, overtraining risk |
-| Achievability | 20% | Compliance rate (is plan realistic?) |
-| Adaptation | 10% | Response patterns logged (are we learning?) |
-
-**Interpret the scores:**
-- **90+**: Excellent coaching - athlete progressing safely
-- **75-89**: Good coaching - minor areas to address
-- **60-74**: Adequate - review weak components
-- **<60**: Problems - significant coaching adjustments needed
-
-**Check coaching score periodically** (weekly or after major plan changes) to ensure the coaching approach is working.
+1. **Start of conversation**: Call `get_coaching_snapshot()` FIRST
+2. **Analyze**: Current state, what's working, what's missing, any anomalies
+3. **Plan**: Build/adjust based on snapshot + athlete conversation
+4. **Adapt**: When things change, check snapshot again
+5. **End of week**: Check compliance, update fitness, plan next week
 
 ## Commands
 
 ```bash
-# Run the MCP server
-python server.py
-
-# Run all tests (348 tests)
-python -m pytest -v
-
-# Run tests for specific module
-python -m pytest tests/test_rules.py -v
-python -m pytest tests/test_coaching_tools.py -v
-
-# Run morning audit (standalone mode)
-python daily_loop.py
-
-# Run morning audit with LLM
-python daily_loop.py --llm
-```
-
-## Tool Hierarchy for Coaching Context
-
-Understanding which tool to use and when prevents redundant data fetching and ensures efficient coaching.
-
-### 1. `get_coaching_snapshot()` - MANDATORY First Call
-
-**When:** Any coaching conversation, making recommendations, adjusting plans
-
-**Returns:** Everything needed for coaching decisions in one call:
-- Current weekly plan
-- Actual activities (planned vs completed)
-- Fitness metrics (CTL/ATL/TSB/ACWR)
-- **volume_data** - CTL targets, weekly TSS ranges, load_increase_guidance (DATA not prescriptions)
-- Compliance status
-- Sleep analysis
-- Recovery status
-- **adaptation_signals** - Sleep trends, recovery trends, compliance trends, adaptation patterns
-- Sport priority breakdown
-- Active injuries
-
-**Use this as the ENTRY POINT for all coaching interactions.**
-
-### 2. `get_planning_context()` - Full Context for Weekly Planning
-
-**When:** Building a weekly plan from scratch, major plan revisions
-
-**Returns:** Extended context including:
-- Athlete profile (personal info, constraints, preferences)
-- Event calendar with race analysis
-- Methodology (pillars, safety rules)
-- Current plan
-- Fitness trajectory
-
-**Use when you need the full picture, not just current state.**
-
-### 3. `get_load_status()` - Quick Fitness Check
-
-**When:** Need only load/ACWR status, no plan context needed
-
-**Returns:** Just fitness metrics:
-- CTL, ATL, TSB
-- ACWR status and risk level
-- Fitness trend
-
-**Use for quick load checks without full coaching context.**
-
-### 4. `get_compliance_report(days)` - Pillar Tracking Only
-
-**When:** Checking if weekly pillars are met
-
-**Returns:** Compliance against pillars:
-- Strength sessions
-- Mobility minutes
-- Long efforts
-- Volume
-
-**Use for pillar-focused analysis.**
-
-### 5. `get_coaching_score()` - Coaching Effectiveness Check
-
-**When:** Periodic self-assessment, after major plan changes, weekly review
-
-**Returns:** Coaching effectiveness across 4 dimensions:
-- Progress score (CTL trajectory)
-- Health score (injuries, ACWR)
-- Achievability score (compliance rate)
-- Adaptation score (response patterns logged)
-
-**Use to evaluate whether your coaching approach is working.**
-
-### Tool Selection Guide
-
-| Question | Tool to Use |
-|----------|-------------|
-| "What should I train today?" | `get_coaching_snapshot()` |
-| "Am I overtrained?" | `get_coaching_snapshot()` or `get_load_status()` |
-| "Did I hit my pillars this week?" | `get_compliance_report()` |
-| "Plan next week from scratch" | `get_planning_context()` |
-| "How's my sleep affecting training?" | `get_coaching_snapshot()` |
-| "What's my fitness trending?" | `get_load_status()` |
-| "Is my coaching effective?" | `get_coaching_score()` |
-| "Should I push harder or back off?" | Check `adaptation_signals` in snapshot |
-
-## MCP Tools Reference
-
-### Data Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_daily_metrics()` | RHR, Body Battery, Sleep Score | JSON object |
-| `get_activities_range(start, end)` | Activity history | JSON array |
-| `get_personal_records()` | All PBs | JSON array |
-| `get_training_readiness(date)` | Recovery score, HRV, load | JSON object |
-| `get_athlete()` | Full athlete profile (personal, constraints, preferences) | JSON object |
-| `update_athlete(section, data)` | Update profile section (personal, preferences, training_pillars, etc.) | Confirmation |
-| `refresh_athlete_baseline()` | Generate baseline from 6mo Garmin history | JSON summary |
-| `get_onboarding_guide()` | Get personas and onboarding conversation guide | JSON guide |
-
-### Methodology Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_methodology()` | View pillars, constraints, race templates, activity classifications | JSON object |
-| `update_methodology(section, data)` | Update pillars, constraints, or race templates | Confirmation |
-
-**update_methodology sections:** `pillars`, `safety_constraints`, `add_race_template`, `update_race_template`
-
-### Compliance Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_compliance_report(days)` | Weekly pillar compliance | JSON with deficits |
-
-### Fitness Tracking Tools (Science-Based)
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_fitness_status(days)` | CTL, ATL, TSB, ACWR with trend analysis | JSON with metrics, insights |
-| `refresh_fitness_history(days)` | Backfill fitness history from Garmin | JSON summary |
-| `get_intensity_distribution(days)` | Zone distribution vs 80/20 target | JSON with polarization score |
-
-**Key Metrics:**
-- **CTL (Chronic Training Load)**: 42-day weighted fitness level
-- **ATL (Acute Training Load)**: 7-day weighted fatigue level
-- **TSB (Training Stress Balance)**: Form = CTL - ATL. Positive = fresh, negative = fatigued
-- **ACWR (Acute:Chronic Workload Ratio)**: Injury risk. Sweet spot is 0.8-1.3
-
-**First-time setup:** Run `refresh_fitness_history(365)` to backfill from Garmin history.
-
-### Periodization Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_periodization_status()` | Current phase, weeks to race, phase guidance | JSON with position in season |
-| `get_weekly_prescription()` | This week's targets based on phase + fitness | JSON with volume, intensity, constraints |
-| `update_phase(phase, notes)` | Transition to new training phase | Confirmation |
-
-**get_weekly_prescription() is the key tool for adaptive coaching.** It combines:
-- Phase demands (from periodization)
-- Current fitness (CTL, ACWR)
-- Recovery status (Garmin readiness)
-- Life constraints (injuries, travel, commitments)
-
-The LLM uses this prescription as a starting point, then adapts through conversation.
-
-### Planning Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_coaching_snapshot()` | **MANDATORY FIRST CALL** - complete coaching context | JSON with plan, actual, fitness, compliance |
-| `get_planning_context()` | Full context for LLM planning | JSON object |
-| `get_weekly_plan()` | Current 7-day plan | JSON object |
-| `update_weekly_plan(plan_json)` | Save new/updated plan | Confirmation |
-| `push_plan_to_garmin()` | Push workouts to Garmin calendar | JSON summary |
-
-**get_coaching_snapshot() is the MANDATORY first call.** It returns:
-- `weekly_plan`: What's currently planned
-- `activities_this_week`: What's been done (actual)
-- `planned_vs_actual`: Comparison with gaps/completion rate
-- `fitness_metrics`: CTL, ATL, TSB, ACWR with coaching insights
-- `compliance`: Pillar status (strength, mobility, long effort)
-- `recovery`: Today's readiness score and recommendation
-- `sport_priorities`: Multi-sport volume distribution (if multiple races)
-- `active_injuries`: Current restrictions
-- `coaching_checklist`: Quick status flags (has_plan, acwr_safe, compliance_ok)
-
-**push_plan_to_garmin() workflow:**
-- Converts sessions to Garmin workout format with targets:
-  - **Cycling**: HR zone targets from athlete profile
-  - **Running**: Pace zone targets (if threshold set) or HR fallback
-  - **Swimming**: 25m pool setting
-  - **Strength**: Full exercise list with sets/reps
-  - **Yoga/Mobility**: Timed sessions
-- Automatically expands double sessions (e.g., AM ride + PM mobility → 2 workouts)
-- Skips optional sessions (e.g., pool_sauna) and rest days
-- Deletes existing workouts from plan period before pushing (prevents duplicates)
-- Returns summary: pushed count, dates, any errors
-
-### Performance Testing Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `set_threshold_pace(pace, time_trial_mins, time_trial_distance_km)` | Set running threshold from test | Pace zones |
-| `set_ftp(ftp_watts, test_avg_watts, test_duration_mins)` | Set cycling FTP from test | Power zones |
-
-**set_threshold_pace examples:**
-```python
-set_threshold_pace(pace="5:30")  # Direct: 5:30/km
-set_threshold_pace(time_trial_mins=30, time_trial_distance_km=6.2)  # From 30-min TT
-```
-- Calculates pace zones using Jack Daniels methodology
-- Running workouts then use pace targets instead of HR
-
-**set_ftp examples:**
-```python
-set_ftp(test_avg_watts=265, test_duration_mins=20)  # From 20-min test (×0.95)
-set_ftp(ftp_watts=250)  # Direct value
-```
-- Calculates 7-zone power model
-- Cycling workouts then use power targets
-
-### Race Management Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `list_races()` | View all races with days_until | JSON array |
-| `add_race(name, date, priority, ...)` | Add new A/B/C race | Confirmation |
-| `remove_race(name)` | Remove race by name | Confirmation |
-| `update_race(name, ...)` | Update any race field | Confirmation |
-| `research_race(name or url)` | Fetch race info for training context | JSON with course/elevation/terrain |
-
-### Suggestion Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `propose_suggestion(type, desc, rationale, change)` | LLM proposes config change | Suggestion ID |
-| `list_pending_suggestions()` | See pending suggestions | JSON array |
-| `approve_suggestion(id)` | User approves suggestion | Confirmation |
-| `reject_suggestion(id, reason)` | User rejects suggestion | Confirmation |
-
-### Coaching Decision Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `log_coaching_decision(type, decision, rationale)` | Record significant coaching decisions | Decision ID |
-| `get_active_decisions()` | Get all active coaching decisions | JSON array |
-| `update_decision_status(id, status, outcome)` | Update or close a decision | Confirmation |
-| `propose_major_change(type, proposal, rationale)` | Propose major change requiring approval | Proposal ID |
-| `list_pending_approvals()` | View pending coaching changes | JSON array |
-| `approve_coaching_change(id)` | Approve a pending change | Confirmation |
-| `reject_coaching_change(id, reason)` | Reject a pending change | Confirmation |
-| `record_athlete_response(stimulus, response, pattern)` | Track athlete adaptation patterns | Confirmation |
-| `get_response_patterns()` | Get identified athlete patterns | JSON object |
-
-**Coaching continuity workflow:**
-1. At session start: call `get_active_decisions()` to load previous decisions
-2. During planning: decisions should influence recommendations
-3. When making significant choices: call `log_coaching_decision()` to persist
-4. For major changes (phase transition, >15% volume change): use `propose_major_change()`
-5. After reviewing completed sessions: call `record_athlete_response()` to track patterns
-
-### Load & Goal Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `get_load_status()` | Training readiness, load ratio, recommendations | JSON object |
-| `get_goal_progress(days)` | Balance across race/fun/aesthetics goals | JSON with percentages |
-
-**Goal Balance (target split):**
-- Race Preparation: 50% (sani2c training)
-- Fun Activities: 25% (Padel, Ultimate Frisbee)
-- Aesthetics: 25% (Upper body strength, gym)
-
-### Injury Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `diagnose_injury(location, answers)` | Clinical assessment (two-phase) | Questions then diagnosis |
-| `research_injury(injury_type, severity, url)` | Web research for treatment & recovery | JSON with researched info |
-| `update_injury_status(date, status, notes)` | Track injury progress | Confirmation |
-
-**diagnose_injury workflow:**
-1. Phase 1: Call with `location` only → returns clinical assessment questions
-2. Phase 2: Call with `location` + `answers` (JSON) → returns possible conditions, severity, recommendations
-
-**Supported body regions:** shin, knee, ankle, back, shoulder, hip, foot, calf
-
-**research_injury workflow:**
-- Auto-search: `research_injury("shin splints")` - searches Wikipedia and extracts treatment/rehab info
-- Direct URL: `research_injury("tendinitis", url="https://...")` - fetches and parses specific resource
-- Each injury is researched uniquely from web sources rather than using static protocols
-
-### Research Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `research_race(name, url)` | Course info, elevation, difficulty | JSON with training focus |
-| `research_sport(sport_name, url)` | Training principles for unfamiliar sports | JSON with periodization, injuries, demands |
-| `research_exercise(exercise_name, save_to_library)` | Form cues, setup, mistakes | JSON + saves to library |
-| `research_injury(...)` | See Injury Tools above | Treatment & recovery info |
-
-**research_sport workflow:**
-- Use when onboarding athlete in unfamiliar sport (climbing, CrossFit, rowing, martial arts)
-- Returns: training approaches, periodization patterns, common injuries, physical demands
-- Example: `research_sport("rock climbing")` - fetches Wikipedia and extracts training-relevant info
-
-**research_exercise workflow:**
-- Use when athlete is unsure how to perform an exercise
-- Primary source: muscleandstrength.com (has video guides)
-- Returns: setup instructions, key cues, common mistakes, modifications, **video_url**
-- **Saves to exercise library** (default) for use in Garmin workout notes
-- Example: `research_exercise("Romanian deadlift")` - returns form cues + video link
-
-**Video URL protocol:**
-- Each exercise includes a `video_url` field linking to muscleandstrength.com form guide
-- The Garmin note includes a shortened video link for quick reference
-- Example garmin_note: `"Squeeze shoulder blades, elbows 45deg. Video: muscleandstrength.com/exercises/dumbbell-bench-press"`
-
-**Exercise library → Garmin workout notes:**
-1. Call `research_exercise("hip thrust")` to learn the exercise
-2. Form cues + video URL cached in `data/exercise_library.json`
-3. When `push_plan_to_garmin()` builds strength workouts, it includes the notes with video links
-4. You see form cues + video link on your Garmin watch/app during the workout
-
-### Strength Sync Tools
-| Tool | Purpose | Returns |
-|------|---------|---------|
-| `sync_strength_session(activity_id)` | Pull completed exercise data from Garmin and update baselines | JSON with synced exercises, PRs, progressions |
-| `get_strength_baseline(exercise)` | View current strength baselines | JSON with weights, reps, history |
-| `approve_progression(exercise)` | Approve suggested weight progression | Confirmation with new weight |
-| `set_exercise_preference(exercise_group, preferred_variation)` | Set preferred exercise variation | Confirmation |
-
-**Strength sync workflow:**
-1. Athlete completes gym session on Garmin watch
-2. `get_coaching_snapshot()` auto-syncs recent strength sessions
-3. Baselines are updated with actual weights used
-4. If target reps completed, progression suggestion generated (+2.5kg)
-5. Athlete approves progression → next workout uses new weight
-6. `push_plan_to_garmin()` uses baseline weights when building workouts
-
-**Exercise equivalence groups:**
-- Related exercises share progression (e.g., barbell bench = dumbbell bench)
-- Groups: BENCH_PRESS, ROW, PULL_UP, SHOULDER_PRESS, CURL, TRICEPS_EXTENSION, SQUAT, DEADLIFT, LATERAL_RAISE, CORE
-- Use `set_exercise_preference()` to set preferred variation in each group
-
-**Example flow:**
-```
-User: "I just finished my gym session"
-Coach: [calls get_coaching_snapshot()]
-→ "Synced strength session. Bench press: 3x12 @ 10kg. You completed all target reps - I suggest progressing to 12.5kg next session."
-User: "yes bump it up"
-Coach: [calls approve_progression("bench_press")]
-→ "Bench press progression approved. Next session: 3x12 @ 12.5kg"
+python server.py                              # Run the MCP server
+python -m pytest -v                           # Run all tests
+python -m pytest tests/test_rules.py -v       # Run specific module tests
+python daily_loop.py                          # Morning audit (standalone)
+python daily_loop.py --llm                    # Morning audit with LLM
 ```
 
 ## Architecture
 
 ```
 coach-mcp/
-├── server.py              # MCP server with all tools
-├── garmin_client.py       # Garmin auth with token caching
+├── server.py              # MCP server orchestrator (imports tool modules)
+├── mcp_app.py             # Shared FastMCP instance
+├── garmin_client.py       # Garmin auth with token caching + retry
 ├── workout_builder.py     # Converts plan sessions to Garmin workouts
 ├── fitness.py             # CTL/ATL/TSB calculations, intensity distribution
-├── rules.py               # Compliance checker, safety rules
+├── rules.py               # Compliance checker, safety rules, classify_activity
 ├── planner.py             # Context builder, plan/suggestion management
-├── daily_loop.py          # Morning audit automation
+├── parsers.py             # Pure parsing functions for Garmin API responses
 ├── config.py              # Shared configuration and constants
+├── daily_loop.py          # Morning audit automation
+├── tools/
+│   ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
+│   ├── fitness_tools.py   # refresh_athlete_baseline, get_training_readiness, get_load_status, etc.
+│   ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
+│   ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, etc.
+│   ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score
+│   ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
+│   ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
+│   ├── research_tools.py  # research_exercise, list_exercises, research_sport
+│   ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
+│   ├── race_tools.py      # research_race, list/add/remove/update_race
+│   ├── suggestion_tools.py # propose/list/approve/reject_suggestion
+│   └── goal_tools.py      # get_goal_progress
 ├── data/
-│   ├── athlete.json           # WHO - personal info, life constraints, preferences
+│   ├── athlete.json           # WHO - personal info, constraints, preferences, pillars
 │   ├── athlete_baseline.json  # WHO - Garmin-derived capacity (auto-generated)
-│   ├── methodology.json       # HOW - pillars, safety rules, race templates
+│   ├── methodology.json       # HOW - safety rules, race templates, personas
 │   ├── training_config.json   # WHAT - events, periodization, goals
 │   ├── weekly_plan.json       # CURRENT - rolling 7-day plan with session PURPOSE
-│   ├── fitness_history.json   # FITNESS - daily loads, CTL/ATL snapshots
-│   ├── coaching_log.json      # MEMORY - coaching decisions, patterns, approvals
+│   ├── fitness_history.json   # FITNESS - daily loads, CTL/ATL snapshots, sleep history
+│   ├── coaching_log.json      # MEMORY - decisions, patterns, approvals
 │   ├── exercise_library.json  # FORM - cached exercise form cues for Garmin notes
 │   └── suggestions.json       # Pending LLM suggestions
-├── tests/
-│   ├── conftest.py            # Shared fixtures and sample data
-│   ├── test_parsers.py        # Parser tests (42 tests)
-│   ├── test_data_tools.py     # Data tool integration tests (3 tests)
-│   ├── test_fitness_tools.py  # Baseline pipeline tests (2 tests)
-│   ├── test_coaching_tools.py # Coaching helper tests (22 tests)
-│   ├── test_decision_tools.py # Decision tool tests (17 tests)
-│   ├── test_strength_tools.py # Strength tool tests (12 tests)
-│   ├── test_athlete_tools.py  # Athlete tool tests (20 tests)
-│   ├── test_rules.py          # Rules tests (23 tests)
-│   ├── test_planner.py        # Planner tests (14 tests)
-│   ├── test_fitness.py        # Fitness calculation tests (47 tests)
-│   ├── test_workout_builder.py # Workout builder tests (109 tests)
-│   ├── test_garmin_retry.py   # Garmin retry tests (10 tests)
-│   └── test_web_utils.py      # Web utils tests (24 tests)
-├── pyproject.toml         # pytest config (testpaths, pythonpath)
-└── test_fixtures.json     # Real Garmin API responses (gitignored)
+└── tests/                     # pytest suite (see pyproject.toml for config)
 ```
-
-## Data File Structure
-
-### athlete.json - WHO the athlete is
-Manually edited. Contains:
-- `training_pillars`: **personalized** training pillars (based on persona, customized via onboarding)
-- `personal`: name, age, max_hr, HR zones, FTP, power_zones, threshold_pace, pace_zones, weight
-- `life_constraints`: recurring commitments (e.g., Wednesday Padel), preferred training times, work schedule
-- `injury_history`: past injuries with status and notes
-- `strength_baseline`: per-exercise weight/reps baselines (auto-synced from Garmin)
-- `swimming`: experience level, pace, comfortable distance, strokes (ask user to personalize)
-- `pilates`: experience, class preference, focus areas, injury considerations
-- `preferences`: likes, dislikes, equipment, gym_access
-- `coaching_notes`: free-form notes for the AI coach
-
-### athlete_baseline.json - Garmin-derived capacity
-Auto-generated by `refresh_athlete_baseline()`. Contains:
-- `baseline`: avg/max weekly volume, activity distribution
-- `personal_records`: all PRs from Garmin
-- `last_refreshed`: timestamp
-
-### methodology.json - HOW to train (shared templates)
-Rarely changes. Contains:
-- `personas`: starting templates (endurance_athlete, strength_athlete, recreational, return_from_injury, multi_sport)
-- `default_pillar_templates`: fallback pillars if athlete has none configured
-- `safety_constraints`: max consecutive hard days, rest after race
-- `race_templates`: key sessions and phase guidance by race type
-- `recovery_protocols`: pre-sleep stretching by activity type (cycling, running, high-intensity)
-
-### training_config.json - WHAT they're training for
-User-edited for race calendar. Contains:
-- `events`: race calendar with A/B/C/D priorities
-- `current_block`: phase, dates, volume target, focus
-- `periodization`: phase definitions (base/build/peak/taper) with intensity distributions
-- `goals`: **flexible goals array** - any type (event, health, wellness, aesthetics, fun)
-- `weekly_structure`: preferred long day, strength days, rest rules
-
-### coaching_log.json - LLM MEMORY
-Auto-managed by coaching tools. Contains:
-- `decisions`: logged coaching decisions with rationale and status
-- `pending_approvals`: major changes awaiting user approval
-- `athlete_responses`: tracked adaptation patterns
-
-## Training Pillars
-
-**Personalized in athlete.json** (not fixed in methodology). Each athlete has their own pillars based on:
-- Selected persona (starting template)
-- Goals (event-focused vs wellness vs strength)
-- Time available
-- Customization via onboarding conversation
-
-Example pillar structure:
-```json
-{"name": "endurance", "target_hours_per_week": 4, "target_type": "hours", "types": ["cycling", "running"]}
-{"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]}
-```
-
-Use `get_onboarding_guide()` to start the personalization process.
 
 ## Activity Classification
 
-`rules.py:classify_activity()` categorizes activities:
-- **Strength:** strength_training, indoor_cardio, functional_strength
-- **Mobility:** yoga, pilates, stretching, breathwork
-- **Long Effort:** 60+ min running, cycling, swimming
-  - **Hard:** ultimate_disc, hiit, interval_training, or avg_hr > 150
+`rules.py:classify_activity()` categorizes activities and returns:
+- `is_strength`, `is_mobility`, `is_long_effort`, `is_hard` (booleans)
+- `hr_intensity_pct` (float 0.0-1.0) — avg_hr / athlete_max_hr
 
-## Garmin API Response Structures
+When `athlete_max_hr` is provided, `is_hard` uses relative threshold (>78% of max HR).
+Without it, falls back to absolute thresholds from config. This ensures the safety gate
+(`check_safety_rules()` consecutive hard day check) works regardless of athlete profile availability.
 
-**Activities** (`get_activities_by_date`):
-```python
-activity['activityType']['typeKey']  # "running", "strength_training", etc.
-activity['duration']  # seconds
-activity['distance']  # meters
-activity['averageHR'], activity['maxHR']
-```
+## Data Files
 
-**Personal Records** (`get_personal_record`):
-```python
-pr_data['personalRecords'][0]['prTypeLabelKey']  # "pr_running_fastest_5k_time"
-pr_data['personalRecords'][0]['value']  # seconds for time-based
-```
-
-**Training Readiness** (`get_training_readiness`):
-```python
-readiness['score']  # 0-100
-readiness['level']  # "PRIME", "HIGH", "MODERATE", "LOW"
-readiness['hrvStatus'], readiness['acuteLoad']
-```
-
-## Implementation Status
-
-All 4 sprints complete:
-
-### Sprint 1: Data Foundation
-- [x] `get_activities_range()` - Activity history
-- [x] `get_personal_records()` - PBs
-- [x] `get_training_readiness()` - Recovery metrics
-- [x] `refresh_athlete_baseline()` - Generate baseline from 6mo Garmin history
-- [x] `get_athlete()` - Full athlete profile with life constraints
-- [x] `calculate_baseline()` - Weekly volume and activity distribution
-
-### Sprint 2: Rule Engine
-- [x] Data files: `athlete.json`, `methodology.json`, `training_config.json`
-- [x] `classify_activity()` - Categorize by pillar
-- [x] `check_weekly_compliance()` - Validate pillars met
-- [x] `check_safety_rules()` - Consecutive hard days, post-race rest
-- [x] `get_compliance_report()` MCP tool
-
-### Sprint 3: LLM Planning
-- [x] `build_planning_context()` - Assemble all context for LLM
-- [x] Planning MCP tools (get/update weekly plan)
-- [x] Suggestion system (propose, list, approve, reject)
-
-### Sprint 4: Automation
-- [x] `daily_loop.py` - Morning audit script
-- [x] `notifier.py` - Console/Email notifications
-- [x] LLM integration with `--llm` flag
+| File | Purpose | Managed By |
+|------|---------|------------|
+| `athlete.json` | Personal info, pillars, constraints, strength baselines | Manual + tools |
+| `athlete_baseline.json` | Garmin-derived capacity (auto-generated) | `refresh_athlete_baseline()` |
+| `methodology.json` | Safety rules, race templates, personas | Rarely changes |
+| `training_config.json` | Events, periodization, goals | Manual + tools |
+| `weekly_plan.json` | Rolling 7-day plan with session PURPOSE | `update_weekly_plan()` |
+| `fitness_history.json` | Daily loads, CTL/ATL snapshots, sleep history | Auto-updated by snapshot |
+| `coaching_log.json` | Decisions, patterns, approvals | Coaching decision tools |
+| `exercise_library.json` | Cached exercise form cues for Garmin notes | `research_exercise()` |
 
 ## Environment
 
-Requires `.env` with:
-```
-GARMIN_EMAIL=your@email.com
-GARMIN_PASSWORD=yourpassword
-ANTHROPIC_API_KEY=sk-ant-xxx  # For LLM integration
-```
+Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 
-## Testing Pattern
+## Testing
 
-Tests use real API responses captured in `test_fixtures.json`. When adding new tools:
-1. Create parsing function (pure, no I/O)
-2. Add MCP tool with `@mcp.tool()` decorator
+Tests use real API responses captured in `test_fixtures.json` (gitignored). Pattern for new tools:
+1. Create parsing function (pure, no I/O) in `parsers.py`
+2. Add MCP tool with `@mcp.tool()` decorator in `tools/`
 3. Write tests with sample data matching Garmin structure
 4. Run: `python -m pytest -v`
 
+Key testing patterns:
+- Patch `garmin_api_call` where it's **used** (the tool module), not where it's defined
+- Redirect `DATA_DIR` via `monkeypatch.setattr(planner, 'DATA_DIR', data_dir)` for file I/O tests
+- Clean install tests must monkeypatch DATA_DIR in **all** modules that use it
+
 ## When to Suggest New Tools
 
-The AI coach should proactively identify when a new tool would improve coaching capability. Before implementing features, ask: **"Should this be a tool?"**
+The coach should proactively identify gaps. Use `propose_suggestion(type='new_tool', ...)` when:
+- Repeated manual data gathering that could be automated
+- Missing context preventing good coaching decisions
+- Same type of request comes up multiple times
 
-### Signs a new tool is needed:
-1. **Repeated manual work** - If the LLM keeps doing the same data gathering/transformation
-2. **Missing context** - Can't make good decisions without information that could be fetched
-3. **User friction** - User has to manually provide data that could be automated
-4. **Pattern emerges** - Same type of request comes up multiple times
-
-### Tool proposal process:
-1. Identify the gap in current tooling
-2. Describe what the tool would do and what it returns
-3. Explain how it improves coaching decisions
-4. Use `propose_suggestion(type='new_tool', ...)` to formally suggest it
-
-### Examples of good tool suggestions:
-- "I notice I can't see your sleep trends. A `get_sleep_history(days)` tool would help me correlate recovery with training load."
-- "You keep asking about weather for race day. A `get_race_weather(name)` tool could fetch forecasts automatically."
-- "Your injury history isn't tracked. An `add_injury(type, date, notes)` tool would help me adjust training safely."
-
-### Tool design principles:
-- **Single responsibility** - One tool, one job
-- **Return JSON** - Structured data the LLM can reason about
-- **Fail gracefully** - Return `{'error': ...}` not exceptions
-- **Include context** - Return enough info for decisions, not just raw data
+Tool design: single responsibility, return JSON, fail gracefully with `{'error': ...}`.
 
 ## Known Issues / TODO
 
-### ~~1. Outdoor cycling uses watts instead of HR~~ FIXED
-- **Problem:** Outdoor cycling workouts are pushed with watt targets, but athlete has no power meter outdoors (only Wattbike indoors)
-- **Fix:** Added `is_indoor_cycling()` detection. Indoor (Wattbike/trainer) uses power zones, outdoor uses HR zones.
-- **Files:** `workout_builder.py` - `build_cycling_workout()`
-
 ### 2. Coaching snapshot shows partial data when Garmin API fails
-- **Problem:** `get_coaching_snapshot()` returns with missing recovery/sleep data if Garmin API call fails, instead of retrying
-- **Fix:** Add retry logic or clearly flag missing data and attempt to fetch again before presenting to user
-- **Files:** `server.py` - `get_coaching_snapshot()`
+- `get_coaching_snapshot()` returns with missing recovery/sleep data if Garmin API call fails
+- Need retry logic or clear flagging of missing data
 
 ### 3. Rehab sessions not pushed to Garmin calendar
-- **Problem:** Rehab sessions are skipped with "unknown workout type" when pushing to Garmin
-- **Fix:** Add rehab as a supported workout type, or bundle rehab exercises into strength sessions
-- **Files:** `workout_builder.py`, `server.py` - `push_plan_to_garmin()`
+- Rehab sessions skipped with "unknown workout type" when pushing to Garmin
+- Need to add rehab as supported workout type or bundle into strength sessions
 
-### 4. Coach doesn't flag missed sessions
-- **Problem:** When athlete misses a planned session (e.g., PM strength), coach doesn't notice or ask about it
-- **Fix:** In `get_coaching_snapshot()`, compare planned vs actual and surface missed sessions. Coach should proactively ask "You missed X yesterday - what happened?"
-- **Files:** `server.py` - `get_coaching_snapshot()`, coaching behavior in CLAUDE.md
-
-### ~~5. Strength workouts missing rest after warmup~~ FIXED
-- **Problem:** Strength sessions go from warmup straight into the first working set with no lap/rest marker
-- **Fix:** Added REST step (lap button) after warmup, before first exercise.
-- **Files:** `workout_builder.py` - `build_strength_workout()`
-
-### ~~6. Long outdoor rides shouldn't have warmup section~~ FIXED
-- **Problem:** Long outdoor rides include a warmup section which messes with lap timing on Garmin
-- **Fix:** Added `is_long_outdoor_ride()` detection. Long Z2 rides (90+ min easy) skip warmup/cooldown.
-- **Files:** `workout_builder.py` - `build_cycling_workout()`
+### ~~4. Coach doesn't flag missed sessions~~ FIXED
+- `_compare_planned_actual()` now surfaces anomalies (missing, type_mismatch, duration_delta, unplanned)
+- Curiosity Protocol in CLAUDE.md guides the coach to ASK about anomalies rather than auto-resolve

@@ -8,7 +8,6 @@ Registers MCP tools for:
 Also contains helper functions:
 - _compare_planned_actual
 - _get_strength_sync_summary
-- _interpret_fitness_metrics
 - _parse_readiness_for_snapshot
 - _readiness_to_recommendation
 - _build_adaptation_signals
@@ -25,6 +24,7 @@ from planner import (
     load_athlete,
     load_methodology,
     load_coaching_log,
+    get_coaching_context,
 )
 from rules import (
     check_weekly_compliance,
@@ -69,7 +69,11 @@ from tools.strength_tools import _get_strength_baseline_data
 # ---------------------------------------------------------------------------
 
 def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
-    """Compare planned sessions against actual activities."""
+    """Compare planned sessions against actual activities.
+
+    Surfaces anomalies for LLM reasoning instead of drawing conclusions.
+    Status values: matched, partial, missing, unplanned, type_mismatch, pending.
+    """
     if not plan or not plan.get('days'):
         return {'status': 'no_plan', 'note': 'No weekly plan to compare against'}
 
@@ -78,10 +82,12 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
         'sessions_completed': 0,
         'sessions_missed': 0,
         'sessions_pending': 0,
-        'gaps': [],
-        'surpluses': [],
+        'anomalies': [],
         'details': []
     }
+
+    # Build set of planned dates to detect unplanned activities later
+    planned_dates = set()
 
     for day_str, day_data in plan.get('days', {}).items():
         try:
@@ -90,9 +96,28 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
             continue
 
         planned = day_data.get('planned', {})
-        if not planned or planned.get('type', '').lower() == 'rest':
+        is_rest_day = not planned or 'rest' in planned.get('type', '').lower()
+
+        if is_rest_day:
+            # Check for unplanned activity on rest day
+            day_activities = [a for a in activities if a.get('date') == day_str]
+            if day_activities and day_date <= today:
+                for act in day_activities:
+                    comparison['anomalies'].append({
+                        'date': day_str,
+                        'flag': 'unplanned',
+                        'activity_type': act.get('type'),
+                        'duration_mins': act.get('duration_mins', 0),
+                    })
+                    comparison['details'].append({
+                        'date': day_str,
+                        'status': 'unplanned',
+                        'actual': act.get('type'),
+                        'duration_actual': act.get('duration_mins', 0),
+                    })
             continue
 
+        planned_dates.add(day_str)
         comparison['sessions_planned'] += 1
 
         # Check if this day has passed
@@ -105,38 +130,90 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
             })
             continue
 
-        # Find matching activity
+        # Find matching activities (all activities for this day)
         day_activities = [a for a in activities if a.get('date') == day_str]
 
         if day_activities:
             comparison['sessions_completed'] += 1
-            actual_type = day_activities[0].get('type', 'unknown')
-            actual_duration = day_activities[0].get('duration_mins', 0)
+            planned_type = planned.get('type', '')
             planned_duration = planned.get('duration_mins', 0)
 
-            comparison['details'].append({
+            # Find best-matching activity (prefer type match, then first)
+            best_match = day_activities[0]
+            for act in day_activities:
+                if act.get('type', '').lower() == planned_type.lower():
+                    best_match = act
+                    break
+
+            actual_type = best_match.get('type', 'unknown')
+            actual_duration = best_match.get('duration_mins', 0)
+
+            # Determine status and detect anomalies for best match
+            detail = {
                 'date': day_str,
-                'status': 'completed',
-                'planned': planned.get('type'),
-                'actual': actual_type,
+                'planned_type': planned_type,
+                'actual_type': actual_type,
                 'duration_planned': planned_duration,
                 'duration_actual': actual_duration,
-            })
+            }
 
-            # Check if duration significantly different
+            # Type mismatch detection (e.g., planned=race, actual=cycling)
+            if planned_type and actual_type and planned_type.lower() != actual_type.lower():
+                detail['status'] = 'type_mismatch'
+                comparison['anomalies'].append({
+                    'date': day_str,
+                    'flag': 'type_mismatch',
+                    'planned_type': planned_type,
+                    'actual_type': actual_type,
+                })
+            else:
+                detail['status'] = 'matched'
+
+            # Duration delta (always include when both values present)
             if planned_duration and actual_duration:
-                diff_pct = (actual_duration - planned_duration) / planned_duration * 100
-                if diff_pct < -30:
-                    comparison['gaps'].append(f"{day_str}: {planned.get('type')} was shorter than planned ({actual_duration}min vs {planned_duration}min)")
-                elif diff_pct > 30:
-                    comparison['surpluses'].append(f"{day_str}: {planned.get('type')} was longer than planned ({actual_duration}min vs {planned_duration}min)")
+                delta_pct = round(
+                    (actual_duration - planned_duration) / planned_duration * 100, 1
+                )
+                detail['duration_delta_pct'] = delta_pct
+
+                if delta_pct < -30:
+                    detail['status'] = 'partial' if detail['status'] == 'matched' else detail['status']
+                    comparison['anomalies'].append({
+                        'date': day_str,
+                        'flag': 'duration_delta',
+                        'planned_mins': planned_duration,
+                        'actual_mins': actual_duration,
+                        'delta_pct': delta_pct,
+                    })
+                elif delta_pct > 30:
+                    comparison['anomalies'].append({
+                        'date': day_str,
+                        'flag': 'duration_delta',
+                        'planned_mins': planned_duration,
+                        'actual_mins': actual_duration,
+                        'delta_pct': delta_pct,
+                    })
+
+            # Include all activities for the day (not just best match)
+            if len(day_activities) > 1:
+                detail['all_activities'] = [
+                    {'type': a.get('type', 'unknown'), 'duration_mins': a.get('duration_mins', 0)}
+                    for a in day_activities
+                ]
+
+            comparison['details'].append(detail)
         else:
             comparison['sessions_missed'] += 1
-            comparison['gaps'].append(f"{day_str}: Missed {planned.get('type')}")
+            comparison['anomalies'].append({
+                'date': day_str,
+                'flag': 'missing',
+                'planned_type': planned.get('type'),
+                'planned_mins': planned.get('duration_mins', 0),
+            })
             comparison['details'].append({
                 'date': day_str,
-                'status': 'missed',
-                'planned': planned.get('type'),
+                'status': 'missing',
+                'planned_type': planned.get('type'),
             })
 
     comparison['completion_rate'] = (
@@ -198,39 +275,8 @@ def _get_strength_sync_summary(activities: list) -> dict:
         return {'status': 'error', 'message': str(e)}
 
 
-def _interpret_fitness_metrics(metrics: dict) -> str:
-    """Generate coaching interpretation of fitness metrics."""
-    insights = []
-
-    # TSB interpretation
-    tsb = metrics.get('tsb', 0)
-    if tsb > 15:
-        insights.append("Very fresh - consider adding stimulus")
-    elif tsb > 0:
-        insights.append("Fresh and ready for quality work")
-    elif tsb > -15:
-        insights.append("Manageable fatigue - normal training OK")
-    elif tsb > -30:
-        insights.append("Fatigued - monitor recovery")
-    else:
-        insights.append("Heavy fatigue - recovery day recommended")
-
-    # ACWR interpretation
-    acwr_status = metrics.get('acwr_status', '')
-    if acwr_status == 'optimal':
-        insights.append("Load in sweet spot (0.8-1.3)")
-    elif acwr_status == 'low':
-        insights.append("Load is low - safe to build")
-    elif acwr_status == 'elevated':
-        insights.append("Load spike - caution advised")
-    elif acwr_status == 'danger':
-        insights.append("HIGH INJURY RISK - reduce load")
-
-    return "; ".join(insights)
-
-
 def _parse_readiness_for_snapshot(readiness_data: dict) -> dict:
-    """Parse readiness data for snapshot."""
+    """Parse readiness data for snapshot. Returns structured data, no prescriptions."""
     if not readiness_data:
         return {'status': 'unavailable'}
 
@@ -240,20 +286,7 @@ def _parse_readiness_for_snapshot(readiness_data: dict) -> dict:
         'hrv_status': readiness_data.get('hrvStatus'),
         'sleep_score': readiness_data.get('sleepScore'),
         'recovery_time_mins': readiness_data.get('recoveryTime'),
-        'recommendation': _readiness_to_recommendation(readiness_data.get('level', ''))
     }
-
-
-def _readiness_to_recommendation(level: str) -> str:
-    """Convert readiness level to coaching recommendation."""
-    recommendations = {
-        'PRIME': 'Excellent recovery - ideal for hard session or test',
-        'HIGH': 'Good recovery - quality training supported',
-        'MODERATE': 'Normal recovery - regular training OK',
-        'LOW': 'Poor recovery - consider easier session or rest',
-        'POOR': 'Very low recovery - rest day recommended',
-    }
-    return recommendations.get(level, 'Check Garmin for details')
 
 
 def _build_adaptation_signals(
@@ -502,16 +535,21 @@ def _generate_sport_blend_recommendation(sports_analysis: dict, current_block: d
 @mcp.tool()
 def get_compliance_report(days: int = 7) -> str:
     """
-    Generates weekly pillar compliance report.
+    Check whether the athlete is meeting their training pillars.
 
-    Analyzes recent activities against training pillars (strength, mobility,
-    long effort) and volume targets defined in training_config.json.
+    Returns compliance status for each pillar (strength, mobility, long effort)
+    plus safety warnings (consecutive hard days, rest after races). Low compliance
+    may indicate the plan is too ambitious or life is getting in the way — the
+    coach should investigate before adjusting.
+
+    Use get_coaching_snapshot() for full context; use this for a focused pillar check.
 
     Args:
         days: Number of days to analyze (default 7 for weekly report)
 
     Returns:
-        JSON with compliance status for each pillar, deficits, and safety warnings.
+        JSON with compliance status per pillar, deficits, safety warnings, and
+        upcoming events.
     """
     try:
         today = date.today()
@@ -556,19 +594,20 @@ def get_compliance_report(days: int = 7) -> str:
 @mcp.tool()
 def get_coaching_score() -> str:
     """
-    Calculate overall coaching effectiveness score.
+    Self-assessment: is the coaching working?
 
-    Measures how well the coaching is working across 4 dimensions:
-    - Progress (40%): Is the athlete on track for their goals? (CTL trajectory)
-    - Health (30%): Is the athlete staying healthy? (injuries, ACWR)
-    - Achievability (20%): Is the plan realistic? (compliance rate)
-    - Adaptation (10%): Are we learning what works? (response patterns)
+    Scores coaching effectiveness across 4 dimensions:
+    - Progress (40%): CTL trajectory toward A-race goal
+    - Health (30%): Injury status and ACWR safety
+    - Achievability (20%): Compliance rate — is the plan realistic?
+    - Adaptation (10%): Are athlete response patterns being logged?
 
-    This is a META-TOOL for coaching self-assessment. Use to evaluate
-    whether the coaching approach is effective and identify weak areas.
+    Use periodically (weekly or after plan changes) to catch problems early.
+    A declining score means something needs to change — investigate the weakest
+    component.
 
     Returns:
-        JSON with component scores, overall score, and coaching feedback.
+        JSON with overall score, component breakdown, trend, and feedback.
     """
     try:
         today = date.today()
@@ -867,28 +906,24 @@ def get_coaching_score() -> str:
 @mcp.tool()
 def get_coaching_snapshot() -> str:
     """
-    MANDATORY FIRST CALL before making any coaching recommendations.
+    MANDATORY FIRST CALL before any coaching recommendation.
 
-    Returns a comprehensive snapshot of the athlete's current state including:
-    - Current weekly plan (what's planned)
-    - Activities done this week (what's actual)
-    - Planned vs actual comparison (gaps/surpluses)
-    - Fitness metrics (CTL, ATL, TSB, ACWR)
-    - Compliance status (pillars met/missing)
-    - Recovery status (today's readiness)
-    - Sport priority breakdown (for multi-sport athletes)
+    Returns everything needed to coach this athlete right now:
+    - Weekly plan vs actual activities (with anomalies to investigate)
+    - Fitness metrics: CTL, ATL, TSB, ACWR (overall + per-sport)
+    - Load hierarchy: overall ACWR safety, sport-specific spike detection
+    - Compliance, recovery, sleep (with 30-day trend)
+    - Adaptation signals for load personalization
+    - Sport priority breakdown (multi-sport volume distribution)
     - Active injuries and restrictions
+    - Coaching memory: active decisions, pending approvals, adaptation patterns
 
-    This prevents the coaching error of proposing plans without seeing current state.
-
-    Multi-sport handling:
-    - Analyzes all upcoming races by sport type
-    - Calculates relative priority based on days until race + priority level
-    - Recommends weekly volume distribution across sports
-    - Identifies shared sessions (strength, mobility) vs sport-specific
+    The planned_vs_actual.anomalies array flags things that need attention:
+    type mismatches, duration deltas, missing sessions, unplanned activities.
+    Investigate anomalies with the athlete before drawing conclusions.
 
     Returns:
-        JSON with complete coaching context. Check this BEFORE making any recommendations.
+        JSON with complete coaching context. Always check this first.
     """
     try:
         today = date.today()
@@ -962,39 +997,26 @@ def get_coaching_snapshot() -> str:
                         'tsb': sm['tsb'], 'acwr': sm['acwr'],
                     }
 
-            # Build coaching insight with clear hierarchy
-            insight_parts = []
-            # Overall first (injury gate)
+            # Structured ACWR status (zone + safety boolean, no prose)
             overall_acwr = overall_metrics.get('acwr', 0)
             overall_ctl = overall_metrics.get('ctl', 0)
-            insight_parts.append(
-                f"Overall CTL {overall_ctl} (total body stress). "
-                f"Overall ACWR {overall_acwr} ({overall_metrics.get('acwr_status', 'unknown')}) — "
-                f"this is the PRIMARY injury prevention gate"
-            )
-            # Sport-specific (race readiness + sport-specific spikes)
-            for sp, sm in sport_fitness.items():
-                if sm['ctl'] > 0:
-                    insight_parts.append(f"{sp.capitalize()} CTL {sm['ctl']}, ACWR {sm['acwr']}")
-                else:
-                    insight_parts.append(f"No {sp} chronic load — return-to-{sp} protocol if resuming")
-
-            coaching_insight = '. '.join(insight_parts)
+            acwr_zone = overall_metrics.get('acwr_status', 'unknown')
 
             fitness_metrics = {
                 'overall': {k: v for k, v in overall_metrics.items()},
+                'acwr_status': {
+                    'value': round(overall_acwr, 2),
+                    'zone': acwr_zone,
+                    'safe': acwr_zone in ('optimal', 'low'),
+                },
                 'by_sport': sport_fitness,
                 'load_hierarchy': {
-                    'description': 'Check in order: 1) Overall ACWR (total body injury gate), '
-                                   '2) Sport-specific ACWR (sport spike detection), '
-                                   '3) Sport-specific CTL (race readiness)',
-                    'overall_acwr_safe': overall_metrics.get('acwr_status') in ['optimal', 'low'],
+                    'overall_acwr_safe': acwr_zone in ('optimal', 'low'),
                     'sport_acwr_concerns': [
                         sp for sp, sm in sport_fitness.items()
                         if sm.get('acwr', 0) > 1.3 or (sm['ctl'] == 0 and sm['atl'] > 0)
                     ],
                 },
-                'coaching_insight': coaching_insight,
             }
         else:
             overall_metrics = {}
@@ -1314,6 +1336,18 @@ def get_coaching_snapshot() -> str:
                 'has_injuries_needing_rehab': any(i.get('rehab_protocol') for i in relevant_injuries),
             },
         }
+
+        # Coaching memory (continuity across sessions)
+        try:
+            coaching_ctx = get_coaching_context()
+            snapshot['coaching_memory'] = {
+                'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
+                'pending_approvals': coaching_ctx.get('pending_approvals', []),
+                'adaptation_patterns': coaching_ctx.get('response_patterns', []),
+                'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+            }
+        except Exception:
+            snapshot['coaching_memory'] = {'status': 'unavailable'}
 
         return json.dumps(snapshot, indent=2)
 

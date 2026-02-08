@@ -117,14 +117,17 @@ def get_training_readiness(for_date: str = None) -> str:
 @mcp.tool()
 def get_load_status() -> str:
     """
-    Get comprehensive load status for training decisions.
+    Quick check: is the athlete ready to train today?
 
-    Uses Garmin's Training Readiness and recent activity data to provide
-    load context and recommendations for today's training intensity.
+    Returns readiness score/level, acute load, load trend, and ACWR-like
+    ratio from recent vs prior week volume. Includes warnings for elevated
+    load ratio (> 1.3 = injury risk), prolonged recovery time, or poor HRV.
 
-    Returns:
-        JSON with: readiness (score/level), acute_load, load_trend,
-        recommendation, and any warnings.
+    ACWR zones: < 0.8 undertrained, 0.8-1.3 sweet spot, > 1.3 elevated risk.
+    Check overall ACWR first (total body gate), then sport-specific if needed.
+
+    Use get_coaching_snapshot() for full context including plan comparison,
+    fitness metrics, and coaching memory.
     """
     try:
         today = date.today()
@@ -214,25 +217,21 @@ def get_load_status() -> str:
 @mcp.tool()
 def get_fitness_status(days: int = 90) -> str:
     """
-    Get comprehensive fitness status with CTL, ATL, TSB, and ACWR.
+    Detailed fitness analysis: CTL, ATL, TSB, ACWR — overall and per-sport.
 
-    Science-based metrics for training load management:
-    - CTL (Chronic Training Load): Your fitness level (42-day weighted average)
-    - ATL (Acute Training Load): Your fatigue level (7-day weighted average)
-    - TSB (Training Stress Balance): Your form (CTL - ATL). Positive = fresh, negative = fatigued
-    - ACWR (Acute:Chronic Workload Ratio): Injury risk indicator (0.8-1.3 is sweet spot)
+    CTL (fitness, 42d average), ATL (fatigue, 7d average), TSB (form = CTL - ATL),
+    ACWR (injury risk). Positive TSB = fresh, negative = fatigued.
+
+    Includes per-sport breakdown (cycling, running, strength) to catch sport-specific
+    spikes. An athlete with zero running CTL attempting a run has dangerous running
+    ACWR even if overall ACWR is safe.
 
     Args:
-        days: Number of days to analyze for trend (default 90)
+        days: Number of days for trend analysis (default 90)
 
     Returns:
-        JSON with fitness metrics, trend analysis, and recommendations.
-
-    Use this to:
-    - Understand current fitness level relative to history
-    - Check if training load is in safe range (ACWR)
-    - See if fitness is building toward race goals
-    - Determine if athlete is fresh (positive TSB) or fatigued (negative TSB)
+        JSON with overall + per-sport metrics, trend direction, data quality,
+        and contextual insights.
     """
     try:
         # Load fitness history

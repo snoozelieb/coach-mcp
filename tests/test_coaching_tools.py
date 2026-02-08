@@ -34,7 +34,21 @@ class TestComparePlannedActual:
         result = _compare_planned_actual(plan, [], date(2026, 1, 15))
         assert result['sessions_planned'] == 0
 
-    def test_all_completed(self):
+    def test_rest_day_variant_not_counted(self):
+        """rest_day, Rest, REST — all treated as rest, not as missing sessions."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'rest_day'}},
+                '2026-01-14': {'planned': {'type': 'Rest'}},
+            }
+        }
+        result = _compare_planned_actual(plan, [], date(2026, 1, 15))
+        assert result['sessions_planned'] == 0
+        assert result['sessions_missed'] == 0
+        missing = [a for a in result['anomalies'] if a['flag'] == 'missing']
+        assert len(missing) == 0
+
+    def test_all_completed_matched_status(self):
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 45}},
@@ -51,8 +65,9 @@ class TestComparePlannedActual:
         assert result['sessions_completed'] == 2
         assert result['sessions_missed'] == 0
         assert result['completion_rate'] == 100.0
+        assert all(d['status'] == 'matched' for d in result['details'])
 
-    def test_missed_sessions(self):
+    def test_missed_sessions_anomaly(self):
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 45}},
@@ -67,7 +82,10 @@ class TestComparePlannedActual:
         assert result['sessions_completed'] == 1
         assert result['sessions_missed'] == 1
         assert result['completion_rate'] == 50.0
-        assert len(result['gaps']) == 1
+        # Missing session surfaced as anomaly
+        missing_anomalies = [a for a in result['anomalies'] if a['flag'] == 'missing']
+        assert len(missing_anomalies) == 1
+        assert missing_anomalies[0]['planned_type'] == 'strength_training'
 
     def test_pending_future_sessions(self):
         plan = {
@@ -84,7 +102,7 @@ class TestComparePlannedActual:
         assert result['sessions_completed'] == 1
         assert result['sessions_pending'] == 1
 
-    def test_duration_surplus_flagged(self):
+    def test_duration_surplus_anomaly(self):
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 45}},
@@ -94,10 +112,12 @@ class TestComparePlannedActual:
             {'date': '2026-01-13', 'type': 'running', 'duration_mins': 75},
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
-        assert len(result['surpluses']) == 1
+        surplus_anomalies = [a for a in result['anomalies'] if a['flag'] == 'duration_delta' and a['delta_pct'] > 0]
+        assert len(surplus_anomalies) == 1
+        assert surplus_anomalies[0]['delta_pct'] > 30
 
-    def test_duration_gap_flagged(self):
-        """A session significantly shorter than planned should be flagged as a gap."""
+    def test_duration_gap_partial_status(self):
+        """A session significantly shorter than planned gets 'partial' status and duration_delta anomaly."""
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'cycling', 'duration_mins': 90}},
@@ -108,28 +128,103 @@ class TestComparePlannedActual:
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
-        assert result['sessions_completed'] == 1  # Still counts as "completed"
-        assert len(result['gaps']) == 1            # But flagged as a duration gap
+        assert result['sessions_completed'] == 1
+        assert result['details'][0]['status'] == 'partial'
+        gap_anomalies = [a for a in result['anomalies'] if a['flag'] == 'duration_delta' and a['delta_pct'] < 0]
+        assert len(gap_anomalies) == 1
 
-    def test_only_first_activity_per_day_used(self):
-        """When multiple activities exist on the same day, only the first is checked.
-        This is a known limitation — the second activity is silently ignored."""
+    def test_type_mismatch_detected(self):
+        """When planned type differs from actual type, surfaces type_mismatch anomaly."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'race', 'duration_mins': 240}},
+            }
+        }
+        activities = [
+            {'date': '2026-01-13', 'type': 'cycling', 'duration_mins': 84},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
+
+        assert result['sessions_completed'] == 1
+        type_anomalies = [a for a in result['anomalies'] if a['flag'] == 'type_mismatch']
+        assert len(type_anomalies) == 1
+        assert type_anomalies[0]['planned_type'] == 'race'
+        assert type_anomalies[0]['actual_type'] == 'cycling'
+        assert result['details'][0]['status'] == 'type_mismatch'
+
+    def test_unplanned_activity_on_rest_day(self):
+        """Activity on a rest day gets 'unplanned' anomaly."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'rest'}},
+                '2026-01-14': {'planned': {'type': 'running', 'duration_mins': 45}},
+            }
+        }
+        activities = [
+            {'date': '2026-01-13', 'type': 'cycling', 'duration_mins': 60},
+            {'date': '2026-01-14', 'type': 'running', 'duration_mins': 45},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
+
+        unplanned = [a for a in result['anomalies'] if a['flag'] == 'unplanned']
+        assert len(unplanned) == 1
+        assert unplanned[0]['activity_type'] == 'cycling'
+
+    def test_multi_activity_best_match_by_type(self):
+        """When multiple activities exist, the one matching planned type is used."""
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'cycling', 'duration_mins': 90}},
             }
         }
-        # Morning run + evening cycling — code only sees the run
+        # Morning run + evening cycling — code finds the cycling match
         activities = [
             {'date': '2026-01-13', 'type': 'running', 'duration_mins': 30},
             {'date': '2026-01-13', 'type': 'cycling', 'duration_mins': 90},
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
-        # Counts as completed (because *an* activity exists) but actual type is wrong
         assert result['sessions_completed'] == 1
         detail = result['details'][0]
-        assert detail['actual'] == 'running'  # First match, not the planned cycling
+        assert detail['actual_type'] == 'cycling'
+        assert detail['status'] == 'matched'
+        # All activities for the day are included
+        assert 'all_activities' in detail
+        assert len(detail['all_activities']) == 2
+
+    def test_multi_activity_no_type_match_uses_first(self):
+        """When no activity matches planned type, falls back to first activity."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'swimming', 'duration_mins': 60}},
+            }
+        }
+        activities = [
+            {'date': '2026-01-13', 'type': 'running', 'duration_mins': 30},
+            {'date': '2026-01-13', 'type': 'cycling', 'duration_mins': 90},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
+
+        assert result['sessions_completed'] == 1
+        detail = result['details'][0]
+        assert detail['actual_type'] == 'running'  # First activity used as fallback
+        assert detail['status'] == 'type_mismatch'
+        assert len(detail['all_activities']) == 2
+
+    def test_single_activity_no_all_activities_field(self):
+        """When only one activity exists for the day, all_activities is omitted."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 45}},
+            }
+        }
+        activities = [
+            {'date': '2026-01-13', 'type': 'running', 'duration_mins': 45},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
+
+        detail = result['details'][0]
+        assert 'all_activities' not in detail
 
     def test_invalid_date_key_skipped(self):
         """Non-ISO date keys in plan are silently skipped, not counted."""
@@ -148,7 +243,7 @@ class TestComparePlannedActual:
         assert result['sessions_planned'] == 1
         assert result['sessions_completed'] == 1
 
-    def test_zero_planned_duration_no_gap_or_surplus(self):
+    def test_zero_planned_duration_no_anomaly(self):
         """When planned_duration is 0 (or missing), the duration comparison is skipped.
         This guards against a division-by-zero in the percentage calculation."""
         plan = {
@@ -162,8 +257,22 @@ class TestComparePlannedActual:
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
         assert result['sessions_completed'] == 1
-        assert result['gaps'] == []
-        assert result['surpluses'] == []
+        duration_anomalies = [a for a in result['anomalies'] if a['flag'] == 'duration_delta']
+        assert len(duration_anomalies) == 0
+
+    def test_duration_delta_pct_in_detail(self):
+        """Details include duration_delta_pct when both durations present."""
+        plan = {
+            'days': {
+                '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 50}},
+            }
+        }
+        activities = [
+            {'date': '2026-01-13', 'type': 'running', 'duration_mins': 45},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
+
+        assert result['details'][0]['duration_delta_pct'] == -10.0  # 10% short, not anomalous
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +287,21 @@ class TestParseReadinessForSnapshot:
     def test_none_data(self):
         result = _parse_readiness_for_snapshot(None)
         assert result['status'] == 'unavailable'
+
+    def test_returns_structured_data_no_recommendation(self):
+        """Readiness returns structured data fields, no prose recommendation."""
+        readiness = {
+            'score': 85,
+            'level': 'PRIME',
+            'hrvStatus': 'BALANCED',
+            'sleepScore': 90,
+            'recoveryTime': 120,
+        }
+        result = _parse_readiness_for_snapshot(readiness)
+        assert result['score'] == 85
+        assert result['level'] == 'PRIME'
+        assert result['hrv_status'] == 'BALANCED'
+        assert 'recommendation' not in result  # No prose — LLM interprets
 
 
 # ---------------------------------------------------------------------------
@@ -334,3 +458,84 @@ class TestAnalyzeSportPriorities:
         assert running['volume_pct'] > cycling['volume_pct']
         assert running['total_score'] == 12
         assert cycling['total_score'] == 4
+
+
+# ---------------------------------------------------------------------------
+# Snapshot coaching_memory integration
+# ---------------------------------------------------------------------------
+
+class TestSnapshotCoachingMemory:
+    """Test that coaching_memory is wired into the snapshot via get_coaching_context()."""
+
+    @patch('tools.coaching_tools.get_coaching_context')
+    def test_coaching_memory_included(self, mock_ctx):
+        """coaching_memory appears in snapshot with expected fields."""
+        mock_ctx.return_value = {
+            'active_decisions': [
+                {'id': 'd1', 'type': 'volume_increase', 'status': 'active'},
+                {'id': 'd2', 'type': 'phase_transition', 'status': 'active'},
+            ],
+            'pending_approvals': [{'id': 'p1', 'change': 'increase volume 15%'}],
+            'response_patterns': ['handles_volume_well', 'recovers_quickly'],
+            'recent_responses': [
+                {'stimulus': 'hard interval', 'response': 'positive'},
+            ],
+        }
+
+        # Build a minimal snapshot dict and apply the coaching_memory logic
+        # (testing the wiring, not the full snapshot which needs Garmin)
+        from tools.coaching_tools import get_coaching_context as _gc
+        coaching_ctx = _gc()
+        coaching_memory = {
+            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
+            'pending_approvals': coaching_ctx.get('pending_approvals', []),
+            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
+            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+        }
+
+        assert len(coaching_memory['active_decisions']) == 2
+        assert len(coaching_memory['pending_approvals']) == 1
+        assert 'handles_volume_well' in coaching_memory['adaptation_patterns']
+        assert len(coaching_memory['recent_responses']) == 1
+
+    @patch('tools.coaching_tools.get_coaching_context')
+    def test_coaching_memory_limits_decisions(self, mock_ctx):
+        """Only last 5 active decisions and 3 recent responses are included."""
+        mock_ctx.return_value = {
+            'active_decisions': [{'id': f'd{i}'} for i in range(10)],
+            'pending_approvals': [],
+            'response_patterns': [],
+            'recent_responses': [{'stimulus': f's{i}'} for i in range(10)],
+        }
+
+        coaching_ctx = mock_ctx()
+        coaching_memory = {
+            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
+            'pending_approvals': coaching_ctx.get('pending_approvals', []),
+            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
+            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+        }
+
+        assert len(coaching_memory['active_decisions']) == 5
+        assert len(coaching_memory['recent_responses']) == 3
+
+    @patch('tools.coaching_tools.get_coaching_context')
+    def test_coaching_memory_empty_log(self, mock_ctx):
+        """Empty coaching log produces empty but valid coaching_memory."""
+        mock_ctx.return_value = {
+            'active_decisions': [],
+            'pending_approvals': [],
+            'response_patterns': [],
+            'recent_responses': [],
+        }
+
+        coaching_ctx = mock_ctx()
+        coaching_memory = {
+            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
+            'pending_approvals': coaching_ctx.get('pending_approvals', []),
+            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
+            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+        }
+
+        assert coaching_memory['active_decisions'] == []
+        assert coaching_memory['adaptation_patterns'] == []

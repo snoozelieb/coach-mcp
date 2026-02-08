@@ -17,18 +17,15 @@ import json
 @mcp.tool()
 def get_planning_context() -> str:
     """
-    Assembles complete context for LLM training planning.
+    Full context for building or adjusting a training plan.
 
-    Returns comprehensive data including:
-    - WHO: Athlete profile (personal, life constraints, preferences, baseline)
-    - WHAT: Current training block and upcoming events
-    - HOW: Training methodology (pillars, safety constraints)
-    - Recent activities (last 5 weeks)
-    - Current week's compliance status
-    - Today's recovery metrics
-    - Any pending suggestions
+    Returns WHO (athlete profile, constraints, injuries), WHAT (current block,
+    upcoming events, A-race requirements), HOW (pillars, safety constraints,
+    race templates), recent activities, compliance, recovery, and coaching
+    continuity (active decisions, adaptation patterns).
 
-    Use this before generating or adjusting training plans.
+    Use this when creating a new weekly plan or making significant plan changes.
+    For quick coaching checks, use get_coaching_snapshot() instead.
     """
     try:
         today = date.today()
@@ -189,17 +186,16 @@ def get_planning_context() -> str:
 @mcp.tool()
 def get_periodization_status() -> str:
     """
-    Get current position in the season periodization plan.
+    Where are we in the season? Current phase, progress, and what comes next.
 
-    Shows:
-    - Current phase and week within phase
-    - Days/weeks until A-race
-    - Remaining phases before race
-    - Current vs target fitness trajectory
-    - Phase-specific guidance (key sessions, intensity targets)
+    Returns current phase (base/build/peak/taper), week within phase, days
+    until A-race, remaining phases, fitness trajectory, and phase-specific
+    guidance (key sessions, intensity targets, volume trend).
 
-    Use this to understand WHERE we are in the season and WHAT the
-    current phase demands. The LLM can then adapt weekly plans accordingly.
+    The current phase determines training priorities: base = volume over
+    intensity, build = race-specific intensity, peak = race simulation,
+    taper = sharp volume reduction. Use this to ensure weekly plans align
+    with the season plan.
     """
     try:
         today = date.today()
@@ -335,23 +331,17 @@ def get_periodization_status() -> str:
 @mcp.tool()
 def get_weekly_prescription() -> str:
     """
-    Get this week's training prescription based on periodization and fitness.
+    What should this week look like? Volume, intensity, and key sessions.
 
-    Combines:
-    - Current phase demands (from periodization)
-    - Current fitness status (CTL, ACWR, TSB)
-    - Recovery status (Garmin readiness)
-    - Pillar compliance (what's behind?)
+    Combines phase demands, fitness status (CTL/ACWR/TSB), recovery readiness,
+    and pillar compliance into a weekly prescription. Volume is auto-adjusted:
+    reduced if ACWR > 1.3 (injury risk), increased if ACWR < 0.8 (undertrained).
 
-    Returns a PRESCRIPTION that the LLM can adapt based on conversation
-    with the athlete. This is the bridge between block planning and daily execution.
+    The prescription is a starting point — adapt it through conversation with
+    the athlete based on how they're feeling, life events, and injuries.
 
-    The prescription includes:
-    - Target volume for the week
-    - Number and type of key sessions
-    - Intensity distribution targets
-    - Flexibility notes (what can be moved/swapped)
-    - Constraints (injuries, life events)
+    Returns target volume, key sessions, intensity targets, pillar priorities,
+    injury constraints, life events, and flexibility notes.
     """
     try:
         today = date.today()
