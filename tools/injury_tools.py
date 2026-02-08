@@ -1,6 +1,6 @@
 """Injury tools - diagnose, research, and track injuries.
 
-Uses orthobullets.com as primary clinical reference with Wikipedia fallback.
+Uses physio-pedia.com as primary clinical reference with Wikipedia fallback.
 Diagnosis logic is delegated to the LLM — this module provides clinical context,
 severity assessment, and research content for the LLM to reason about.
 """
@@ -10,87 +10,91 @@ from web_utils import fetch_page_text, fetch_page_text_validated
 from planner import load_json_file, save_json_file, load_athlete
 from config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
                     INJURY_STATUS_OPTIONS, ATHLETE_FILE,
-                    ORTHOBULLETS_BASE_URL, ORTHOBULLETS_SPECIALTIES)
+                    PHYSIOPEDIA_BASE_URL)
 from datetime import date
 import json
 import re
+from urllib.parse import urlparse
 
 
 # ---------------------------------------------------------------------------
-# Search term mapping: body region + sublocation → orthobullets search slugs
+# Search term mapping: body region + sublocation → article names
+# Keys are physio-pedia article names (Title_Case with underscores).
+# The slug form (hyphenated) is kept alongside for Wikipedia fallback
+# and relevance checking.
 # This is *information retrieval* (what article to fetch), not diagnosis.
 # ---------------------------------------------------------------------------
 
 _SEARCH_TERM_MAP = {
     "shin": {
-        "anterior": ["anterior-tibialis-tendinitis", "shin-splints"],
-        "front": ["anterior-tibialis-tendinitis", "shin-splints"],
-        "medial": ["medial-tibial-stress-syndrome", "shin-splints"],
-        "along the bone": ["medial-tibial-stress-syndrome", "tibial-stress-fracture"],
-        "lateral": ["peroneal-tendinitis", "compartment-syndrome"],
-        "_default": ["shin-splints", "tibial-stress-fracture"],
+        "anterior": ["Anterior_Tibialis_Tendinitis", "Shin_Splints"],
+        "front": ["Anterior_Tibialis_Tendinitis", "Shin_Splints"],
+        "medial": ["Medial_Tibial_Stress_Syndrome", "Shin_Splints"],
+        "along the bone": ["Medial_Tibial_Stress_Syndrome", "Tibial_Stress_Fracture"],
+        "lateral": ["Peroneal_Tendinitis", "Compartment_Syndrome"],
+        "_default": ["Shin_Splints", "Tibial_Stress_Fracture"],
     },
     "knee": {
-        "front": ["patellofemoral-pain-syndrome", "patellar-tendinitis"],
-        "kneecap": ["patellofemoral-pain-syndrome", "chondromalacia-patella"],
-        "medial": ["medial-collateral-ligament-mcl-injury", "medial-meniscus-tear"],
-        "lateral": ["iliotibial-band-syndrome", "lateral-meniscus-tear"],
-        "behind": ["bakers-cyst", "posterior-cruciate-ligament-pcl-injury"],
-        "_default": ["knee-pain", "patellofemoral-pain-syndrome"],
+        "front": ["Patellofemoral_Pain_Syndrome", "Patellar_Tendinitis"],
+        "kneecap": ["Patellofemoral_Pain_Syndrome", "Chondromalacia_Patella"],
+        "medial": ["Medial_Collateral_Ligament_(MCL)", "Medial_Meniscus_Tear"],
+        "lateral": ["Iliotibial_Band_Syndrome", "Lateral_Meniscus_Tear"],
+        "behind": ["Baker%27s_Cyst", "Posterior_Cruciate_Ligament_(PCL)"],
+        "_default": ["Knee_Pain", "Patellofemoral_Pain_Syndrome"],
     },
     "ankle": {
-        "lateral": ["lateral-ankle-sprain", "peroneal-tendinitis"],
-        "outer": ["lateral-ankle-sprain", "peroneal-tendinitis"],
-        "medial": ["medial-ankle-sprain", "posterior-tibial-tendinitis"],
-        "achilles": ["achilles-tendinitis", "achilles-tendon-rupture"],
-        "back": ["achilles-tendinitis", "retrocalcaneal-bursitis"],
-        "front": ["anterior-ankle-impingement"],
-        "_default": ["ankle-sprain", "achilles-tendinitis"],
+        "lateral": ["Lateral_Ankle_Sprain", "Peroneal_Tendinitis"],
+        "outer": ["Lateral_Ankle_Sprain", "Peroneal_Tendinitis"],
+        "medial": ["Medial_Ankle_Sprain", "Posterior_Tibial_Tendinitis"],
+        "achilles": ["Achilles_Tendinitis", "Achilles_Tendon_Rupture"],
+        "back": ["Achilles_Tendinitis", "Retrocalcaneal_Bursitis"],
+        "front": ["Anterior_Ankle_Impingement"],
+        "_default": ["Ankle_Sprain", "Achilles_Tendinitis"],
     },
     "back": {
-        "lower": ["low-back-pain", "lumbar-disc-herniation"],
-        "lumbar": ["low-back-pain", "lumbar-disc-herniation"],
-        "mid": ["thoracic-back-pain"],
-        "thoracic": ["thoracic-back-pain"],
-        "upper": ["cervical-strain", "neck-pain"],
-        "_default": ["low-back-pain", "lumbar-disc-herniation"],
+        "lower": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
+        "lumbar": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
+        "mid": ["Thoracic_Back_Pain"],
+        "thoracic": ["Thoracic_Back_Pain"],
+        "upper": ["Cervical_Strain", "Neck_Pain"],
+        "_default": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
     },
     "shoulder": {
-        "front": ["biceps-tendinitis", "anterior-shoulder-instability"],
-        "top": ["acromioclavicular-joint-injury", "shoulder-impingement"],
-        "back": ["posterior-shoulder-instability", "infraspinatus-tear"],
-        "side": ["rotator-cuff-tendinitis", "shoulder-impingement"],
-        "_default": ["rotator-cuff-tendinitis", "shoulder-impingement"],
+        "front": ["Biceps_Tendinitis", "Anterior_Shoulder_Instability"],
+        "top": ["Acromioclavicular_Joint_Injury", "Shoulder_Impingement_Syndrome"],
+        "back": ["Posterior_Shoulder_Instability", "Infraspinatus"],
+        "side": ["Rotator_Cuff_Tendinitis", "Shoulder_Impingement_Syndrome"],
+        "_default": ["Rotator_Cuff_Tendinitis", "Shoulder_Impingement_Syndrome"],
     },
     "hip": {
-        "front": ["hip-flexor-strain", "femoroacetabular-impingement"],
-        "groin": ["hip-flexor-strain", "adductor-strain"],
-        "lateral": ["greater-trochanteric-bursitis", "gluteus-medius-tear"],
-        "side": ["greater-trochanteric-bursitis", "iliotibial-band-syndrome"],
-        "back": ["piriformis-syndrome", "hamstring-origin-tendinopathy"],
-        "buttock": ["piriformis-syndrome", "hamstring-origin-tendinopathy"],
-        "_default": ["hip-pain", "greater-trochanteric-bursitis"],
+        "front": ["Hip_Flexor_Strain", "Femoroacetabular_Impingement"],
+        "groin": ["Hip_Flexor_Strain", "Adductor_Strain"],
+        "lateral": ["Greater_Trochanteric_Pain_Syndrome", "Gluteus_Medius"],
+        "side": ["Greater_Trochanteric_Pain_Syndrome", "Iliotibial_Band_Syndrome"],
+        "back": ["Piriformis_Syndrome", "Hamstring_Tendinopathy"],
+        "buttock": ["Piriformis_Syndrome", "Hamstring_Tendinopathy"],
+        "_default": ["Hip_Pain", "Greater_Trochanteric_Pain_Syndrome"],
     },
     "foot": {
-        "heel": ["plantar-fasciitis", "calcaneal-stress-fracture"],
-        "bottom": ["plantar-fasciitis", "metatarsalgia"],
-        "arch": ["plantar-fasciitis", "posterior-tibial-tendinitis"],
-        "ball": ["metatarsalgia", "mortons-neuroma"],
-        "toes": ["turf-toe", "mortons-neuroma"],
-        "_default": ["plantar-fasciitis", "foot-pain"],
+        "heel": ["Plantar_Fasciitis", "Calcaneal_Stress_Fracture"],
+        "bottom": ["Plantar_Fasciitis", "Metatarsalgia"],
+        "arch": ["Plantar_Fasciitis", "Posterior_Tibial_Tendinitis"],
+        "ball": ["Metatarsalgia", "Morton%27s_Neuroma"],
+        "toes": ["Turf_Toe", "Morton%27s_Neuroma"],
+        "_default": ["Plantar_Fasciitis", "Foot_Pain"],
     },
     "calf": {
-        "upper": ["gastrocnemius-strain", "calf-strain"],
-        "mid": ["calf-strain", "soleus-strain"],
-        "lower": ["achilles-tendinitis", "soleus-strain"],
-        "near achilles": ["achilles-tendinitis"],
-        "_default": ["calf-strain", "achilles-tendinitis"],
+        "upper": ["Gastrocnemius", "Calf_Strain"],
+        "mid": ["Calf_Strain", "Soleus"],
+        "lower": ["Achilles_Tendinitis", "Soleus"],
+        "near achilles": ["Achilles_Tendinitis"],
+        "_default": ["Calf_Strain", "Achilles_Tendinitis"],
     },
 }
 
 
 def _build_search_terms(body_region: str, location_specific: str) -> list[str]:
-    """Build orthobullets slug search terms from body region + sublocation."""
+    """Build physio-pedia article names from body region + sublocation."""
     region_map = _SEARCH_TERM_MAP.get(body_region, {})
     location_lower = location_specific.lower() if location_specific else ""
 
@@ -124,8 +128,8 @@ def _is_relevant_content(content: str, body_region: str, search_term: str) -> bo
         return False
 
     # At least one meaningful word from search term should appear
-    # Split slug into words (e.g. "achilles-tendinitis" → ["achilles", "tendinitis"])
-    term_words = [w for w in search_term.replace('-', ' ').split() if len(w) > 3]
+    # Split article name into words (e.g. "Achilles_Tendinitis" → ["achilles", "tendinitis"])
+    term_words = [w.lower() for w in re.split(r'[-_ ]', search_term) if len(w) > 3]
     if term_words and not any(w in content_lower for w in term_words):
         return False
 
@@ -164,40 +168,57 @@ def _extract_clinical_info(content: str) -> dict:
     return {cat: findings[:5] for cat, findings in results.items() if findings}
 
 
-def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
-    """Fetch orthobullets content relevant to body region + clinical picture.
+def _is_significant_redirect(requested_url: str, final_url: str) -> bool:
+    """Check if a redirect changed the path significantly (e.g. to search/home page)."""
+    if not final_url:
+        return False
+    req_path = urlparse(requested_url).path.rstrip('/')
+    fin_path = urlparse(final_url).path.rstrip('/')
+    # Same path (possibly with trailing slash difference) is OK
+    if req_path == fin_path:
+        return False
+    # Different path means redirect to a different page
+    return True
 
-    Tries orthobullets URLs first (slug across specialties), validates content
-    is relevant (protects against redirects), falls back to Wikipedia.
+
+def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
+    """Fetch physio-pedia content relevant to body region + clinical picture.
+
+    Tries physio-pedia URLs first (predictable article names), validates content
+    is relevant and not a redirect to search/home, falls back to Wikipedia.
 
     Returns dict with keys: source, content, url, clinical_info.
+    Empty dict when nothing found (signals needs_research to caller).
     """
     location_specific = clinical_picture.get("location_specific", "")
     search_terms = _build_search_terms(body_region, location_specific)
 
-    # Try orthobullets first
-    for slug in search_terms:
-        for specialty in ORTHOBULLETS_SPECIALTIES:
-            url = f"{ORTHOBULLETS_BASE_URL}/{specialty}/{slug}"
-            try:
-                content, final_url = fetch_page_text_validated(url)
-                if _is_relevant_content(content, body_region, slug):
-                    clinical_info = _extract_clinical_info(content)
-                    return {
-                        "source": "orthobullets",
-                        "content": content[:3000],
-                        "url": final_url,
-                        "clinical_info": clinical_info,
-                    }
-            except Exception:
+    # Try physio-pedia first
+    for article_name in search_terms:
+        url = f"{PHYSIOPEDIA_BASE_URL}/{article_name}"
+        try:
+            content, final_url = fetch_page_text_validated(url)
+            if _is_significant_redirect(url, final_url):
                 continue
+            if _is_relevant_content(content, body_region, article_name):
+                clinical_info = _extract_clinical_info(content)
+                return {
+                    "source": "physio-pedia",
+                    "content": content[:3000],
+                    "url": final_url,
+                    "clinical_info": clinical_info,
+                }
+        except Exception:
+            continue
 
     # Fallback: Wikipedia
-    wiki_terms = search_terms[0].replace('-', '_') if search_terms else body_region
-    wiki_url = f"https://en.wikipedia.org/wiki/{wiki_terms}"
+    wiki_term = search_terms[0] if search_terms else body_region
+    wiki_url = f"https://en.wikipedia.org/wiki/{wiki_term}"
     try:
         content, final_url = fetch_page_text_validated(wiki_url)
-        if _is_relevant_content(content, body_region, search_terms[0] if search_terms else body_region):
+        if _is_significant_redirect(wiki_url, final_url):
+            return {}
+        if _is_relevant_content(content, body_region, wiki_term):
             clinical_info = _extract_clinical_info(content)
             return {
                 "source": "wikipedia",
@@ -209,7 +230,7 @@ def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
         pass
 
     # Nothing worked
-    return {"source": "none", "content": "", "url": "", "clinical_info": {}}
+    return {}
 
 
 def _save_diagnosis_to_profile(body_region: str, location: str,
@@ -240,12 +261,15 @@ def _save_diagnosis_to_profile(body_region: str, location: str,
         injury_entry = {
             "date": today,
             "body_region": body_region,
+            "type": body_region,  # downstream consumers (strength_tools, planning_tools) read this
             "location": location,
             "severity": severity,
             "status": "active",
             "onset": clinical_picture.get("onset", "unknown"),
             "pain_type": clinical_picture.get("pain_type", "unknown"),
             "location_specific": clinical_picture.get("location_specific", ""),
+            "restricted_activities": [],  # LLM populates after research via update_injury_status()
+            "safe_activities": [],        # LLM populates after research via update_injury_status()
         }
 
         if existing:
@@ -254,11 +278,23 @@ def _save_diagnosis_to_profile(body_region: str, location: str,
             injury_history.append(injury_entry)
             athlete['injury_history'] = injury_history
 
-        # --- coaching_notes ---
+        # --- coaching_notes (deduplicate: replace same-day same-region line) ---
         summary = f"[{today}] Injury: {location} ({body_region}), severity={severity}, onset={clinical_picture.get('onset', 'unknown')}"
         existing_notes = athlete.get('coaching_notes', '')
         if existing_notes:
-            athlete['coaching_notes'] = f"{existing_notes}\n{summary}"
+            # Check for existing line with same date + body region, replace if found
+            prefix = f"[{today}] Injury:"
+            lines = existing_notes.split('\n')
+            replaced = False
+            for i, line in enumerate(lines):
+                if line.startswith(prefix) and f"({body_region})" in line:
+                    lines[i] = summary
+                    replaced = True
+                    break
+            if replaced:
+                athlete['coaching_notes'] = '\n'.join(lines)
+            else:
+                athlete['coaching_notes'] = f"{existing_notes}\n{summary}"
         else:
             athlete['coaching_notes'] = summary
 
@@ -279,7 +315,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
 
     Phase 2 - Get clinical context for LLM diagnosis:
         Call with location + answers (JSON string) to receive severity assessment,
-        research context from orthobullets/Wikipedia, and save to athlete profile.
+        research context from physio-pedia/Wikipedia, and save to athlete profile.
         The LLM performs differential diagnosis using the returned research context.
         Example: diagnose_injury(location="shin", answers='{"onset": "Gradual", ...}')
 
@@ -370,8 +406,13 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         if not severity_reasoning:
             severity_reasoning.append("Pain only during activity, no swelling")
 
-        # Fetch research context (orthobullets → Wikipedia fallback)
+        # Fetch research context (physio-pedia → Wikipedia fallback)
         research_context = _fetch_injury_research(body_region, clinical_picture)
+
+        # Build candidate conditions from search terms used
+        search_terms = _build_search_terms(body_region,
+                                           clinical_picture.get("location_specific", ""))
+        candidate_conditions = [t.replace('_', ' ').replace('%27', "'") for t in search_terms]
 
         # Determine red flags
         red_flags = []
@@ -395,20 +436,40 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         # Save to athlete profile
         saved = _save_diagnosis_to_profile(body_region, location, severity, clinical_picture)
 
+        # Build research section with status signal
+        if research_context:
+            research_section = {
+                "research_status": "ok",
+                "source": research_context.get("source", "none"),
+                "content": research_context.get("content", ""),
+                "url": research_context.get("url", ""),
+                "clinical_info": research_context.get("clinical_info", {}),
+            }
+        else:
+            # No research found — honest signal for LLM to follow up
+            physio_urls = [f"{PHYSIOPEDIA_BASE_URL}/{t}" for t in search_terms[:2]]
+            wiki_term = search_terms[0] if search_terms else body_region
+            research_section = {
+                "research_status": "needs_research",
+                "source": "none",
+                "content": "",
+                "url": "",
+                "clinical_info": {},
+                "suggested_sources": physio_urls + [
+                    f"https://en.wikipedia.org/wiki/{wiki_term}"
+                ],
+            }
+
         return json.dumps({
             "location": location,
             "phase": "diagnosis",
             "clinical_picture": clinical_picture,
             "severity_assessment": severity,
             "severity_reasoning": severity_reasoning,
+            "candidate_conditions": candidate_conditions,
             "red_flags": red_flags if red_flags else ["None identified based on assessment"],
             "recommended_action": recommended_action,
-            "research_context": {
-                "source": research_context.get("source", "none"),
-                "content": research_context.get("content", ""),
-                "url": research_context.get("url", ""),
-                "clinical_info": research_context.get("clinical_info", {}),
-            },
+            "research_context": research_section,
             "saved_to_profile": saved,
             "red_flags_to_watch": [
                 "Pain becoming severe or constant",
@@ -429,7 +490,7 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
     """
     Research treatment protocols and recovery timelines for a specific injury.
 
-    Fetches information from orthobullets.com (primary) or Wikipedia (fallback),
+    Fetches information from physio-pedia.com (primary) or Wikipedia (fallback),
     or a directly provided URL. Each injury is researched uniquely rather than
     using static protocols.
 
@@ -444,7 +505,7 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
 
     Usage patterns:
         1. Direct URL: research_injury("shin splints", url="https://orthobullets.com/...")
-        2. Auto-search: research_injury("shin splints") - tries orthobullets then Wikipedia
+        2. Auto-search: research_injury("shin splints") - tries physio-pedia then Wikipedia
     """
     try:
         if severity.lower() not in INJURY_SEVERITY_LEVELS:
@@ -458,8 +519,8 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
             "raw_findings": [],
         }
 
-        # Format injury name for URL slugs
-        injury_slug = injury_type.lower().replace(' ', '-').replace('_', '-')
+        # Format injury name for URL patterns
+        injury_physio = injury_type.replace(' ', '_').title().replace("'S", "'s")
         injury_wiki = injury_type.replace(' ', '_')
 
         # Build list of URLs to try
@@ -468,12 +529,11 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         if url:
             sources_to_try.append({"name": "Provided URL", "url": url})
 
-        # Orthobullets: try slug across specialties
-        for specialty in ORTHOBULLETS_SPECIALTIES:
-            sources_to_try.append({
-                "name": "Orthobullets",
-                "url": f"{ORTHOBULLETS_BASE_URL}/{specialty}/{injury_slug}",
-            })
+        # Physio-pedia: predictable article URLs
+        sources_to_try.append({
+            "name": "Physio-pedia",
+            "url": f"{PHYSIOPEDIA_BASE_URL}/{injury_physio}",
+        })
 
         # Wikipedia fallback
         sources_to_try.append({
@@ -486,7 +546,10 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         for source in sources_to_try:
             try:
                 content, final_url = fetch_page_text_validated(source["url"])
-                if _is_relevant_content(content, "", injury_slug):
+                # Reject significant redirects (page probably redirected to search/home)
+                if _is_significant_redirect(source["url"], final_url):
+                    continue
+                if _is_relevant_content(content, "", injury_physio):
                     fetched_content = content
                     research_result["sources"].append(final_url)
                     break
@@ -514,8 +577,8 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
                     f"{injury_type} return to sport criteria",
                 ],
                 "recommended_sources": [
-                    "orthobullets.com",
                     "physio-pedia.com",
+                    "orthobullets.com",
                     "Your local sports physiotherapist",
                 ]
             }

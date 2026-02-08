@@ -192,9 +192,5 @@ def get_sport_group(activity_type: str) -> str:
 
 
 
-# Orthobullets clinical reference
-ORTHOBULLETS_BASE_URL = "https://www.orthobullets.com"
-ORTHOBULLETS_SPECIALTIES = [
-    "knee-and-sports", "foot-and-ankle", "shoulder-and-elbow",
-    "spine", "sports", "trauma",
-]
+# Clinical reference sources
+PHYSIOPEDIA_BASE_URL = "https://www.physio-pedia.com"
