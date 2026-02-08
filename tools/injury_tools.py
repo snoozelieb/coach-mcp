@@ -13,8 +13,11 @@ from config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
                     PHYSIOPEDIA_BASE_URL)
 from datetime import date
 import json
+import logging
 import re
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +485,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("diagnose_injury failed")
         return json.dumps({"error": str(e)})
 
 
@@ -509,7 +513,9 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
     """
     try:
         if severity.lower() not in INJURY_SEVERITY_LEVELS:
-            severity = "moderate"
+            return json.dumps({
+                'error': f'Invalid severity: {severity}. Valid options: {", ".join(INJURY_SEVERITY_LEVELS)}'
+            })
 
         research_result = {
             "injury": injury_type,
@@ -588,6 +594,7 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         return json.dumps(research_result, indent=2)
 
     except Exception as e:
+        logger.exception("research_injury failed")
         return json.dumps({"error": str(e)})
 
 
@@ -672,4 +679,5 @@ def update_injury_status(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("update_injury_status failed")
         return json.dumps({"error": str(e)})

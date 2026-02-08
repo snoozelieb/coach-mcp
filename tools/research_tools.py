@@ -6,7 +6,10 @@ from planner import load_json_file, save_json_file
 from config import DATA_DIR, EXERCISE_LIBRARY_FILE, PAGE_TEXT_MAX_CHARS
 from datetime import date
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -202,6 +205,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("research_exercise failed")
         return json.dumps({"error": str(e)})
 
 
@@ -308,6 +312,7 @@ def list_exercises(
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("list_exercises failed")
         return json.dumps({"error": str(e)})
 
 
@@ -457,4 +462,5 @@ def research_sport(sport_name: str, url: str = None) -> str:
         return json.dumps(research_result, indent=2)
 
     except Exception as e:
+        logger.exception("research_sport failed")
         return json.dumps({"error": str(e)})

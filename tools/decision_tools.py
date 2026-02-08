@@ -4,6 +4,9 @@ from mcp_app import mcp
 from planner import load_coaching_log, save_coaching_log
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -65,6 +68,7 @@ def log_coaching_decision(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("log_coaching_decision failed")
         return json.dumps({'error': str(e)})
 
 
@@ -107,6 +111,7 @@ def get_active_decisions() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_active_decisions failed")
         return json.dumps({'error': str(e)})
 
 
@@ -153,6 +158,7 @@ def update_decision_status(
         return json.dumps({'error': f'Decision {decision_id} not found'})
 
     except Exception as e:
+        logger.exception("update_decision_status failed")
         return json.dumps({'error': str(e)})
 
 
@@ -214,6 +220,7 @@ def propose_major_change(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("propose_major_change failed")
         return json.dumps({'error': str(e)})
 
 
@@ -253,6 +260,7 @@ def list_pending_approvals() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("list_pending_approvals failed")
         return json.dumps({'error': str(e)})
 
 
@@ -314,6 +322,7 @@ def approve_coaching_change(proposal_id: str) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("approve_coaching_change failed")
         return json.dumps({'error': str(e)})
 
 
@@ -361,6 +370,7 @@ def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("reject_coaching_change failed")
         return json.dumps({'error': str(e)})
 
 
@@ -413,6 +423,7 @@ def record_athlete_response(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("record_athlete_response failed")
         return json.dumps({'error': str(e)})
 
 
@@ -452,4 +463,5 @@ def get_response_patterns() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_response_patterns failed")
         return json.dumps({'error': str(e)})

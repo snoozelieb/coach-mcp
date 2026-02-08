@@ -49,3 +49,26 @@ class TestGetDailyMetrics:
 
         assert 'error' in result
         assert 'Connection timeout' in result['error']
+
+
+class TestGetActivitiesRangeDateValidation:
+    """Tests for date validation in get_activities_range."""
+
+    def test_invalid_start_date_returns_error(self):
+        from tools.data_tools import get_activities_range
+        result = json.loads(get_activities_range("not-a-date"))
+        assert 'error' in result
+        assert 'start_date' in result['error']
+
+    def test_invalid_end_date_returns_error(self):
+        from tools.data_tools import get_activities_range
+        result = json.loads(get_activities_range("2026-01-01", "bad-date"))
+        assert 'error' in result
+        assert 'end_date' in result['error']
+
+    @patch('tools.data_tools.garmin_api_call')
+    def test_valid_dates_proceed_normally(self, mock_api_call):
+        from tools.data_tools import get_activities_range
+        mock_api_call.return_value = []
+        result = json.loads(get_activities_range("2026-01-01", "2026-01-07"))
+        assert 'error' not in result

@@ -8,8 +8,11 @@ from config import (VALID_PRIORITIES, ELEVATION_SIGNIFICANCE_THRESHOLD,
                     HIGH_ALTITUDE_THRESHOLD)
 from datetime import date, timedelta
 import json
+import logging
 import re
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -115,8 +118,10 @@ def research_race(name: str = None, url: str = None) -> str:
         return json.dumps(research, indent=2)
 
     except requests.RequestException as e:
+        logger.exception("research_race failed")
         return json.dumps({'error': f'Failed to fetch URL: {str(e)}'})
     except Exception as e:
+        logger.exception("research_race failed")
         return json.dumps({'error': str(e)})
 
 
@@ -149,6 +154,7 @@ def list_races() -> str:
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("list_races failed")
         return json.dumps({'error': str(e)})
 
 
@@ -237,6 +243,7 @@ def add_race(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("add_race failed")
         return json.dumps({'error': str(e)})
 
 
@@ -281,6 +288,7 @@ def remove_race(name: str) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("remove_race failed")
         return json.dumps({'error': str(e)})
 
 
@@ -384,4 +392,5 @@ def update_race(
         return json.dumps({'error': f"No event found matching '{name}'"})
 
     except Exception as e:
+        logger.exception("update_race failed")
         return json.dumps({'error': str(e)})

@@ -33,6 +33,9 @@ from config import (
     get_sport_group,
 )
 from garmin_client import garmin_api_call
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_training_load(
@@ -516,11 +519,13 @@ def load_fitness_history() -> dict[str, Any]:
 
 
 def save_fitness_history(history: dict[str, Any]) -> None:
-    """Save fitness history to file."""
+    """Save fitness history to file (atomic write)."""
     history_path = DATA_DIR / FITNESS_HISTORY_FILE
     history['last_updated'] = date.today().isoformat()
-    with open(history_path, 'w') as f:
+    tmp_path = history_path.with_suffix('.tmp')
+    with open(tmp_path, 'w') as f:
         json.dump(history, f, indent=2)
+    tmp_path.replace(history_path)
 
 
 def update_fitness_history(

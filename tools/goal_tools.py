@@ -4,6 +4,9 @@ from parsers import parse_activities
 from rules import load_training_config
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -133,4 +136,5 @@ def get_goal_progress(days: int = 14) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_goal_progress failed")
         return json.dumps({'error': str(e)})

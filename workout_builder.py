@@ -20,6 +20,9 @@ from garminconnect.workout import (
     create_interval_step,
     create_recovery_step,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Sport type definitions
 RUNNING_SPORT = {
@@ -193,7 +196,7 @@ def get_athlete_power_zones() -> dict:
         with open(athlete_path) as f:
             athlete = json.load(f)
         return athlete.get("personal", {}).get("power_zones", {})
-    except:
+    except Exception:
         return {}
 
 
@@ -329,7 +332,7 @@ def get_athlete_running_zones() -> dict:
             "z4_threshold": [int(threshold_pace * 0.96), int(threshold_pace * 1.04)], # ±4%
             "z5_interval": [int(threshold_pace * 0.85), int(threshold_pace * 0.95)],  # 5-15% faster
         }
-    except:
+    except Exception:
         return {}
 
 

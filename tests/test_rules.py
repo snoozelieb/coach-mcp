@@ -51,13 +51,15 @@ class TestClassifyActivity:
 
         assert result['is_hard'] is True
 
-    def test_classifies_high_hr_as_hard(self):
+    def test_classifies_high_hr_as_hard_absolute_fallback(self):
+        """Without athlete_max_hr, falls back to absolute HR thresholds."""
         activity = {'type': 'running', 'duration_mins': 30, 'avg_hr': 165}
         result = classify_activity(activity)
 
         assert result['is_hard'] is True
+        assert result['hr_intensity_pct'] is None  # No athlete_max_hr
 
-    def test_classifies_high_max_hr_as_hard(self):
+    def test_classifies_high_max_hr_as_hard_absolute_fallback(self):
         activity = {'type': 'running', 'duration_mins': 30, 'max_hr': 185}
         result = classify_activity(activity)
 
@@ -77,6 +79,55 @@ class TestClassifyActivity:
         assert result['is_mobility'] is False
         assert result['is_long_effort'] is False
         assert result['is_hard'] is False
+        assert result['hr_intensity_pct'] is None
+
+    # --- Athlete-relative classification tests ---
+
+    def test_hr_intensity_pct_calculated(self):
+        """hr_intensity_pct = avg_hr / athlete_max_hr."""
+        activity = {'type': 'running', 'duration_mins': 30, 'avg_hr': 152}
+        result = classify_activity(activity, athlete_max_hr=190)
+
+        assert result['hr_intensity_pct'] == 0.8  # 152/190 = 0.8
+
+    def test_athlete_relative_hard_above_78_pct(self):
+        """Activity at >78% of max HR is hard when athlete_max_hr provided."""
+        activity = {'type': 'running', 'duration_mins': 30, 'avg_hr': 155}
+        result = classify_activity(activity, athlete_max_hr=190)
+
+        # 155/190 = 0.816 > 0.78
+        assert result['is_hard'] is True
+        assert result['hr_intensity_pct'] == 0.82
+
+    def test_athlete_relative_easy_below_78_pct(self):
+        """Activity at <78% of max HR is not hard when athlete_max_hr provided."""
+        activity = {'type': 'running', 'duration_mins': 30, 'avg_hr': 140}
+        result = classify_activity(activity, athlete_max_hr=190)
+
+        # 140/190 = 0.737 < 0.78
+        assert result['is_hard'] is False
+        assert result['hr_intensity_pct'] == 0.74
+
+    def test_athlete_relative_overrides_absolute_threshold(self):
+        """150 bpm is 'hard' by absolute threshold but 'easy' for athlete with max HR 200."""
+        activity = {'type': 'running', 'duration_mins': 30, 'avg_hr': 150}
+
+        # Without athlete_max_hr: absolute threshold (150 > 150 is False, exactly at threshold)
+        result_abs = classify_activity(activity)
+        assert result_abs['is_hard'] is False  # 150 is NOT > 150
+
+        # With athlete_max_hr=200: 150/200 = 0.75, below 0.78
+        result_rel = classify_activity(activity, athlete_max_hr=200)
+        assert result_rel['is_hard'] is False
+        assert result_rel['hr_intensity_pct'] == 0.75
+
+    def test_high_intensity_type_always_hard_regardless_of_hr(self):
+        """ultimate_disc is always hard, even with low HR, whether or not athlete_max_hr is set."""
+        activity = {'type': 'ultimate_disc', 'duration_mins': 60, 'avg_hr': 120}
+        result = classify_activity(activity, athlete_max_hr=190)
+
+        assert result['is_hard'] is True
+        assert result['hr_intensity_pct'] == 0.63  # Low relative intensity, but type is hard
 
 
 class TestCheckWeeklyCompliance:

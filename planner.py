@@ -18,6 +18,9 @@ from config import (
     COACHING_LOG_FILE,
     RACE_TEMPLATE_WINDOW_DAYS,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def load_json_file(filename: str) -> dict[str, Any]:
@@ -30,11 +33,13 @@ def load_json_file(filename: str) -> dict[str, Any]:
 
 
 def save_json_file(filename: str, data: dict[str, Any]) -> None:
-    """Save data to a JSON file in the data directory."""
+    """Save data to a JSON file in the data directory (atomic write)."""
     DATA_DIR.mkdir(exist_ok=True)
     filepath = DATA_DIR / filename
-    with open(filepath, 'w') as f:
+    tmp_path = filepath.with_suffix('.tmp')
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    tmp_path.replace(filepath)
 
 
 def load_athlete() -> dict[str, Any]:

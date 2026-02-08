@@ -6,6 +6,9 @@ from planner import (
     reject_suggestion as reject_sug,
 )
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -44,6 +47,7 @@ def propose_suggestion(
             'message': 'Suggestion saved. Awaiting user approval.'
         })
     except Exception as e:
+        logger.exception("propose_suggestion failed")
         return json.dumps({'error': str(e)})
 
 
@@ -58,6 +62,7 @@ def list_pending_suggestions() -> str:
         pending = get_suggestions()
         return json.dumps(pending, indent=2)
     except Exception as e:
+        logger.exception("list_pending_suggestions failed")
         return json.dumps({'error': str(e)})
 
 
@@ -81,6 +86,7 @@ def approve_suggestion(suggestion_id: str) -> str:
         else:
             return json.dumps({'error': f'Suggestion {suggestion_id} not found'})
     except Exception as e:
+        logger.exception("approve_suggestion failed")
         return json.dumps({'error': str(e)})
 
 
@@ -105,4 +111,5 @@ def reject_suggestion(suggestion_id: str, reason: str = None) -> str:
         else:
             return json.dumps({'error': f'Suggestion {suggestion_id} not found'})
     except Exception as e:
+        logger.exception("reject_suggestion failed")
         return json.dumps({'error': str(e)})

@@ -17,6 +17,9 @@ from config import (
     METHODOLOGY_FILE,
     ATHLETE_FILE,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_thresholds() -> dict[str, Any]:
@@ -168,15 +171,22 @@ def get_activity_classifications() -> dict[str, set]:
     }
 
 
-def classify_activity(activity: dict[str, Any], thresholds: dict[str, Any] = None) -> dict[str, bool]:
+def classify_activity(
+    activity: dict[str, Any],
+    thresholds: dict[str, Any] = None,
+    athlete_max_hr: int = None,
+) -> dict[str, Any]:
     """
     Classify an activity by training pillar contribution.
 
     Args:
         activity: Parsed activity dict
         thresholds: Optional thresholds override (loads from config if None)
+        athlete_max_hr: Athlete's max HR for relative intensity. When provided,
+            is_hard uses % of max HR (>78%) instead of absolute thresholds.
 
-    Returns dict with: is_strength, is_mobility, is_long_effort, is_hard
+    Returns dict with: is_strength, is_mobility, is_long_effort, is_hard,
+        hr_intensity_pct (float 0.0-1.0 or None)
     """
     if thresholds is None:
         thresholds = get_thresholds()
@@ -201,24 +211,35 @@ def classify_activity(activity: dict[str, Any], thresholds: dict[str, Any] = Non
     long_effort_min = thresholds.get('long_effort_min_mins', LONG_EFFORT_MIN_MINS)
     is_long_effort = activity_type in cardio_types and duration_mins >= long_effort_min
 
-    # High intensity detection
+    # High intensity detection — athlete-relative when max HR known
     avg_hr = activity.get('avg_hr') or 0
     max_hr = activity.get('max_hr') or 0
 
-    # Activity is "hard" if it's a high-intensity type OR has elevated HR
-    hard_hr_avg = thresholds.get('hard_hr_avg', HARD_HR_AVG_THRESHOLD)
-    hard_hr_max = thresholds.get('hard_hr_max', HARD_HR_MAX_THRESHOLD)
-    is_hard = (
-        activity_type in high_intensity_types or
-        avg_hr > hard_hr_avg or
-        max_hr > hard_hr_max
-    )
+    # Calculate relative intensity
+    hr_intensity_pct = round(avg_hr / athlete_max_hr, 2) if athlete_max_hr and avg_hr else None
+
+    if athlete_max_hr and avg_hr:
+        # Athlete-relative: >78% of max HR is "hard"
+        is_hard = (
+            activity_type in high_intensity_types or
+            hr_intensity_pct > 0.78
+        )
+    else:
+        # Fallback to absolute thresholds (no athlete profile available)
+        hard_hr_avg = thresholds.get('hard_hr_avg', HARD_HR_AVG_THRESHOLD)
+        hard_hr_max = thresholds.get('hard_hr_max', HARD_HR_MAX_THRESHOLD)
+        is_hard = (
+            activity_type in high_intensity_types or
+            avg_hr > hard_hr_avg or
+            max_hr > hard_hr_max
+        )
 
     return {
         'is_strength': is_strength,
         'is_mobility': is_mobility,
         'is_long_effort': is_long_effort,
         'is_hard': is_hard,
+        'hr_intensity_pct': hr_intensity_pct,
     }
 
 

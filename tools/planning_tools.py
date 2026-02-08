@@ -12,6 +12,9 @@ from fitness import load_fitness_history, calculate_fitness_metrics
 from config import DATA_DIR, RECENT_ACTIVITY_DAYS, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -180,6 +183,7 @@ def get_planning_context() -> str:
         return json.dumps(context, indent=2, default=str)
 
     except Exception as e:
+        logger.exception("get_planning_context failed")
         return json.dumps({'error': str(e)})
 
 
@@ -325,6 +329,7 @@ def get_periodization_status() -> str:
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("get_periodization_status failed")
         return json.dumps({'error': str(e)})
 
 
@@ -498,6 +503,7 @@ def get_weekly_prescription() -> str:
         return json.dumps(prescription, indent=2)
 
     except Exception as e:
+        logger.exception("get_weekly_prescription failed")
         return json.dumps({'error': str(e)})
 
 
@@ -586,6 +592,7 @@ def update_phase(new_phase: str, notes: str = None) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("update_phase failed")
         return json.dumps({'error': str(e)})
 
 
@@ -605,6 +612,7 @@ def get_weekly_plan() -> str:
             plan = create_empty_week_template()
         return json.dumps(plan, indent=2)
     except Exception as e:
+        logger.exception("get_weekly_plan failed")
         return json.dumps({'error': str(e)})
 
 
@@ -635,6 +643,15 @@ def update_weekly_plan(plan_json: str) -> str:
     """
     try:
         plan = json.loads(plan_json)
+
+        # Validate plan structure
+        if not isinstance(plan, dict):
+            return json.dumps({'error': 'Plan must be a JSON object, not ' + type(plan).__name__})
+        if 'days' not in plan:
+            return json.dumps({'error': "Plan must contain a 'days' key"})
+        if not isinstance(plan['days'], dict):
+            return json.dumps({'error': "'days' must be a dict keyed by YYYY-MM-DD date strings"})
+
         save_weekly_plan(plan)
         return json.dumps({
             'status': 'success',
@@ -642,8 +659,10 @@ def update_weekly_plan(plan_json: str) -> str:
             'last_updated': date.today().isoformat()
         })
     except json.JSONDecodeError as e:
+        logger.exception("update_weekly_plan failed: invalid JSON")
         return json.dumps({'error': f'Invalid JSON: {str(e)}'})
     except Exception as e:
+        logger.exception("update_weekly_plan failed")
         return json.dumps({'error': str(e)})
 
 
@@ -696,7 +715,7 @@ def push_plan_to_garmin() -> str:
                         )
                     )
                     deleted_count += 1
-                except:
+                except Exception:
                     pass
 
         results = {
@@ -863,4 +882,5 @@ def push_plan_to_garmin() -> str:
         return json.dumps(results, indent=2)
 
     except Exception as e:
+        logger.exception("push_plan_to_garmin failed")
         return json.dumps({'error': str(e)})

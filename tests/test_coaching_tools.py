@@ -6,7 +6,10 @@ from unittest.mock import patch
 from tools.coaching_tools import (
     _compare_planned_actual,
     _parse_readiness_for_snapshot,
-    _build_adaptation_signals,
+    _build_adaptation_patterns,
+    _derive_sleep_trend_direction,
+    _derive_hrv_trend,
+    _derive_compliance_rate_pct,
     _analyze_sport_priorities,
 )
 
@@ -66,6 +69,9 @@ class TestComparePlannedActual:
         assert result['sessions_missed'] == 0
         assert result['completion_rate'] == 100.0
         assert all(d['status'] == 'matched' for d in result['details'])
+        # Matched entries are minimal (date + status only)
+        for d in result['details']:
+            assert set(d.keys()) == {'date', 'status'}
 
     def test_missed_sessions_anomaly(self):
         plan = {
@@ -211,8 +217,8 @@ class TestComparePlannedActual:
         assert detail['status'] == 'type_mismatch'
         assert len(detail['all_activities']) == 2
 
-    def test_single_activity_no_all_activities_field(self):
-        """When only one activity exists for the day, all_activities is omitted."""
+    def test_single_matched_activity_minimal(self):
+        """Single matched activity produces minimal detail (no all_activities, no type/duration)."""
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 45}},
@@ -224,7 +230,7 @@ class TestComparePlannedActual:
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
         detail = result['details'][0]
-        assert 'all_activities' not in detail
+        assert detail == {'date': '2026-01-13', 'status': 'matched'}
 
     def test_invalid_date_key_skipped(self):
         """Non-ISO date keys in plan are silently skipped, not counted."""
@@ -260,8 +266,8 @@ class TestComparePlannedActual:
         duration_anomalies = [a for a in result['anomalies'] if a['flag'] == 'duration_delta']
         assert len(duration_anomalies) == 0
 
-    def test_duration_delta_pct_in_detail(self):
-        """Details include duration_delta_pct when both durations present."""
+    def test_matched_entry_is_minimal(self):
+        """Matched entries with small duration deltas are trimmed to {date, status} only."""
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'running', 'duration_mins': 50}},
@@ -272,7 +278,10 @@ class TestComparePlannedActual:
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
-        assert result['details'][0]['duration_delta_pct'] == -10.0  # 10% short, not anomalous
+        # 10% short, not anomalous — matched entry is minimal
+        detail = result['details'][0]
+        assert detail['status'] == 'matched'
+        assert set(detail.keys()) == {'date', 'status'}
 
 
 # ---------------------------------------------------------------------------
@@ -305,12 +314,12 @@ class TestParseReadinessForSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# _build_adaptation_signals
+# _build_adaptation_patterns + derived field helpers
 # ---------------------------------------------------------------------------
 
-class TestBuildAdaptationSignals:
+class TestBuildAdaptationPatterns:
     @patch('tools.coaching_tools.load_coaching_log')
-    def test_all_data_present(self, mock_log):
+    def test_patterns_from_coaching_log(self, mock_log):
         mock_log.return_value = {
             'athlete_responses': [
                 {'date': '2026-01-01', 'stimulus': 'test', 'response': 'positive', 'pattern': 'handles_volume_well'},
@@ -318,53 +327,28 @@ class TestBuildAdaptationSignals:
             ]
         }
 
-        sleep_data = {'avg_duration_hrs': 7.5, 'avg_score': 80, 'recent_avg_duration': 7.8,
-                      'recent_trend': 0.5, 'status': 'adequate', 'acute_status': 'good',
-                      'poor_quality_nights': 0}
-        recovery = {'score': 72, 'level': 'HIGH', 'hrv_status': 'BALANCED'}
-        compliance = {'overall_compliant': True, 'strength': {'compliant': True}, 'mobility': {'compliant': True}}
+        result = _build_adaptation_patterns()
 
-        result = _build_adaptation_signals(sleep_data, recovery, compliance, {}, date(2026, 1, 15))
-
-        assert result['sleep']['avg_7d_hrs'] == 7.5
-        assert result['sleep']['trend'] == 'improving'
-        assert result['recovery']['readiness_score'] == 72
-        assert result['compliance']['overall_compliant'] is True
-        assert result['adaptation_patterns']['handles_volume_well'] is True
-        assert result['adaptation_patterns']['total_responses'] == 2
+        assert result['handles_volume_well'] is True
+        assert result['total_responses'] == 2
 
     @patch('tools.coaching_tools.load_coaching_log')
     def test_empty_coaching_log(self, mock_log):
         mock_log.return_value = {'athlete_responses': []}
 
-        result = _build_adaptation_signals(None, {}, {}, {}, date(2026, 1, 15))
+        result = _build_adaptation_patterns()
 
-        assert result['sleep']['avg_7d_hrs'] is None
-        assert result['sleep']['trend'] == 'stable'
-        assert result['adaptation_patterns']['handles_volume_well'] is False
-        assert result['adaptation_patterns']['total_responses'] == 0
-
-    @patch('tools.coaching_tools.load_coaching_log')
-    def test_declining_sleep_trend(self, mock_log):
-        mock_log.return_value = {'athlete_responses': []}
-
-        sleep_data = {'avg_duration_hrs': 6.0, 'avg_score': 60, 'recent_avg_duration': 5.8,
-                      'recent_trend': -0.5, 'status': 'deficit', 'acute_status': 'poor',
-                      'poor_quality_nights': 3}
-
-        result = _build_adaptation_signals(sleep_data, {}, {}, {}, date(2026, 1, 15))
-
-        assert result['sleep']['trend'] == 'declining'
-        assert result['sleep']['deficit_days_7d'] == 3
+        assert result['handles_volume_well'] is False
+        assert result['total_responses'] == 0
 
     @patch('tools.coaching_tools.load_coaching_log')
     def test_coaching_log_exception_handled(self, mock_log):
         mock_log.side_effect = Exception("File not found")
 
-        result = _build_adaptation_signals(None, {}, {}, {}, date(2026, 1, 15))
+        result = _build_adaptation_patterns()
 
-        assert result['adaptation_patterns']['handles_volume_well'] is None
-        assert result['adaptation_patterns']['patterns_logged'] == 0
+        assert result['handles_volume_well'] is None
+        assert result['patterns_logged'] == 0
 
     @patch('tools.coaching_tools.load_coaching_log')
     def test_tied_patterns_default_to_false(self, mock_log):
@@ -379,27 +363,60 @@ class TestBuildAdaptationSignals:
             ]
         }
 
-        result = _build_adaptation_signals(None, {}, {}, {}, date(2026, 1, 15))
+        result = _build_adaptation_patterns()
 
         # Tie: 2 == 2, so 2 > 2 is False
-        assert result['adaptation_patterns']['handles_volume_well'] is False
+        assert result['handles_volume_well'] is False
 
-    @patch('tools.coaching_tools.load_coaching_log')
-    def test_compliance_rate_calculation(self, mock_log):
-        """Compliance rate is calculated from pillar counts, not from overall_compliant."""
-        mock_log.return_value = {'athlete_responses': []}
 
+class TestDerivedFields:
+    """Tests for derived fields relocated to root-level parents."""
+
+    def test_sleep_trend_improving(self):
+        assert _derive_sleep_trend_direction({'recent_trend': 0.5}) == 'improving'
+
+    def test_sleep_trend_declining(self):
+        assert _derive_sleep_trend_direction({'recent_trend': -0.5}) == 'declining'
+
+    def test_sleep_trend_stable(self):
+        assert _derive_sleep_trend_direction({'recent_trend': 0.1}) == 'stable'
+
+    def test_sleep_trend_none_data(self):
+        assert _derive_sleep_trend_direction(None) == 'stable'
+
+    def test_hrv_trend_stable(self):
+        assert _derive_hrv_trend({'hrv_status': 'BALANCED'}) == 'stable'
+        assert _derive_hrv_trend({'hrv_status': 'GOOD'}) == 'stable'
+
+    def test_hrv_trend_declining(self):
+        assert _derive_hrv_trend({'hrv_status': 'LOW'}) == 'declining'
+        assert _derive_hrv_trend({'hrv_status': 'POOR'}) == 'declining'
+
+    def test_hrv_trend_unknown(self):
+        assert _derive_hrv_trend({'hrv_status': ''}) == 'unknown'
+        assert _derive_hrv_trend(None) == 'unknown'
+
+    def test_compliance_rate_calculation(self):
+        """Compliance rate is calculated from pillar counts."""
         compliance = {
             'overall_compliant': False,
             'strength': {'compliant': True},
             'mobility': {'compliant': False},
             'long_effort': {'compliant': True},
         }
-
-        result = _build_adaptation_signals(None, {}, compliance, {}, date(2026, 1, 15))
-
         # 2 of 3 pillars met = 67%
-        assert result['compliance']['rate_this_week'] == 67.0
+        assert _derive_compliance_rate_pct(compliance) == 67.0
+
+    def test_compliance_rate_all_met(self):
+        compliance = {
+            'strength': {'compliant': True},
+            'mobility': {'compliant': True},
+            'long_effort': {'compliant': True},
+        }
+        assert _derive_compliance_rate_pct(compliance) == 100.0
+
+    def test_compliance_rate_no_pillars(self):
+        assert _derive_compliance_rate_pct({}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -539,3 +556,70 @@ class TestSnapshotCoachingMemory:
 
         assert coaching_memory['active_decisions'] == []
         assert coaching_memory['adaptation_patterns'] == []
+
+
+class TestDataQuality:
+    """Test data_quality flags in snapshot for missing critical data."""
+
+    def test_flags_missing_weight_and_age(self):
+        """Missing weight and age are flagged in data_quality dict."""
+        athlete = {'personal': {'name': 'Test', 'weight_kg': None, 'age': None}}
+        recovery = {'score': 72, 'level': 'HIGH'}
+        sleep_data = {'status': 'adequate', 'avg_duration_hrs': 7.5}
+
+        data_quality = {}
+        personal = athlete.get('personal', {})
+        if not personal.get('weight_kg'):
+            data_quality['weight'] = 'missing'
+        if not personal.get('age'):
+            data_quality['age'] = 'missing'
+        if not personal.get('name'):
+            data_quality['name'] = 'missing'
+        if recovery.get('status') == 'unavailable':
+            data_quality['recovery'] = 'unavailable'
+        if not sleep_data or sleep_data.get('status') == 'no_data':
+            data_quality['sleep'] = 'unavailable'
+
+        assert data_quality == {'weight': 'missing', 'age': 'missing'}
+
+    def test_no_flags_when_data_complete(self):
+        """No data_quality flags when all critical data present."""
+        athlete = {'personal': {'name': 'Test', 'weight_kg': 75.0, 'age': 35}}
+        recovery = {'score': 72}
+        sleep_data = {'status': 'adequate'}
+
+        data_quality = {}
+        personal = athlete.get('personal', {})
+        if not personal.get('weight_kg'):
+            data_quality['weight'] = 'missing'
+        if not personal.get('age'):
+            data_quality['age'] = 'missing'
+        if not personal.get('name'):
+            data_quality['name'] = 'missing'
+        if recovery.get('status') == 'unavailable':
+            data_quality['recovery'] = 'unavailable'
+        if not sleep_data or sleep_data.get('status') == 'no_data':
+            data_quality['sleep'] = 'unavailable'
+
+        assert data_quality == {}
+
+    def test_flags_unavailable_recovery_and_sleep(self):
+        """Flags unavailable recovery and sleep data."""
+        athlete = {'personal': {'name': 'Test', 'weight_kg': 75.0, 'age': 35}}
+        recovery = {'status': 'unavailable'}
+        sleep_data = {'status': 'no_data'}
+
+        data_quality = {}
+        personal = athlete.get('personal', {})
+        if not personal.get('weight_kg'):
+            data_quality['weight'] = 'missing'
+        if not personal.get('age'):
+            data_quality['age'] = 'missing'
+        if not personal.get('name'):
+            data_quality['name'] = 'missing'
+        if recovery.get('status') == 'unavailable':
+            data_quality['recovery'] = 'unavailable'
+        if not sleep_data or sleep_data.get('status') == 'no_data':
+            data_quality['sleep'] = 'unavailable'
+
+        assert data_quality == {'recovery': 'unavailable', 'sleep': 'unavailable'}

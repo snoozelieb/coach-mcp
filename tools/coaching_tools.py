@@ -9,10 +9,11 @@ Also contains helper functions:
 - _compare_planned_actual
 - _get_strength_sync_summary
 - _parse_readiness_for_snapshot
-- _readiness_to_recommendation
-- _build_adaptation_signals
+- _build_adaptation_patterns
+- _derive_sleep_trend_direction
+- _derive_hrv_trend
+- _derive_compliance_rate_pct
 - _analyze_sport_priorities
-- _generate_sport_blend_recommendation
 """
 
 from collections import defaultdict
@@ -58,6 +59,9 @@ from config import (
 )
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # Import shared helper from strength_tools
@@ -201,7 +205,14 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
                     for a in day_activities
                 ]
 
-            comparison['details'].append(detail)
+            # Trim matched entries to minimal form
+            if detail['status'] == 'matched' and not detail.get('all_activities'):
+                comparison['details'].append({
+                    'date': day_str,
+                    'status': 'matched',
+                })
+            else:
+                comparison['details'].append(detail)
         else:
             comparison['sessions_missed'] += 1
             comparison['anomalies'].append({
@@ -289,74 +300,15 @@ def _parse_readiness_for_snapshot(readiness_data: dict) -> dict:
     }
 
 
-def _build_adaptation_signals(
-    sleep_data: dict,
-    recovery: dict,
-    compliance: dict,
-    daily_loads: dict,
-    today: date
-) -> dict:
+def _build_adaptation_patterns() -> dict:
     """
-    Build adaptation signals for LLM personalization decisions.
+    Build adaptation patterns from coaching log for LLM personalization.
 
-    These signals help the LLM decide where in the load_increase_guidance
+    These patterns help the LLM decide where in the load_increase_guidance
     range to operate (conservative/standard/aggressive).
 
     Returns DATA only - no prescriptions.
     """
-    # 1. Sleep trends
-    sleep_signals = {
-        'avg_7d_hrs': sleep_data.get('avg_duration_hrs') if sleep_data else None,
-        'avg_score_7d': sleep_data.get('avg_score') if sleep_data else None,
-        'recent_avg_hrs': sleep_data.get('recent_avg_duration') if sleep_data else None,
-        'recent_trend': sleep_data.get('recent_trend', 0) if sleep_data else 0,  # Positive = improving
-        'status': sleep_data.get('status') if sleep_data else 'unknown',
-        'acute_status': sleep_data.get('acute_status') if sleep_data else 'unknown',
-        'deficit_days_7d': sleep_data.get('poor_quality_nights', 0) if sleep_data else 0,
-    }
-
-    # Determine sleep trend direction
-    if sleep_signals['recent_trend'] and sleep_signals['recent_trend'] > 0.3:
-        sleep_signals['trend'] = 'improving'
-    elif sleep_signals['recent_trend'] and sleep_signals['recent_trend'] < -0.3:
-        sleep_signals['trend'] = 'declining'
-    else:
-        sleep_signals['trend'] = 'stable'
-
-    # 2. Recovery signals (from Garmin readiness)
-    recovery_signals = {
-        'readiness_score': recovery.get('score') if recovery else None,
-        'readiness_level': recovery.get('level') if recovery else None,
-        'hrv_status': recovery.get('hrv_status') if recovery else None,
-    }
-
-    # Infer HRV trend from level (simplified - would need history for true trend)
-    hrv_level = recovery_signals.get('hrv_status', '')
-    if hrv_level in ['BALANCED', 'GOOD']:
-        recovery_signals['hrv_trend'] = 'stable'
-    elif hrv_level in ['LOW', 'POOR']:
-        recovery_signals['hrv_trend'] = 'declining'
-    else:
-        recovery_signals['hrv_trend'] = 'unknown'
-
-    # 3. Compliance signals
-    compliance_signals = {
-        'overall_compliant': compliance.get('overall_compliant', False),
-        'strength_compliant': compliance.get('strength', {}).get('compliant', True),
-        'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
-    }
-
-    # Calculate compliance rate (simplified - based on current week's pillars)
-    pillars_total = 0
-    pillars_met = 0
-    for pillar in ['strength', 'mobility', 'long_effort']:
-        if pillar in compliance:
-            pillars_total += 1
-            if compliance[pillar].get('compliant', False):
-                pillars_met += 1
-    compliance_signals['rate_this_week'] = round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
-
-    # 4. Adaptation patterns (from coaching log)
     try:
         log = load_coaching_log()
         responses = log.get('athlete_responses', [])
@@ -368,7 +320,7 @@ def _build_adaptation_signals(
             if pattern:
                 patterns[pattern] = patterns.get(pattern, 0) + 1
 
-        adaptation_patterns = {
+        return {
             'handles_volume_well': patterns.get('handles_volume_well', 0) > patterns.get('struggles_with_volume', 0),
             'recovers_quickly': patterns.get('recovers_quickly', 0) > patterns.get('slow_recovery', 0),
             'needs_extra_rest_after_intensity': patterns.get('needs_recovery_after_intensity', 0) > 0,
@@ -376,7 +328,7 @@ def _build_adaptation_signals(
             'total_responses': len(responses),
         }
     except Exception:
-        adaptation_patterns = {
+        return {
             'handles_volume_well': None,  # Unknown - no data
             'recovers_quickly': None,
             'needs_extra_rest_after_intensity': None,
@@ -384,12 +336,41 @@ def _build_adaptation_signals(
             'total_responses': 0,
         }
 
-    return {
-        'sleep': sleep_signals,
-        'recovery': recovery_signals,
-        'compliance': compliance_signals,
-        'adaptation_patterns': adaptation_patterns,
-    }
+
+def _derive_sleep_trend_direction(sleep_data: dict) -> str:
+    """Derive sleep trend direction from recent_trend float."""
+    if not sleep_data:
+        return 'stable'
+    recent_trend = sleep_data.get('recent_trend', 0)
+    if recent_trend and recent_trend > 0.3:
+        return 'improving'
+    elif recent_trend and recent_trend < -0.3:
+        return 'declining'
+    return 'stable'
+
+
+def _derive_hrv_trend(recovery: dict) -> str:
+    """Derive HRV trend from recovery hrv_status level."""
+    if not recovery:
+        return 'unknown'
+    hrv_level = recovery.get('hrv_status', '')
+    if hrv_level in ['BALANCED', 'GOOD']:
+        return 'stable'
+    elif hrv_level in ['LOW', 'POOR']:
+        return 'declining'
+    return 'unknown'
+
+
+def _derive_compliance_rate_pct(compliance: dict) -> float | None:
+    """Calculate compliance rate from pillar counts."""
+    pillars_total = 0
+    pillars_met = 0
+    for pillar in ['strength', 'mobility', 'long_effort']:
+        if pillar in compliance:
+            pillars_total += 1
+            if compliance[pillar].get('compliant', False):
+                pillars_met += 1
+    return round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
 
 
 def _analyze_sport_priorities(events: list, current_block: dict, race_templates: dict) -> dict:
@@ -494,38 +475,8 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
         'sports': sports_analysis,
         'shared_sessions': shared_sessions,
         'sport_specific_sessions': sport_specific_sessions,
-        'recommendation': _generate_sport_blend_recommendation(sports_analysis, current_block),
         'has_multi_sport': len(sports_analysis) > 1,
     }
-
-
-def _generate_sport_blend_recommendation(sports_analysis: dict, current_block: dict) -> str:
-    """Generate recommendation for blending multiple sports."""
-    if not sports_analysis:
-        return "No upcoming events - focus on general fitness"
-
-    if len(sports_analysis) == 1:
-        sport = list(sports_analysis.keys())[0]
-        return f"Single sport focus: {sport}. Follow sport-specific periodization."
-
-    # Multi-sport recommendations
-    primary = None
-    secondary = []
-    for sport, data in sports_analysis.items():
-        if data['primary_focus']:
-            primary = sport
-        else:
-            secondary.append(sport)
-
-    if primary and secondary:
-        secondary_str = ', '.join(secondary)
-        return (
-            f"Multi-sport: Primary focus on {primary} ({sports_analysis[primary]['volume_pct']}%). "
-            f"Maintain {secondary_str} with complementary sessions. "
-            f"Shared strength/mobility benefits all sports."
-        )
-
-    return "Balance training across all sports based on race proximity"
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +539,7 @@ def get_compliance_report(days: int = 7) -> str:
         return json.dumps(report, indent=2)
 
     except Exception as e:
+        logger.exception("get_compliance_report failed")
         return json.dumps({'error': str(e)})
 
 
@@ -900,6 +852,7 @@ def get_coaching_score() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_coaching_score failed")
         return json.dumps({'error': str(e)})
 
 
@@ -946,7 +899,7 @@ def get_coaching_snapshot() -> str:
                     ftp = athlete_data.get('personal', {}).get('ftp') if athlete_data else None
                     history = update_fitness_history(refreshed_activities, max_hr, ftp)
             except Exception:
-                pass  # Non-fatal: proceed with stale data
+                logger.warning("Fitness history auto-refresh failed", exc_info=True)
 
         daily_loads = history.get('daily_loads', {})
 
@@ -1038,16 +991,16 @@ def get_coaching_snapshot() -> str:
                     'level': 'overall',
                     'sport': 'all',
                     'acwr': o_acwr,
-                    'risk': f'Overall ACWR {o_acwr} — HIGH total body injury risk. '
-                            f'Reduce ALL training load before adding any sport-specific volume.',
+                    'zone': 'danger',
+                    'reason': 'overload',
                 })
             elif o_status == 'elevated':
                 acwr_warnings.append({
                     'level': 'overall',
                     'sport': 'all',
                     'acwr': o_acwr,
-                    'risk': f'Overall ACWR {o_acwr} — elevated total body load. '
-                            f'Do not add new training stimulus. Maintain or reduce.',
+                    'zone': 'elevated',
+                    'reason': 'overload',
                 })
 
         # Sport-specific ACWR checks (spike detection)
@@ -1057,23 +1010,24 @@ def get_coaching_snapshot() -> str:
                     'level': 'sport',
                     'sport': sport,
                     'acwr': 0.0,
-                    'risk': f'Return-to-{sport} protocol required. Zero chronic {sport} load '
-                            f'means ANY {sport} is a spike. Start cautiously.',
+                    'zone': 'danger',
+                    'reason': 'return_to_sport',
                 })
             elif sm.get('acwr', 0) > 1.5:
                 acwr_warnings.append({
                     'level': 'sport',
                     'sport': sport,
                     'acwr': sm['acwr'],
-                    'risk': f'{sport.capitalize()} ACWR {sm["acwr"]} — HIGH sport-specific injury risk. '
-                            f'Reduce {sport} load even if overall ACWR is safe.',
+                    'zone': 'danger',
+                    'reason': 'overload',
                 })
             elif sm.get('acwr', 0) > 1.3:
                 acwr_warnings.append({
                     'level': 'sport',
                     'sport': sport,
                     'acwr': sm['acwr'],
-                    'risk': f'{sport.capitalize()} ACWR {sm["acwr"]} — elevated sport-specific risk.',
+                    'zone': 'elevated',
+                    'reason': 'overload',
                 })
 
         # 5. Compliance status
@@ -1084,6 +1038,7 @@ def get_coaching_snapshot() -> str:
             readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
             recovery = _parse_readiness_for_snapshot(readiness_data)
         except Exception:
+            logger.warning("Failed to fetch recovery data", exc_info=True)
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
 
         # 6b. Sleep data (last 7 days) + persist to history
@@ -1131,14 +1086,13 @@ def get_coaching_snapshot() -> str:
         athlete_hr_zones = get_athlete_hr_zones()
         intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
 
-        # 9b. Adaptation signals
-        adaptation_signals = _build_adaptation_signals(
-            sleep_data=sleep_data,
-            recovery=recovery,
-            compliance=compliance,
-            daily_loads=daily_loads,
-            today=today
-        )
+        # 9b. Adaptation patterns (from coaching log)
+        adaptation_patterns = _build_adaptation_patterns()
+
+        # 9b2. Relocate derived fields to root-level parents
+        compliance['compliance_rate_pct'] = _derive_compliance_rate_pct(compliance)
+        if recovery and recovery.get('status') != 'unavailable':
+            recovery['hrv_trend'] = _derive_hrv_trend(recovery)
 
         # 9c. Multi-week trends (wire in get_fitness_trend + volume by sport)
         trends = {}
@@ -1228,53 +1182,24 @@ def get_coaching_snapshot() -> str:
                 current_weekly_tss=last_week_tss if last_week_tss > 0 else None
             )
             if not ctl_target.get('error'):
-                o_acwr = overall_metrics.get('acwr', 1.0)
-                o_acwr_status = overall_metrics.get('acwr_status', 'optimal')
-
                 volume_data = {
                     'a_race': a_race.get('name'),
                     'race_date': ctl_target.get('race_date'),
                     'race_sport': race_sport,
                     'days_until_race': ctl_target.get('days_until_race'),
                     'weeks_until_race': ctl_target.get('weeks_until_race'),
-
-                    # BOTH CTL views — the LLM needs both
-                    'current_ctl': {
-                        'overall': round(overall_ctl, 1),
-                        'sport_specific': round(sport_ctl, 1) if sport_ctl is not None else None,
-                        'sport': race_sport,
-                        'note': (
-                            f'{race_sport.capitalize()} CTL {sport_ctl} shows race-specific fitness. '
-                            f'Overall CTL {overall_ctl} shows total body capacity. '
-                            f'Build {race_sport} CTL but do NOT spike overall ACWR doing it.'
-                        ) if sport_ctl is not None else None,
-                    },
-                    'target_ctl': {
-                        'min': ctl_target.get('target_ctl_min'),
-                        'ideal': ctl_target.get('target_ctl_ideal'),
-                        'compared_against': f'{race_sport}_specific' if sport_ctl is not None else 'overall',
-                    },
+                    'current_ctl': round(sport_ctl, 1) if sport_ctl is not None else round(overall_ctl, 1),
+                    'current_ctl_overall': round(overall_ctl, 1),
+                    'ctl_source': f'{race_sport}_specific' if sport_ctl is not None else 'overall',
+                    'target_ctl_min': ctl_target.get('target_ctl_min'),
+                    'target_ctl_ideal': ctl_target.get('target_ctl_ideal'),
                     'ctl_gap': ctl_target.get('ctl_gap'),
                     'on_track': ctl_target.get('on_track'),
-                    'weekly_tss_to_reach_target': {
-                        'required': ctl_target.get('weekly_tss_required'),
-                        'hours_estimate': ctl_target.get('weekly_hours_required'),
-                    },
+                    'weekly_tss_required': ctl_target.get('weekly_tss_required'),
+                    'weekly_hours_required': ctl_target.get('weekly_hours_required'),
                     'last_week_tss': round(last_week_tss, 0) if last_week_tss else None,
                     'tss_trend_4wk': tss_trend_4wk,
-                    'load_increase_guidance': {
-                        'conservative_pct': 10,
-                        'standard_pct': 15,
-                        'aggressive_pct': 25,
-                        'constraint': 'Overall ACWR must stay below 1.3 regardless of sport-specific targets',
-                    },
-                    'acwr': {
-                        'overall': round(o_acwr, 2),
-                        'overall_status': o_acwr_status,
-                        'sport_specific': round(sport_fitness[race_sport]['acwr'], 2) if race_sport and race_sport in sport_fitness else None,
-                        'optimal_range': [0.8, 1.3],
-                        'risk_threshold': 1.5,
-                    },
+                    'load_increase_pcts': [10, 15, 25],
                 }
 
         snapshot = {
@@ -1309,9 +1234,10 @@ def get_coaching_snapshot() -> str:
             'sleep': {
                 **(sleep_data if isinstance(sleep_data, dict) else {}),
                 'trend_30d': sleep_trend_30d if sleep_trend_30d.get('status') != 'no_data' else None,
+                'trend_direction': _derive_sleep_trend_direction(sleep_data),
             } if sleep_data else {'status': 'no_data'},
 
-            'adaptation_signals': adaptation_signals,
+            'adaptation_patterns': adaptation_patterns,
 
             'trends': trends,
 
@@ -1325,17 +1251,26 @@ def get_coaching_snapshot() -> str:
 
             'strength': _get_strength_sync_summary(activities_this_week),
 
-            'coaching_checklist': {
-                'has_current_plan': bool(current_plan and current_plan.get('days')),
-                'has_fitness_data': bool(daily_loads),
-                'acwr_safe': overall_metrics.get('acwr_status') in ['optimal', 'low'] if overall_metrics else False,
-                'sport_acwr_warnings': len(acwr_warnings),
-                'compliance_ok': compliance.get('overall_compliant', False),
-                'no_blocking_injuries': len([i for i in relevant_injuries if i.get('severity') == 'severe']) == 0,
-                'sleep_adequate': sleep_data.get('status') == 'adequate' if sleep_data else False,
-                'has_injuries_needing_rehab': any(i.get('rehab_protocol') for i in relevant_injuries),
-            },
         }
+
+        # Data quality flags — tells the LLM what data it's working with vs missing
+        data_quality = {}
+        personal = athlete.get('personal', {})
+        if not personal.get('weight_kg'):
+            data_quality['weight'] = 'missing'
+        if not personal.get('age'):
+            data_quality['age'] = 'missing'
+        if not personal.get('name'):
+            data_quality['name'] = 'missing'
+        if recovery.get('status') == 'unavailable':
+            data_quality['recovery'] = 'unavailable'
+        if not sleep_data or sleep_data.get('status') == 'no_data':
+            data_quality['sleep'] = 'unavailable'
+        last_updated = history.get('last_updated')
+        if last_updated and last_updated < (today - timedelta(days=1)).isoformat():
+            data_quality['fitness_history'] = 'stale'
+        if data_quality:
+            snapshot['data_quality'] = data_quality
 
         # Coaching memory (continuity across sessions)
         try:
@@ -1347,9 +1282,11 @@ def get_coaching_snapshot() -> str:
                 'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
             }
         except Exception:
+            logger.warning("Failed to load coaching memory", exc_info=True)
             snapshot['coaching_memory'] = {'status': 'unavailable'}
 
         return json.dumps(snapshot, indent=2)
 
     except Exception as e:
+        logger.exception("get_coaching_snapshot failed")
         return json.dumps({'error': str(e)})

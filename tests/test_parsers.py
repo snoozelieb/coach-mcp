@@ -15,6 +15,7 @@ from parsers import (
     parse_training_readiness,
     parse_personal_records,
     calculate_baseline,
+    parse_user_profile,
 )
 from conftest import (
     SAMPLE_RUNNING_ACTIVITY,
@@ -138,6 +139,108 @@ class TestParseActivity:
         assert result['avg_power'] is None
         assert result['max_power'] is None
         assert result['norm_power'] is None
+
+    def test_start_time_full_timestamp(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['start_time'] == '2025-12-01T06:30:00.0'
+
+    def test_elevation_gain_and_loss(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'elevationGain': 350.5,
+            'elevationLoss': 340.2,
+        }
+        result = parse_activity(activity)
+        assert result['elevation_gain'] == 350.5
+        assert result['elevation_loss'] == 340.2
+
+    def test_elevation_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['elevation_gain'] is None
+        assert result['elevation_loss'] is None
+
+    def test_event_type_parsed(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'eventType': {'typeId': 4, 'typeKey': 'race'},
+        }
+        result = parse_activity(activity)
+        assert result['event_type'] == 'race'
+
+    def test_event_type_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['event_type'] is None
+
+    def test_description_parsed(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'description': 'Felt great, knee was fine',
+        }
+        result = parse_activity(activity)
+        assert result['description'] == 'Felt great, knee was fine'
+
+    def test_description_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['description'] is None
+
+    def test_moving_duration_parsed(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'movingDuration': 2400,  # 40 mins moving out of 45 total
+        }
+        result = parse_activity(activity)
+        assert result['moving_duration_mins'] == 40.0
+
+    def test_moving_duration_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['moving_duration_mins'] is None
+
+    def test_running_cadence_parsed(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'averageRunningCadenceInStepsPerMinute': 172,
+        }
+        result = parse_activity(activity)
+        assert result['avg_cadence'] == 172
+
+    def test_cycling_cadence_parsed(self):
+        cycling = {
+            'activityId': 99999,
+            'activityName': 'Ride',
+            'startTimeLocal': '2025-12-01T08:00:00.0',
+            'activityType': {'typeKey': 'cycling', 'parentTypeId': 2},
+            'duration': 3600,
+            'distance': 30000,
+            'averageBikingCadenceInRevPerMinute': 85,
+        }
+        result = parse_activity(cycling)
+        assert result['avg_cadence'] == 85
+
+    def test_cadence_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['avg_cadence'] is None
+
+    def test_training_effect_parsed(self):
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'aerobicTrainingEffect': 3.2,
+            'anaerobicTrainingEffect': 1.5,
+        }
+        result = parse_activity(activity)
+        assert result['training_effect'] == {'aerobic': 3.2, 'anaerobic': 1.5}
+
+    def test_training_effect_none_when_absent(self):
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['training_effect'] is None
+
+    def test_training_effect_partial(self):
+        """Only aerobic present — still returns dict."""
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'aerobicTrainingEffect': 2.8,
+        }
+        result = parse_activity(activity)
+        assert result['training_effect'] == {'aerobic': 2.8, 'anaerobic': None}
 
     def test_power_fields_present_for_cycling(self):
         cycling_activity = {
@@ -362,3 +465,76 @@ class TestCheckSetup:
         (tmp_path / "extra_stuff.txt").write_text("hello")
 
         assert check_setup() is True
+
+
+class TestParseUserProfile:
+    """Tests for parse_user_profile — Garmin profile data extraction."""
+
+    def test_full_data(self):
+        """Parses name, weight, age from all three Garmin responses."""
+        result = parse_user_profile(
+            full_name={'firstName': 'John', 'lastName': 'Doe', 'displayName': 'johndoe'},
+            user_profile={'userData': {'birthDate': '1990-06-15'}},
+            body_composition={'totalAverage': {'weight': 75000}},
+        )
+        assert result['full_name'] == 'John Doe'
+        assert result['display_name'] == 'johndoe'
+        assert result['weight_kg'] == 75.0
+        assert result['birth_date'] == '1990-06-15'
+        assert isinstance(result['age'], int)
+        assert result['age'] >= 35  # Born 1990, test written 2026
+
+    def test_empty_inputs(self):
+        """Returns all None when given no data."""
+        result = parse_user_profile()
+        assert result['full_name'] is None
+        assert result['weight_kg'] is None
+        assert result['age'] is None
+
+    def test_none_inputs(self):
+        """Handles None for all arguments."""
+        result = parse_user_profile(None, None, None)
+        assert result['full_name'] is None
+        assert result['weight_kg'] is None
+
+    def test_partial_name(self):
+        """Handles missing last name."""
+        result = parse_user_profile(full_name={'firstName': 'John'})
+        assert result['full_name'] == 'John'
+
+    def test_weight_conversion_from_grams(self):
+        """Converts Garmin grams to kg correctly."""
+        result = parse_user_profile(
+            body_composition={'totalAverage': {'weight': 82300}}
+        )
+        assert result['weight_kg'] == 82.3
+
+    def test_zero_weight_ignored(self):
+        """Zero weight is treated as missing."""
+        result = parse_user_profile(
+            body_composition={'totalAverage': {'weight': 0}}
+        )
+        assert result['weight_kg'] is None
+
+    def test_birth_date_without_user_data_wrapper(self):
+        """Handles user profile without userData wrapper (flat structure)."""
+        result = parse_user_profile(
+            user_profile={'birthDate': '1985-03-20'}
+        )
+        assert result['birth_date'] == '1985-03-20'
+        assert result['age'] >= 40
+
+    def test_invalid_birth_date(self):
+        """Invalid birth date doesn't crash, age stays None."""
+        result = parse_user_profile(
+            user_profile={'userData': {'birthDate': 'not-a-date'}}
+        )
+        assert result['birth_date'] == 'not-a-date'
+        assert result['age'] is None
+
+    def test_display_name_fallback_from_user_profile(self):
+        """Falls back to displayName from user profile when full_name has none."""
+        result = parse_user_profile(
+            user_profile={'userData': {'displayName': 'athlete42'}}
+        )
+        assert result['display_name'] == 'athlete42'

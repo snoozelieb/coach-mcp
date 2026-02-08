@@ -13,14 +13,47 @@ Registers MCP tools for:
 
 from mcp_app import mcp
 from garmin_client import garmin_api_call
-from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline
-from planner import load_athlete, load_methodology
+from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile
+from planner import load_athlete, load_methodology, load_json_file, save_json_file
 from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_load_athlete_max_hr, get_athlete_hr_zones, get_fitness_trend,
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics)
-from config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE
+from config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _auto_populate_athlete(garmin_profile: dict) -> None:
+    """Auto-fill None fields in athlete.json personal section from Garmin profile.
+
+    Only fills fields that are None — never overwrites manually set values.
+    """
+    athlete = load_json_file(ATHLETE_FILE)
+    if not athlete:
+        return
+
+    personal = athlete.get('personal', {})
+    changed = False
+
+    field_map = {
+        'name': 'full_name',
+        'weight_kg': 'weight_kg',
+        'age': 'age',
+    }
+
+    for athlete_key, profile_key in field_map.items():
+        if personal.get(athlete_key) is None and garmin_profile.get(profile_key) is not None:
+            personal[athlete_key] = garmin_profile[profile_key]
+            changed = True
+
+    if changed:
+        athlete['personal'] = personal
+        save_json_file(ATHLETE_FILE, athlete)
+        logger.info("Auto-populated athlete.json from Garmin profile: %s",
+                     [k for k, v in field_map.items() if personal.get(k) is not None])
 
 
 @mcp.tool()
@@ -57,11 +90,22 @@ def refresh_athlete_baseline() -> str:
         # Calculate baseline from activities
         baseline = calculate_baseline(activities)
 
+        # Pull user profile data (name, birth date, weight)
+        garmin_profile = {}
+        try:
+            full_name = garmin_api_call(lambda c: c.get_full_name())
+            user_profile = garmin_api_call(lambda c: c.get_user_profile())
+            body_comp = garmin_api_call(lambda c: c.get_body_composition(today.isoformat()))
+            garmin_profile = parse_user_profile(full_name, user_profile, body_comp)
+        except Exception:
+            logger.warning("Failed to pull Garmin profile data", exc_info=True)
+
         # Build the baseline profile (Garmin-derived only)
         profile = {
             'last_refreshed': today.isoformat(),
             'baseline': baseline,
             'personal_records': personal_records,
+            'garmin_profile': garmin_profile,
         }
 
         # Ensure data directory exists
@@ -72,6 +116,11 @@ def refresh_athlete_baseline() -> str:
         with open(profile_path, 'w') as f:
             json.dump(profile, f, indent=2)
 
+        # Auto-populate athlete.json personal section from Garmin profile
+        # Only fills None fields — never overwrites manually set values
+        if garmin_profile:
+            _auto_populate_athlete(garmin_profile)
+
         # Return summary
         summary = {
             'status': 'success',
@@ -80,12 +129,14 @@ def refresh_athlete_baseline() -> str:
             'weeks_analyzed': baseline['weeks_analyzed'],
             'avg_weekly_volume_hrs': baseline['avg_weekly_volume_hrs'],
             'personal_records_count': len(personal_records),
+            'garmin_profile': garmin_profile,
             'profile_path': str(profile_path)
         }
 
         return json.dumps(summary, indent=2)
 
     except Exception as e:
+        logger.exception("refresh_athlete_baseline failed")
         return json.dumps({'error': str(e)})
 
 
@@ -111,6 +162,7 @@ def get_training_readiness(for_date: str = None) -> str:
         return json.dumps(parsed, indent=2)
 
     except Exception as e:
+        logger.exception("get_training_readiness failed")
         return json.dumps({"error": str(e)})
 
 
@@ -211,6 +263,7 @@ def get_load_status() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_load_status failed")
         return json.dumps({"error": str(e)})
 
 
@@ -349,6 +402,7 @@ def get_fitness_status(days: int = 90) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_fitness_status failed")
         return json.dumps({'error': str(e)})
 
 
@@ -411,6 +465,7 @@ def refresh_fitness_history(days: int = 180) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("refresh_fitness_history failed")
         return json.dumps({'error': str(e)})
 
 
@@ -478,6 +533,7 @@ def get_intensity_distribution(days: int = 28) -> str:
         return json.dumps(distribution, indent=2)
 
     except Exception as e:
+        logger.exception("get_intensity_distribution failed")
         return json.dumps({'error': str(e)})
 
 
@@ -575,6 +631,7 @@ def get_onboarding_guide() -> str:
         return json.dumps(guide, indent=2)
 
     except Exception as e:
+        logger.exception("get_onboarding_guide failed")
         return json.dumps({'error': str(e)})
 
 
@@ -599,4 +656,5 @@ def get_athlete() -> str:
         athlete = load_athlete()
         return json.dumps(athlete, indent=2)
     except Exception as e:
+        logger.exception("get_athlete failed")
         return json.dumps({'error': str(e)})

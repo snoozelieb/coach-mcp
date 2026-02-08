@@ -14,6 +14,9 @@ from config import (
 )
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -304,6 +307,7 @@ def sync_strength_session(activity_id: str = None) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("sync_strength_session failed")
         return json.dumps({"error": str(e)})
 
 
@@ -383,6 +387,7 @@ def get_strength_baseline(exercise: str = None) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_strength_baseline failed")
         return json.dumps({"error": str(e)})
 
 
@@ -446,6 +451,7 @@ def approve_progression(exercise: str) -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("approve_progression failed")
         return json.dumps({"error": str(e)})
 
 
@@ -514,6 +520,7 @@ def set_exercise_preference(exercise_group: str, preferred_variation: str) -> st
         }, indent=2)
 
     except Exception as e:
+        logger.exception("set_exercise_preference failed")
         return json.dumps({"error": str(e)})
 
 
@@ -752,6 +759,7 @@ def generate_strength_workout(
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("generate_strength_workout failed")
         return json.dumps({"error": str(e)})
 
 
@@ -851,4 +859,5 @@ def add_exercise(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("add_exercise failed")
         return json.dumps({"error": str(e)})

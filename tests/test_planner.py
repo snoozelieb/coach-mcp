@@ -211,3 +211,35 @@ class TestCreateEmptyWeekTemplate:
         for i, day_str in enumerate(dates):
             expected = (today + timedelta(days=i)).isoformat()
             assert day_str == expected
+
+
+class TestUpdateWeeklyPlanValidation:
+    """Tests for structure validation in update_weekly_plan."""
+
+    def test_rejects_non_dict_plan(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
+        from tools.planning_tools import update_weekly_plan
+        result = json.loads(update_weekly_plan(json.dumps([1, 2, 3])))
+        assert 'error' in result
+        assert 'object' in result['error'].lower() or 'dict' in result['error'].lower()
+
+    def test_rejects_plan_without_days(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
+        from tools.planning_tools import update_weekly_plan
+        result = json.loads(update_weekly_plan(json.dumps({'week_start': '2026-02-08'})))
+        assert 'error' in result
+        assert 'days' in result['error']
+
+    def test_rejects_plan_with_non_dict_days(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
+        from tools.planning_tools import update_weekly_plan
+        result = json.loads(update_weekly_plan(json.dumps({'days': 'not a dict'})))
+        assert 'error' in result
+        assert 'days' in result['error']
+
+    def test_accepts_valid_plan(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
+        from tools.planning_tools import update_weekly_plan
+        valid_plan = {'days': {'2026-02-08': {'planned': {'type': 'running'}}}}
+        result = json.loads(update_weekly_plan(json.dumps(valid_plan)))
+        assert result['status'] == 'success'

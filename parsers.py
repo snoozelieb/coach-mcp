@@ -9,6 +9,9 @@ from datetime import date
 from typing import Any, Union
 
 from config import DATA_DIR
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def check_setup() -> bool:
@@ -271,3 +274,72 @@ def parse_personal_records(pr_data: dict[str, Any]) -> list[dict[str, Any]]:
         })
 
     return parsed
+
+
+def parse_user_profile(
+    full_name: dict = None,
+    user_profile: dict = None,
+    body_composition: dict = None,
+) -> dict:
+    """
+    Extract athlete profile data from Garmin API responses.
+
+    Pure function — no I/O, no side effects.
+
+    Args:
+        full_name: Response from get_full_name() — typically a dict with firstName/lastName
+        user_profile: Response from get_user_profile() — contains userData with birthDate etc.
+        body_composition: Response from get_body_composition() — contains totalAverage.weight
+
+    Returns:
+        Dict with: full_name, display_name, weight_kg, birth_date, age (all nullable)
+    """
+    result = {
+        'full_name': None,
+        'display_name': None,
+        'weight_kg': None,
+        'birth_date': None,
+        'age': None,
+    }
+
+    # Parse full name
+    if full_name and isinstance(full_name, dict):
+        first = full_name.get('firstName', '')
+        last = full_name.get('lastName', '')
+        name = f"{first} {last}".strip()
+        if name:
+            result['full_name'] = name
+        display = full_name.get('displayName')
+        if display:
+            result['display_name'] = display
+
+    # Parse weight from body composition (Garmin returns grams)
+    if body_composition and isinstance(body_composition, dict):
+        total_avg = body_composition.get('totalAverage', {})
+        weight_grams = total_avg.get('weight')
+        if weight_grams and weight_grams > 0:
+            result['weight_kg'] = round(weight_grams / 1000, 1)
+
+    # Parse birth date and calculate age from user profile
+    if user_profile and isinstance(user_profile, dict):
+        user_data = user_profile.get('userData', user_profile)
+        birth_date_str = user_data.get('birthDate')
+        if birth_date_str:
+            result['birth_date'] = birth_date_str
+            try:
+                birth = date.fromisoformat(birth_date_str)
+                today = date.today()
+                age = today.year - birth.year
+                if (today.month, today.day) < (birth.month, birth.day):
+                    age -= 1
+                result['age'] = age
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback: display name from user profile
+        if not result['display_name']:
+            display = user_data.get('displayName')
+            if display:
+                result['display_name'] = display
+
+    return result

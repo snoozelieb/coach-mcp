@@ -556,11 +556,14 @@ class TestResearchInjury:
         assert "suggested_searches" in result["researched_info"]
         assert "physio-pedia.com" in result["researched_info"]["recommended_sources"]
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
-    def test_invalid_severity_defaults_to_moderate(self, mock_fetch):
-        mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
+    def test_invalid_severity_returns_error(self):
         result = json.loads(research_injury("shin splints", severity="extreme"))
-        assert result["severity"] == "moderate"
+        assert "error" in result
+        assert "Invalid severity" in result["error"]
+        assert "extreme" in result["error"]
+        assert "mild" in result["error"]
+        assert "moderate" in result["error"]
+        assert "severe" in result["error"]
 
     @patch('tools.injury_tools.fetch_page_text_validated')
     def test_structured_extraction_in_researched_info(self, mock_fetch):

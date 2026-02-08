@@ -6,6 +6,9 @@ from parsers import (parse_resting_heart_rate, parse_sleep_score, parse_body_bat
                      parse_activities, parse_personal_records)
 from datetime import date
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -23,6 +26,7 @@ def get_personal_records() -> str:
         return json.dumps(parsed, indent=2)
 
     except Exception as e:
+        logger.exception("get_personal_records failed")
         return json.dumps({"error": str(e)})
 
 
@@ -40,6 +44,17 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
         distance_km, avg_hr, max_hr, calories, and pace for runs.
     """
     try:
+        # Validate date formats before hitting the API
+        try:
+            date.fromisoformat(start_date)
+        except (ValueError, TypeError):
+            return json.dumps({'error': f'Invalid start_date: {start_date}. Must be YYYY-MM-DD format.'})
+        if end_date is not None:
+            try:
+                date.fromisoformat(end_date)
+            except (ValueError, TypeError):
+                return json.dumps({'error': f'Invalid end_date: {end_date}. Must be YYYY-MM-DD format.'})
+
         if end_date is None:
             end_date = date.today().isoformat()
 
@@ -49,6 +64,7 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
         return json.dumps(parsed, indent=2)
 
     except Exception as e:
+        logger.exception("get_activities_range failed")
         return json.dumps({"error": str(e)})
 
 
@@ -81,4 +97,5 @@ def get_daily_metrics() -> str:
         }, indent=2)
 
     except Exception as e:
+        logger.exception("get_daily_metrics failed")
         return json.dumps({"error": str(e)})

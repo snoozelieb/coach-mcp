@@ -6,6 +6,9 @@ from planner import load_json_file, save_json_file, load_athlete, load_methodolo
 from config import ATHLETE_FILE, METHODOLOGY_FILE
 from datetime import date, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -145,8 +148,10 @@ def update_athlete(
         }, indent=2)
 
     except json.JSONDecodeError as e:
+        logger.exception("update_athlete failed")
         return json.dumps({'error': f'Invalid JSON: {str(e)}'})
     except Exception as e:
+        logger.exception("update_athlete failed")
         return json.dumps({'error': str(e)})
 
 
@@ -245,6 +250,7 @@ def set_threshold_pace(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("set_threshold_pace failed")
         return json.dumps({'error': str(e)})
 
 
@@ -328,6 +334,7 @@ def set_ftp(
         }, indent=2)
 
     except Exception as e:
+        logger.exception("set_ftp failed")
         return json.dumps({'error': str(e)})
 
 
@@ -640,6 +647,7 @@ def analyze_ftp_test(activity_id: str = None) -> str:
         return json.dumps(result, indent=2)
 
     except Exception as e:
+        logger.exception("analyze_ftp_test failed")
         return json.dumps({'status': 'error', 'error': str(e)})
 
 
@@ -660,6 +668,7 @@ def get_methodology() -> str:
         methodology = load_methodology()
         return json.dumps(methodology, indent=2)
     except Exception as e:
+        logger.exception("get_methodology failed")
         return json.dumps({'error': str(e)})
 
 
@@ -737,6 +746,8 @@ def update_methodology(
         }, indent=2)
 
     except json.JSONDecodeError as e:
+        logger.exception("update_methodology failed")
         return json.dumps({'error': f'Invalid JSON: {str(e)}'})
     except Exception as e:
+        logger.exception("update_methodology failed")
         return json.dumps({'error': str(e)})
