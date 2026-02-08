@@ -1,13 +1,307 @@
-"""Injury tools - diagnose, research, and track injuries."""
+"""Injury tools - diagnose, research, and track injuries.
+
+Uses physio-pedia.com as primary clinical reference with Wikipedia fallback.
+Diagnosis logic is delegated to the LLM — this module provides clinical context,
+severity assessment, and research content for the LLM to reason about.
+"""
 
 from mcp_app import mcp
-from web_utils import fetch_page_text
+from web_utils import fetch_page_text, fetch_page_text_validated
 from planner import load_json_file, save_json_file, load_athlete
 from config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
-                    INJURY_STATUS_OPTIONS, ATHLETE_FILE)
+                    INJURY_STATUS_OPTIONS, ATHLETE_FILE,
+                    PHYSIOPEDIA_BASE_URL)
 from datetime import date
 import json
 import re
+from urllib.parse import urlparse
+
+
+# ---------------------------------------------------------------------------
+# Search term mapping: body region + sublocation → article names
+# Keys are physio-pedia article names (Title_Case with underscores).
+# The slug form (hyphenated) is kept alongside for Wikipedia fallback
+# and relevance checking.
+# This is *information retrieval* (what article to fetch), not diagnosis.
+# ---------------------------------------------------------------------------
+
+_SEARCH_TERM_MAP = {
+    "shin": {
+        "anterior": ["Anterior_Tibialis_Tendinitis", "Shin_Splints"],
+        "front": ["Anterior_Tibialis_Tendinitis", "Shin_Splints"],
+        "medial": ["Medial_Tibial_Stress_Syndrome", "Shin_Splints"],
+        "along the bone": ["Medial_Tibial_Stress_Syndrome", "Tibial_Stress_Fracture"],
+        "lateral": ["Peroneal_Tendinitis", "Compartment_Syndrome"],
+        "_default": ["Shin_Splints", "Tibial_Stress_Fracture"],
+    },
+    "knee": {
+        "front": ["Patellofemoral_Pain_Syndrome", "Patellar_Tendinitis"],
+        "kneecap": ["Patellofemoral_Pain_Syndrome", "Chondromalacia_Patella"],
+        "medial": ["Medial_Collateral_Ligament_(MCL)", "Medial_Meniscus_Tear"],
+        "lateral": ["Iliotibial_Band_Syndrome", "Lateral_Meniscus_Tear"],
+        "behind": ["Baker%27s_Cyst", "Posterior_Cruciate_Ligament_(PCL)"],
+        "_default": ["Knee_Pain", "Patellofemoral_Pain_Syndrome"],
+    },
+    "ankle": {
+        "lateral": ["Lateral_Ankle_Sprain", "Peroneal_Tendinitis"],
+        "outer": ["Lateral_Ankle_Sprain", "Peroneal_Tendinitis"],
+        "medial": ["Medial_Ankle_Sprain", "Posterior_Tibial_Tendinitis"],
+        "achilles": ["Achilles_Tendinitis", "Achilles_Tendon_Rupture"],
+        "back": ["Achilles_Tendinitis", "Retrocalcaneal_Bursitis"],
+        "front": ["Anterior_Ankle_Impingement"],
+        "_default": ["Ankle_Sprain", "Achilles_Tendinitis"],
+    },
+    "back": {
+        "lower": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
+        "lumbar": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
+        "mid": ["Thoracic_Back_Pain"],
+        "thoracic": ["Thoracic_Back_Pain"],
+        "upper": ["Cervical_Strain", "Neck_Pain"],
+        "_default": ["Low_Back_Pain", "Lumbar_Disc_Herniation"],
+    },
+    "shoulder": {
+        "front": ["Biceps_Tendinitis", "Anterior_Shoulder_Instability"],
+        "top": ["Acromioclavicular_Joint_Injury", "Shoulder_Impingement_Syndrome"],
+        "back": ["Posterior_Shoulder_Instability", "Infraspinatus"],
+        "side": ["Rotator_Cuff_Tendinitis", "Shoulder_Impingement_Syndrome"],
+        "_default": ["Rotator_Cuff_Tendinitis", "Shoulder_Impingement_Syndrome"],
+    },
+    "hip": {
+        "front": ["Hip_Flexor_Strain", "Femoroacetabular_Impingement"],
+        "groin": ["Hip_Flexor_Strain", "Adductor_Strain"],
+        "lateral": ["Greater_Trochanteric_Pain_Syndrome", "Gluteus_Medius"],
+        "side": ["Greater_Trochanteric_Pain_Syndrome", "Iliotibial_Band_Syndrome"],
+        "back": ["Piriformis_Syndrome", "Hamstring_Tendinopathy"],
+        "buttock": ["Piriformis_Syndrome", "Hamstring_Tendinopathy"],
+        "_default": ["Hip_Pain", "Greater_Trochanteric_Pain_Syndrome"],
+    },
+    "foot": {
+        "heel": ["Plantar_Fasciitis", "Calcaneal_Stress_Fracture"],
+        "bottom": ["Plantar_Fasciitis", "Metatarsalgia"],
+        "arch": ["Plantar_Fasciitis", "Posterior_Tibial_Tendinitis"],
+        "ball": ["Metatarsalgia", "Morton%27s_Neuroma"],
+        "toes": ["Turf_Toe", "Morton%27s_Neuroma"],
+        "_default": ["Plantar_Fasciitis", "Foot_Pain"],
+    },
+    "calf": {
+        "upper": ["Gastrocnemius", "Calf_Strain"],
+        "mid": ["Calf_Strain", "Soleus"],
+        "lower": ["Achilles_Tendinitis", "Soleus"],
+        "near achilles": ["Achilles_Tendinitis"],
+        "_default": ["Calf_Strain", "Achilles_Tendinitis"],
+    },
+}
+
+
+def _build_search_terms(body_region: str, location_specific: str) -> list[str]:
+    """Build physio-pedia article names from body region + sublocation."""
+    region_map = _SEARCH_TERM_MAP.get(body_region, {})
+    location_lower = location_specific.lower() if location_specific else ""
+
+    # Try to match sublocation keywords
+    for key, slugs in region_map.items():
+        if key == "_default":
+            continue
+        if key in location_lower:
+            return slugs
+
+    # Fallback to default for this region
+    return region_map.get("_default", [f"{body_region}-pain"])
+
+
+def _is_relevant_content(content: str, body_region: str, search_term: str) -> bool:
+    """Validate fetched content is actually about the injury (not an unrelated redirect).
+
+    Checks: minimum length, clinical indicators present, and at least one
+    meaningful word from the search term appears in the content.
+    """
+    if len(content) < 500:
+        return False
+
+    content_lower = content.lower()
+
+    # Must have clinical indicators
+    clinical_indicators = ['treatment', 'diagnosis', 'symptoms', 'rehabilitation',
+                           'causes', 'clinical', 'management', 'presentation',
+                           'epidemiology', 'complications']
+    if not any(ind in content_lower for ind in clinical_indicators):
+        return False
+
+    # At least one meaningful word from search term should appear
+    # Split article name into words (e.g. "Achilles_Tendinitis" → ["achilles", "tendinitis"])
+    term_words = [w.lower() for w in re.split(r'[-_ ]', search_term) if len(w) > 3]
+    if term_words and not any(w in content_lower for w in term_words):
+        return False
+
+    return True
+
+
+def _extract_clinical_info(content: str) -> dict:
+    """Extract structured clinical findings from fetched text.
+
+    Categorises sentences by keyword matching into treatment, rehabilitation,
+    presentation, recovery_timeline, risk_factors, and complications.
+    """
+    sentences = re.split(r'[.!?]+', content)
+
+    categories = {
+        "treatment": ["treatment", "management", "therapy", "intervention", "conservative", "surgical"],
+        "rehabilitation": ["rehabilitation", "exercise", "stretching", "strengthening", "physical therapy", "physiotherapy"],
+        "presentation": ["presentation", "symptom", "sign", "examination", "clinical finding", "history"],
+        "recovery_timeline": ["recovery", "healing", "duration", "weeks", "days", "months", "return to"],
+        "risk_factors": ["risk factor", "etiology", "cause", "predispos", "mechanism"],
+        "complications": ["complication", "prognosis", "recurrence", "chronic", "sequelae"],
+    }
+
+    results = {cat: [] for cat in categories}
+
+    for sentence in sentences:
+        sentence_clean = sentence.strip()
+        sentence_lower = sentence_clean.lower()
+        if len(sentence_clean) < 20 or len(sentence_clean) > 300:
+            continue
+        for cat, keywords in categories.items():
+            if any(kw in sentence_lower for kw in keywords):
+                results[cat].append(sentence_clean)
+
+    # Trim to top findings per category
+    return {cat: findings[:5] for cat, findings in results.items() if findings}
+
+
+def _is_significant_redirect(requested_url: str, final_url: str) -> bool:
+    """Check if a redirect changed the path significantly (e.g. to search/home page)."""
+    if not final_url:
+        return False
+    req_path = urlparse(requested_url).path.rstrip('/')
+    fin_path = urlparse(final_url).path.rstrip('/')
+    # Same path (possibly with trailing slash difference) is OK
+    if req_path == fin_path:
+        return False
+    # Different path means redirect to a different page
+    return True
+
+
+def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
+    """Fetch physio-pedia content relevant to body region + clinical picture.
+
+    Tries physio-pedia URLs first (predictable article names), validates content
+    is relevant and not a redirect to search/home, falls back to Wikipedia.
+
+    Returns dict with keys: source, content, url, clinical_info.
+    Empty dict when nothing found (signals needs_research to caller).
+    """
+    location_specific = clinical_picture.get("location_specific", "")
+    search_terms = _build_search_terms(body_region, location_specific)
+
+    # Try physio-pedia first
+    for article_name in search_terms:
+        url = f"{PHYSIOPEDIA_BASE_URL}/{article_name}"
+        try:
+            content, final_url = fetch_page_text_validated(url)
+            if _is_significant_redirect(url, final_url):
+                continue
+            if _is_relevant_content(content, body_region, article_name):
+                clinical_info = _extract_clinical_info(content)
+                return {
+                    "source": "physio-pedia",
+                    "content": content[:3000],
+                    "url": final_url,
+                    "clinical_info": clinical_info,
+                }
+        except Exception:
+            continue
+
+    # Fallback: Wikipedia
+    wiki_term = search_terms[0] if search_terms else body_region
+    wiki_url = f"https://en.wikipedia.org/wiki/{wiki_term}"
+    try:
+        content, final_url = fetch_page_text_validated(wiki_url)
+        if _is_significant_redirect(wiki_url, final_url):
+            return {}
+        if _is_relevant_content(content, body_region, wiki_term):
+            clinical_info = _extract_clinical_info(content)
+            return {
+                "source": "wikipedia",
+                "content": content[:3000],
+                "url": final_url,
+                "clinical_info": clinical_info,
+            }
+    except Exception:
+        pass
+
+    # Nothing worked
+    return {}
+
+
+def _save_diagnosis_to_profile(body_region: str, location: str,
+                               severity: str, clinical_picture: dict) -> bool:
+    """Save diagnosed injury to athlete.json (injury_history + coaching_notes).
+
+    Deduplicates: if same body_region + same date already exists, updates it.
+    Returns True on success, False on error.
+    """
+    try:
+        athlete = load_athlete()
+        # Remove baseline data before saving (load_athlete merges them in)
+        athlete.pop('baseline', None)
+        athlete.pop('personal_records', None)
+
+        today = date.today().isoformat()
+
+        # --- injury_history ---
+        injury_history = athlete.get('injury_history', [])
+
+        # Check for existing entry (same region + same date)
+        existing = None
+        for entry in injury_history:
+            if entry.get('body_region') == body_region and entry.get('date') == today:
+                existing = entry
+                break
+
+        injury_entry = {
+            "date": today,
+            "body_region": body_region,
+            "type": body_region,  # downstream consumers (strength_tools, planning_tools) read this
+            "location": location,
+            "severity": severity,
+            "status": "active",
+            "onset": clinical_picture.get("onset", "unknown"),
+            "pain_type": clinical_picture.get("pain_type", "unknown"),
+            "location_specific": clinical_picture.get("location_specific", ""),
+            "restricted_activities": [],  # LLM populates after research via update_injury_status()
+            "safe_activities": [],        # LLM populates after research via update_injury_status()
+        }
+
+        if existing:
+            existing.update(injury_entry)
+        else:
+            injury_history.append(injury_entry)
+            athlete['injury_history'] = injury_history
+
+        # --- coaching_notes (deduplicate: replace same-day same-region line) ---
+        summary = f"[{today}] Injury: {location} ({body_region}), severity={severity}, onset={clinical_picture.get('onset', 'unknown')}"
+        existing_notes = athlete.get('coaching_notes', '')
+        if existing_notes:
+            # Check for existing line with same date + body region, replace if found
+            prefix = f"[{today}] Injury:"
+            lines = existing_notes.split('\n')
+            replaced = False
+            for i, line in enumerate(lines):
+                if line.startswith(prefix) and f"({body_region})" in line:
+                    lines[i] = summary
+                    replaced = True
+                    break
+            if replaced:
+                athlete['coaching_notes'] = '\n'.join(lines)
+            else:
+                athlete['coaching_notes'] = f"{existing_notes}\n{summary}"
+        else:
+            athlete['coaching_notes'] = summary
+
+        save_json_file(ATHLETE_FILE, athlete)
+        return True
+    except Exception:
+        return False
 
 
 @mcp.tool()
@@ -19,8 +313,10 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         Call with just location to receive clinical questions to ask the athlete.
         Example: diagnose_injury(location="shin")
 
-    Phase 2 - Get diagnosis:
-        Call with location + answers (JSON string) to receive diagnosis.
+    Phase 2 - Get clinical context for LLM diagnosis:
+        Call with location + answers (JSON string) to receive severity assessment,
+        research context from physio-pedia/Wikipedia, and save to athlete profile.
+        The LLM performs differential diagnosis using the returned research context.
         Example: diagnose_injury(location="shin", answers='{"onset": "Gradual", ...}')
 
     Args:
@@ -29,7 +325,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
 
     Returns:
         Phase 1: JSON with clinical assessment questions
-        Phase 2: JSON with possible conditions, severity, and recommendations
+        Phase 2: JSON with clinical picture, severity, research context, and recommendations
     """
     try:
         location_lower = location.lower().strip()
@@ -68,7 +364,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
                 "instructions": "Ask these questions to gather clinical information, then call again with answers."
             }, indent=2)
 
-        # Phase 2: Analyze answers and provide diagnosis
+        # Phase 2: Analyze answers and provide clinical context
         try:
             answers_dict = json.loads(answers)
         except json.JSONDecodeError as e:
@@ -110,8 +406,13 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         if not severity_reasoning:
             severity_reasoning.append("Pain only during activity, no swelling")
 
-        # Build possible conditions based on location and symptoms
-        possible_conditions = _get_possible_conditions(body_region, clinical_picture, answers_dict)
+        # Fetch research context (physio-pedia → Wikipedia fallback)
+        research_context = _fetch_injury_research(body_region, clinical_picture)
+
+        # Build candidate conditions from search terms used
+        search_terms = _build_search_terms(body_region,
+                                           clinical_picture.get("location_specific", ""))
+        candidate_conditions = [t.replace('_', ' ').replace('%27', "'") for t in search_terms]
 
         # Determine red flags
         red_flags = []
@@ -132,15 +433,44 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         else:
             recommended_action = "Reduce activity intensity. Ice after exercise. Monitor for worsening symptoms."
 
+        # Save to athlete profile
+        saved = _save_diagnosis_to_profile(body_region, location, severity, clinical_picture)
+
+        # Build research section with status signal
+        if research_context:
+            research_section = {
+                "research_status": "ok",
+                "source": research_context.get("source", "none"),
+                "content": research_context.get("content", ""),
+                "url": research_context.get("url", ""),
+                "clinical_info": research_context.get("clinical_info", {}),
+            }
+        else:
+            # No research found — honest signal for LLM to follow up
+            physio_urls = [f"{PHYSIOPEDIA_BASE_URL}/{t}" for t in search_terms[:2]]
+            wiki_term = search_terms[0] if search_terms else body_region
+            research_section = {
+                "research_status": "needs_research",
+                "source": "none",
+                "content": "",
+                "url": "",
+                "clinical_info": {},
+                "suggested_sources": physio_urls + [
+                    f"https://en.wikipedia.org/wiki/{wiki_term}"
+                ],
+            }
+
         return json.dumps({
             "location": location,
             "phase": "diagnosis",
             "clinical_picture": clinical_picture,
-            "possible_conditions": possible_conditions,
             "severity_assessment": severity,
             "severity_reasoning": severity_reasoning,
+            "candidate_conditions": candidate_conditions,
             "red_flags": red_flags if red_flags else ["None identified based on assessment"],
             "recommended_action": recommended_action,
+            "research_context": research_section,
+            "saved_to_profile": saved,
             "red_flags_to_watch": [
                 "Pain becoming severe or constant",
                 "Swelling increases",
@@ -155,153 +485,14 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-def _get_possible_conditions(body_region: str, clinical: dict, answers: dict) -> list:
-    """Helper to determine possible conditions based on body region and symptoms."""
-
-    conditions = []
-
-    if body_region == "shin":
-        if "anterior" in clinical.get("location_specific", "").lower() or "front" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "Anterior Tibialis Tendinitis",
-                "likelihood": "high" if clinical["onset"] == "gradual" else "medium",
-                "description": "Inflammation of the anterior tibialis tendon from overuse",
-                "why_matches": [f for f in [
-                    "Front of shin" if "anterior" in clinical.get("location_specific", "").lower() else None,
-                    "Gradual onset" if clinical["onset"] == "gradual" else None,
-                    "Volume increase" if "increase" in answers.get("recent_changes", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Overuse", "Sudden volume increase", "Tight calves", "Hill running"],
-            })
-        if "medial" in clinical.get("location_specific", "").lower() or "along the bone" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "Shin Splints (MTSS)",
-                "likelihood": "high" if clinical["onset"] == "gradual" else "medium",
-                "description": "Medial tibial stress syndrome - inflammation along the shin bone",
-                "why_matches": [f for f in [
-                    "Medial/bone location",
-                    "Gradual onset" if clinical["onset"] == "gradual" else None,
-                    "Running aggravates" if "running" in answers.get("aggravating", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Overuse", "Hard surfaces", "Poor footwear", "Flat feet"],
-            })
-        if clinical["swelling"] and clinical["onset"] == "gradual":
-            conditions.append({
-                "name": "Stress Fracture (tibial)",
-                "likelihood": "low",
-                "description": "Micro-fracture of the tibia from repetitive stress",
-                "why_matches": ["Gradual onset with swelling - needs professional evaluation"],
-                "typical_causes": ["Overtraining", "Rapid volume increase", "Poor bone density"],
-                "warning": "If pain is localized to one spot and severe, seek imaging"
-            })
-
-    elif body_region == "knee":
-        if "front" in clinical.get("location_specific", "").lower() or "kneecap" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "Patellofemoral Pain Syndrome (Runner's Knee)",
-                "likelihood": "high",
-                "description": "Pain around or behind the kneecap",
-                "why_matches": [f for f in [
-                    "Front/kneecap location",
-                    "Worse with stairs" if "stairs" in answers.get("aggravating", "").lower() else None,
-                    "Worse with squatting" if "squat" in answers.get("aggravating", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Muscle imbalance", "Overuse", "Poor tracking"],
-            })
-        if "lateral" in clinical.get("location_specific", "").lower() or "outer" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "IT Band Syndrome",
-                "likelihood": "high" if "running" in answers.get("aggravating", "").lower() else "medium",
-                "description": "Inflammation where IT band crosses the knee",
-                "why_matches": [f for f in [
-                    "Lateral/outer location",
-                    "Running aggravates" if "running" in answers.get("aggravating", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Running", "Cycling", "Weak hip abductors"],
-            })
-
-    elif body_region == "ankle":
-        if "lateral" in clinical.get("location_specific", "").lower() or "outer" in clinical.get("location_specific", "").lower():
-            if clinical["onset"] == "acute":
-                conditions.append({
-                    "name": "Lateral Ankle Sprain",
-                    "likelihood": "high",
-                    "description": "Stretching or tearing of lateral ankle ligaments",
-                    "why_matches": ["Sudden onset", "Outer ankle location"],
-                    "typical_causes": ["Rolling ankle inward", "Uneven surface", "Landing awkwardly"],
-                })
-            else:
-                conditions.append({
-                    "name": "Peroneal Tendinitis",
-                    "likelihood": "high",
-                    "description": "Inflammation of tendons on outer ankle",
-                    "why_matches": ["Gradual onset", "Lateral location"],
-                    "typical_causes": ["Overuse", "Running on uneven surfaces"],
-                })
-        if "achilles" in clinical.get("location_specific", "").lower() or "back" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "Achilles Tendinitis/Tendinopathy",
-                "likelihood": "high",
-                "description": "Inflammation or degeneration of the Achilles tendon",
-                "why_matches": [f for f in [
-                    "Posterior/Achilles location",
-                    "Gradual onset" if clinical["onset"] == "gradual" else None,
-                    "Worse with pushing off" if "push" in answers.get("aggravating", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Overuse", "Tight calves", "Hill running", "Sudden volume increase"],
-            })
-
-    elif body_region == "foot":
-        if "heel" in clinical.get("location_specific", "").lower() and "bottom" in clinical.get("location_specific", "").lower():
-            conditions.append({
-                "name": "Plantar Fasciitis",
-                "likelihood": "high" if "first steps" in answers.get("aggravating", "").lower() else "medium",
-                "description": "Inflammation of the plantar fascia under the foot",
-                "why_matches": [f for f in [
-                    "Heel/bottom location",
-                    "Worse with first steps in morning" if "morning" in answers.get("aggravating", "").lower() else None,
-                ] if f],
-                "typical_causes": ["Overuse", "Tight calves", "Poor arch support", "Sudden volume increase"],
-            })
-
-    elif body_region == "calf":
-        if clinical["onset"] == "acute":
-            conditions.append({
-                "name": "Calf Muscle Strain",
-                "likelihood": "high",
-                "description": "Tear or strain of gastrocnemius or soleus muscle",
-                "why_matches": ["Sudden onset", "Calf location"],
-                "typical_causes": ["Explosive movement", "Sprinting", "Jumping", "Fatigue"],
-            })
-        else:
-            conditions.append({
-                "name": "Calf Muscle Tightness/Overuse",
-                "likelihood": "high",
-                "description": "Muscle fatigue and tightness from overuse",
-                "why_matches": ["Gradual onset"],
-                "typical_causes": ["Overtraining", "Inadequate stretching", "Volume increase"],
-            })
-
-    # If no specific conditions matched, add general options
-    if not conditions:
-        conditions.append({
-            "name": "Soft Tissue Injury (unspecified)",
-            "likelihood": "medium",
-            "description": f"Injury to {body_region} area - may be muscular, tendon, or ligament",
-            "why_matches": ["Location and symptoms suggest soft tissue involvement"],
-            "typical_causes": ["Overuse", "Trauma", "Muscle imbalance"],
-        })
-
-    return conditions
-
-
 @mcp.tool()
 def research_injury(injury_type: str, severity: str = "moderate", url: str = None) -> str:
     """
     Research treatment protocols and recovery timelines for a specific injury.
 
-    Fetches information from provided URL or tries common medical sources.
-    Each injury is researched uniquely rather than using static protocols.
+    Fetches information from physio-pedia.com (primary) or Wikipedia (fallback),
+    or a directly provided URL. Each injury is researched uniquely rather than
+    using static protocols.
 
     Args:
         injury_type: Name of the injury (e.g., "anterior tibialis tendinitis")
@@ -313,11 +504,9 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         recovery expectations, and sources.
 
     Usage patterns:
-        1. Direct URL: research_injury("shin splints", url="https://en.wikipedia.org/wiki/Shin_splints")
-        2. Auto-search: research_injury("shin splints") - tries Wikipedia and other sources
+        1. Direct URL: research_injury("shin splints", url="https://orthobullets.com/...")
+        2. Auto-search: research_injury("shin splints") - tries physio-pedia then Wikipedia
     """
-
-
     try:
         if severity.lower() not in INJURY_SEVERITY_LEVELS:
             severity = "moderate"
@@ -330,85 +519,55 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
             "raw_findings": [],
         }
 
-        # Format injury name for URL
-        injury_url_name = injury_type.replace(' ', '_')
+        # Format injury name for URL patterns
+        injury_physio = injury_type.replace(' ', '_').title().replace("'S", "'s")
+        injury_wiki = injury_type.replace(' ', '_')
 
         # Build list of URLs to try
+        sources_to_try = []
+
         if url:
-            # Use provided URL first
-            search_sources = [{"name": "Provided URL", "url": url, "type": "direct"}]
-        else:
-            # Try common medical sources
-            search_sources = []
+            sources_to_try.append({"name": "Provided URL", "url": url})
 
-        # Always add fallback sources
-        search_sources.extend([
-            # Wikipedia - usually accessible and has good medical content
-            {
-                "name": "Wikipedia",
-                "url": f"https://en.wikipedia.org/wiki/{injury_url_name}",
-                "type": "clinical"
-            },
-        ])
+        # Physio-pedia: predictable article URLs
+        sources_to_try.append({
+            "name": "Physio-pedia",
+            "url": f"{PHYSIOPEDIA_BASE_URL}/{injury_physio}",
+        })
 
-        # Try to fetch from sports medicine sources
+        # Wikipedia fallback
+        sources_to_try.append({
+            "name": "Wikipedia",
+            "url": f"https://en.wikipedia.org/wiki/{injury_wiki}",
+        })
+
+        # Try to fetch from sources
         fetched_content = None
-        for source in search_sources:
+        for source in sources_to_try:
             try:
-                content = fetch_page_text(source["url"])
-
-                # Check if we got meaningful clinical content (not just a 404 or search page)
-                content_lower = content.lower()
-                clinical_indicators = ['treatment', 'diagnosis', 'symptoms', 'rehabilitation', 'causes', 'clinical', 'management']
-                has_clinical_content = any(ind in content_lower for ind in clinical_indicators)
-
-                if len(content) > 500 and has_clinical_content:
+                content, final_url = fetch_page_text_validated(source["url"])
+                # Reject significant redirects (page probably redirected to search/home)
+                if _is_significant_redirect(source["url"], final_url):
+                    continue
+                if _is_relevant_content(content, "", injury_physio):
                     fetched_content = content
-                    research_result["sources"].append(source["url"])
+                    research_result["sources"].append(final_url)
                     break
             except Exception:
                 continue
 
         # Extract relevant information from fetched content
         if fetched_content:
-            content_lower = fetched_content.lower()
-
-            # Look for treatment-related content
-            treatment_keywords = ["treatment", "management", "therapy", "intervention"]
-            rehab_keywords = ["rehabilitation", "exercise", "stretching", "strengthening"]
-            timeline_keywords = ["recovery", "healing", "duration", "weeks", "days"]
-
-            # Extract sentences containing relevant keywords
-            sentences = re.split(r'[.!?]+', fetched_content)
-            treatment_findings = []
-            rehab_findings = []
-            timeline_findings = []
-
-            for sentence in sentences:
-                sentence_clean = sentence.strip()
-                sentence_lower = sentence_clean.lower()
-                if len(sentence_clean) > 20:  # Skip very short fragments
-                    if any(kw in sentence_lower for kw in treatment_keywords):
-                        treatment_findings.append(sentence_clean)
-                    if any(kw in sentence_lower for kw in rehab_keywords):
-                        rehab_findings.append(sentence_clean)
-                    if any(kw in sentence_lower for kw in timeline_keywords):
-                        timeline_findings.append(sentence_clean)
-
-            research_result["researched_info"] = {
-                "treatment_approaches": treatment_findings[:5] if treatment_findings else ["Research specific treatment protocols with your physiotherapist"],
-                "rehabilitation": rehab_findings[:5] if rehab_findings else ["Gradual return to activity under professional guidance"],
-                "recovery_insights": timeline_findings[:3] if timeline_findings else ["Recovery time varies based on severity and individual factors"],
+            clinical_info = _extract_clinical_info(fetched_content)
+            research_result["researched_info"] = clinical_info if clinical_info else {
+                "note": "Content fetched but no structured findings extracted"
             }
 
-            # Try to extract specific recommendations
             research_result["raw_findings"] = {
                 "content_preview": fetched_content[:1000],
                 "note": "Review the content above for detailed information specific to this injury"
             }
-
         else:
-            # Couldn't fetch - provide guidance on what to research
             research_result["researched_info"] = {
                 "note": f"Unable to fetch current research for '{injury_type}'. Recommend searching:",
                 "suggested_searches": [
@@ -419,63 +578,9 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
                 ],
                 "recommended_sources": [
                     "physio-pedia.com",
-                    "sportsinjuryclinic.net",
+                    "orthobullets.com",
                     "Your local sports physiotherapist",
                 ]
-            }
-
-        # Add severity-based general guidance
-        severity_guidance = {
-            "mild": {
-                "general_approach": "Often manageable with relative rest and self-care",
-                "typical_timeframe": "Usually improves within 1-3 weeks with appropriate management",
-                "professional_advice": "See a physio if no improvement after 7-10 days",
-            },
-            "moderate": {
-                "general_approach": "May require modified activities and structured rehabilitation",
-                "typical_timeframe": "Expect 3-6 weeks for significant improvement",
-                "professional_advice": "Professional assessment recommended for proper diagnosis and treatment plan",
-            },
-            "severe": {
-                "general_approach": "Requires professional evaluation and structured treatment",
-                "typical_timeframe": "Recovery often takes 6-12+ weeks",
-                "professional_advice": "See a healthcare professional promptly - may need imaging or specialist referral",
-            },
-        }
-
-        research_result["severity_context"] = severity_guidance.get(severity, severity_guidance["moderate"])
-
-        # Activity guidance based on injury location/type
-        injury_lower = injury_type.lower()
-        if any(term in injury_lower for term in ["shin", "tibialis", "calf", "achilles", "plantar", "foot", "ankle"]):
-            research_result["activity_guidance"] = {
-                "likely_safe": ["cycling", "swimming", "upper body strength", "core work"],
-                "likely_restricted": ["running", "jumping", "high-impact activities"],
-                "note": "Confirm specific restrictions with your physiotherapist based on your assessment"
-            }
-        elif any(term in injury_lower for term in ["knee", "patella", "it band", "meniscus"]):
-            research_result["activity_guidance"] = {
-                "likely_safe": ["swimming", "upper body strength", "non-weight-bearing activities"],
-                "likely_restricted": ["running", "squatting", "stairs", "cycling (depends on injury)"],
-                "note": "Confirm specific restrictions with your physiotherapist based on your assessment"
-            }
-        elif any(term in injury_lower for term in ["shoulder", "rotator"]):
-            research_result["activity_guidance"] = {
-                "likely_safe": ["lower body activities", "walking", "cycling", "core work"],
-                "likely_restricted": ["overhead movements", "swimming (depends)", "pushing/pulling"],
-                "note": "Confirm specific restrictions with your physiotherapist based on your assessment"
-            }
-        elif any(term in injury_lower for term in ["back", "spine", "disc"]):
-            research_result["activity_guidance"] = {
-                "likely_safe": ["walking", "swimming", "gentle movement"],
-                "likely_restricted": ["heavy lifting", "high-impact", "prolonged sitting"],
-                "note": "Back injuries vary significantly - professional assessment essential"
-            }
-        else:
-            research_result["activity_guidance"] = {
-                "general": "Avoid activities that aggravate symptoms",
-                "cross_training": "Usually possible to maintain fitness with alternative activities",
-                "note": "Confirm specific restrictions with your physiotherapist"
             }
 
         research_result["disclaimer"] = "This is researched information, not medical advice. Each injury is unique - consult a healthcare professional for diagnosis and personalized treatment."
