@@ -34,7 +34,7 @@ def check_setup() -> bool:
         print("\nMissing data files:")
         print("\n".join(missing))
         print("\nRun the setup wizard to create them:")
-        print("  python setup_wizard.py")
+        print("  python scripts/setup_wizard.py")
         print("\nOr create them manually in the data/ folder.")
         print("=" * 50 + "\n")
         return False
@@ -91,20 +91,48 @@ def parse_activity(activity: dict[str, Any]) -> dict[str, Any]:
     duration_secs = activity.get('duration', 0) or 0
     distance_m = activity.get('distance', 0) or 0
 
+    # Moving duration (excludes stopped time)
+    moving_secs = activity.get('movingDuration')
+
+    # Cadence: sport-specific keys
+    avg_cadence = (
+        activity.get('averageRunningCadenceInStepsPerMinute')
+        or activity.get('averageBikingCadenceInRevPerMinute')
+    )
+
+    # Event type (race vs training vs uncategorized)
+    event_type_obj = activity.get('eventType', {})
+    event_type = event_type_obj.get('typeKey') if isinstance(event_type_obj, dict) else None
+
+    # Training effect
+    aerobic_te = activity.get('aerobicTrainingEffect')
+    anaerobic_te = activity.get('anaerobicTrainingEffect')
+
     parsed = {
         'activity_id': activity.get('activityId'),
         'date': activity.get('startTimeLocal', '')[:10],  # YYYY-MM-DD
+        'start_time': activity.get('startTimeLocal'),
         'name': activity.get('activityName', 'Unnamed'),
         'type': activity_type.get('typeKey', 'unknown'),
         'parent_type': activity_type.get('parentTypeId'),
+        'event_type': event_type,
+        'description': activity.get('description'),
         'duration_mins': round(duration_secs / 60, 1),
+        'moving_duration_mins': round(moving_secs / 60, 1) if moving_secs else None,
         'distance_km': round(distance_m / 1000, 2) if distance_m else None,
+        'elevation_gain': activity.get('elevationGain'),
+        'elevation_loss': activity.get('elevationLoss'),
         'avg_hr': activity.get('averageHR'),
         'max_hr': activity.get('maxHR'),
         'calories': activity.get('calories'),
         'avg_power': activity.get('avgPower'),
         'max_power': activity.get('maxPower'),
         'norm_power': activity.get('normPower'),
+        'avg_cadence': avg_cadence,
+        'training_effect': {
+            'aerobic': aerobic_te,
+            'anaerobic': anaerobic_te,
+        } if aerobic_te is not None or anaerobic_te is not None else None,
     }
 
     # Add pace for running activities

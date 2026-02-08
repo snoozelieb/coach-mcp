@@ -11,6 +11,7 @@ data/suggestions.json
 data/coaching_log.json
 data/fitness_history.json
 data/exercise_library.json
+data/exercises.json
 
 # Temp files from Claude Code
 tmpclaude-*
@@ -59,4 +60,5 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+nul
 garmin_tokens.json

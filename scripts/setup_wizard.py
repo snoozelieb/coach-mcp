@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from datetime import date
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def get_input(prompt: str, default: str = None) -> str:

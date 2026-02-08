@@ -10,8 +10,13 @@ Run via Task Scheduler at 05:00 daily.
 """
 import json
 import logging
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
+
+# Add project root to path so we can import tool modules
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
@@ -23,7 +28,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('daily_loop.log'),
+        logging.FileHandler(str(Path(__file__).resolve().parent.parent / 'daily_loop.log')),
         logging.StreamHandler()
     ]
 )

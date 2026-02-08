@@ -85,7 +85,7 @@ DAY                       <- What should today look like?
 
 **CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
-This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation signals, sport priorities, active injuries.
+This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries.
 
 ### Load Hierarchy (Injury Prevention)
 
@@ -117,9 +117,9 @@ The snapshot includes sleep data with `avg_hours`, `scores`, and `deficit_flag`.
 
 ### Personalizing Load Decisions
 
-The `volume_data.load_increase_guidance` provides a range: conservative (10%), standard (15%), aggressive (25%).
+The `volume_data.load_increase_pcts` provides a range: [10, 15, 25] (conservative, standard, aggressive).
 
-Choose where in the range based on `adaptation_signals`:
+Choose where in the range based on `adaptation_patterns`, `sleep.trend_direction`, `recovery.hrv_trend`, and `compliance.compliance_rate_pct`:
 - **Red flags** (sleep < 6.5hr, HRV declining, compliance < 60%) -> Conservative
 - **Green signals** (sleep > 7.5hr improving, compliance > 85%, HRV improving) -> Aggressive
 - **Mixed/unknown** -> Standard
@@ -128,7 +128,7 @@ Always record reasoning with `log_coaching_decision()`.
 
 ### Adaptation Patterns
 
-Check `adaptation_signals.adaptation_patterns` before load decisions. These are learned from `record_athlete_response()` calls:
+Check `adaptation_patterns` before load decisions. These are learned from `record_athlete_response()` calls:
 - `handles_volume_well` -> more aggressive on volume
 - `recovers_quickly` -> shorter rest between hard sessions
 - `needs_extra_rest_after_intensity` -> add recovery day after intervals
@@ -171,7 +171,7 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 | Quick load/ACWR check | `get_load_status()` |
 | Pillar compliance | `get_compliance_report()` |
 | Coaching self-assessment | `get_coaching_score()` |
-| Push harder or back off? | Check `adaptation_signals` in snapshot |
+| Push harder or back off? | Check `adaptation_patterns` in snapshot |
 
 ### Adaptive Coaching Flow
 
@@ -187,8 +187,8 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 python server.py                              # Run the MCP server
 python -m pytest -v                           # Run all tests
 python -m pytest tests/test_rules.py -v       # Run specific module tests
-python daily_loop.py                          # Morning audit (standalone)
-python daily_loop.py --llm                    # Morning audit with LLM
+python scripts/daily_loop.py                  # Morning audit (standalone)
+python scripts/daily_loop.py --llm            # Morning audit with LLM
 ```
 
 ## Architecture
@@ -204,7 +204,10 @@ coach-mcp/
 ├── planner.py             # Context builder, plan/suggestion management
 ├── parsers.py             # Pure parsing functions for Garmin API responses
 ├── config.py              # Shared configuration and constants
-├── daily_loop.py          # Morning audit automation
+├── scripts/
+│   ├── daily_loop.py      # Morning audit automation
+│   ├── fetch_exercises.py # Fetch exercise DB from Garmin
+│   └── setup_wizard.py   # First-run setup wizard
 ├── tools/
 │   ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
 │   ├── fitness_tools.py   # refresh_athlete_baseline, get_training_readiness, get_load_status, etc.

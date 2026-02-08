@@ -563,7 +563,7 @@ def generate_strength_workout(
         exercises_file = DATA_DIR / "exercises.json"
         if not exercises_file.exists():
             return json.dumps({
-                "error": "Exercise library not found. Run fetch_exercises.py first."
+                "error": "Exercise library not found. Run scripts/fetch_exercises.py first."
             })
 
         with open(exercises_file) as f:
@@ -791,7 +791,7 @@ def add_exercise(
         exercises_file = DATA_DIR / "exercises.json"
         if not exercises_file.exists():
             return json.dumps({
-                "error": "Exercise library not found. Run fetch_exercises.py first."
+                "error": "Exercise library not found. Run scripts/fetch_exercises.py first."
             })
 
         with open(exercises_file) as f:

@@ -231,8 +231,8 @@ def list_exercises(
         exercises_file = DATA_DIR / "exercises.json"
         if not exercises_file.exists():
             return json.dumps({
-                "error": "Exercise library not found. Run fetch_exercises.py first.",
-                "hint": "python fetch_exercises.py"
+                "error": "Exercise library not found. Run scripts/fetch_exercises.py first.",
+                "hint": "python scripts/fetch_exercises.py"
             })
 
         with open(exercises_file) as f:

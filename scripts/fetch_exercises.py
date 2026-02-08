@@ -9,7 +9,7 @@ import requests
 from pathlib import Path
 
 GARMIN_EXERCISES_URL = "https://connect.garmin.com/web-data/exercises/Exercises.json"
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 OUTPUT_FILE = DATA_DIR / "exercises.json"
 
 
