@@ -191,25 +191,10 @@ def get_sport_group(activity_type: str) -> str:
     return _ACTIVITY_TO_SPORT.get(activity_type, 'other')
 
 
-INJURY_ACTIVITY_RESTRICTIONS = {
-    "tendinitis": {
-        "avoid": ["running", "jumping", "high_impact"],
-        "caution": ["hiking", "stairs"],
-        "safe": ["cycling", "swimming", "upper_body_strength"],
-    },
-    "muscle_strain": {
-        "avoid": ["stretching_affected", "explosive_movements"],
-        "caution": ["light_activity"],
-        "safe": ["rest", "gentle_movement"],
-    },
-    "stress_fracture": {
-        "avoid": ["all_weight_bearing", "impact"],
-        "caution": [],
-        "safe": ["swimming", "upper_body"],
-    },
-    "sprain": {
-        "avoid": ["lateral_movements", "running"],
-        "caution": ["walking", "balance"],
-        "safe": ["cycling", "swimming"],
-    },
-}
+
+# Orthobullets clinical reference
+ORTHOBULLETS_BASE_URL = "https://www.orthobullets.com"
+ORTHOBULLETS_SPECIALTIES = [
+    "knee-and-sports", "foot-and-ankle", "shoulder-and-elbow",
+    "spine", "sports", "trauma",
+]

@@ -65,3 +65,21 @@ def fetch_page_text(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> str:
     )
     response.raise_for_status()
     return strip_html(response.text)[:max_chars]
+
+
+def fetch_page_text_validated(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> tuple[str, str]:
+    """Fetch URL, return (stripped_text, final_url) for redirect detection.
+
+    Same as fetch_page_text but also returns the final URL after redirects,
+    allowing callers to detect when the server redirected to a different page.
+
+    Raises requests.RequestException on network errors.
+    """
+    response = requests.get(
+        url,
+        headers=DEFAULT_HEADERS,
+        timeout=HTTP_TIMEOUT_SECONDS,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    return strip_html(response.text)[:max_chars], response.url
