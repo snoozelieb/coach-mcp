@@ -907,22 +907,38 @@ def get_coaching_snapshot() -> str:
         current_plan = get_current_plan()
 
         # 2. Activities this week (actual)
-        # Use plan dates if available, otherwise use calendar week (Mon-Sun)
+        # Calendar week always starts Monday (for compliance checking)
+        monday_this_week = today - timedelta(days=today.weekday())
+
+        # Plan may start on a different date (e.g. mid-week)
         if current_plan and current_plan.get('week_start'):
-            week_start = date.fromisoformat(current_plan['week_start'])
+            plan_start = date.fromisoformat(current_plan['week_start'])
+            # Fetch from whichever is earlier: plan start or this Monday
+            # This ensures we have activities for both:
+            # - Compliance checking (needs full calendar week)
+            # - Planned vs actual (needs plan period)
+            fetch_start = min(plan_start, monday_this_week)
         else:
-            week_start = today - timedelta(days=today.weekday())  # Monday
+            plan_start = None
+            fetch_start = monday_this_week
 
         raw_activities = garmin_api_call(
             lambda c: c.get_activities_by_date(
-                week_start.isoformat(),
+                fetch_start.isoformat(),
                 today.isoformat()
             )
         )
-        activities_this_week = parse_activities(raw_activities)
+        all_fetched_activities = parse_activities(raw_activities)
 
-        # 3. Planned vs Actual comparison
-        planned_vs_actual = _compare_planned_actual(current_plan, activities_this_week, today)
+        # Calendar week activities — for compliance, intensity distribution, etc.
+        activities_this_week = [
+            a for a in all_fetched_activities
+            if a.get('date') and a['date'] >= monday_this_week.isoformat()
+        ]
+
+        # 3. Planned vs Actual comparison (uses full fetch range — the comparison
+        # function filters by plan dates, so extra activities are harmless)
+        planned_vs_actual = _compare_planned_actual(current_plan, all_fetched_activities, today)
 
         # 4. Fitness metrics — overall + per-sport
         #

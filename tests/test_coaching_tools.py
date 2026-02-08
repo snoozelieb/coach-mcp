@@ -1,6 +1,6 @@
 """Tests for tools/coaching_tools.py — helper functions (pure logic, no mocking needed)."""
 import pytest
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from tools.coaching_tools import (
@@ -623,3 +623,138 @@ class TestDataQuality:
             data_quality['sleep'] = 'unavailable'
 
         assert data_quality == {'recovery': 'unavailable', 'sleep': 'unavailable'}
+
+
+# ---------------------------------------------------------------------------
+# Activity fetch window — mid-week plan start
+# ---------------------------------------------------------------------------
+
+class TestMidWeekPlanActivityFetch:
+    """Verify that activities before plan start but within the calendar week are visible."""
+
+    def test_compare_planned_actual_ignores_activities_outside_plan_dates(self):
+        """Activities fetched from before the plan start don't cause false anomalies.
+
+        Plan starts Saturday Feb 7. Activity on Wednesday Feb 4 is in the fetched
+        range (for compliance) but should NOT appear as missing/unplanned in
+        planned_vs_actual since Feb 4 is not a plan day.
+        """
+        plan = {
+            'week_start': '2026-02-07',
+            'week_end': '2026-02-13',
+            'days': {
+                '2026-02-07': {'planned': {'type': 'cycling', 'duration_mins': 120}},
+                '2026-02-08': {'planned': {'type': 'rest'}},
+                '2026-02-09': {'planned': {'type': 'running', 'duration_mins': 45}},
+            }
+        }
+        # Activities include one from before plan start (Wed Feb 4)
+        activities = [
+            {'date': '2026-02-04', 'type': 'running', 'duration_mins': 40},
+            {'date': '2026-02-07', 'type': 'cycling', 'duration_mins': 115},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 2, 8))
+
+        # Feb 4 activity should not appear in anomalies or details at all
+        all_dates = [d['date'] for d in result['details']]
+        assert '2026-02-04' not in all_dates
+
+        anomaly_dates = [a['date'] for a in result['anomalies']]
+        assert '2026-02-04' not in anomaly_dates
+
+        # Feb 7 cycling should be matched
+        assert result['sessions_completed'] == 1
+        # Feb 9 running is pending (today is Feb 8)
+        assert result['sessions_pending'] == 1
+
+    def test_compare_planned_actual_with_pre_plan_and_plan_activities(self):
+        """Full fetch range passed to comparison — plan-date activities still match correctly."""
+        plan = {
+            'week_start': '2026-02-05',
+            'week_end': '2026-02-11',
+            'days': {
+                '2026-02-05': {'planned': {'type': 'running', 'duration_mins': 50}},
+                '2026-02-06': {'planned': {'type': 'strength_training', 'duration_mins': 45}},
+                '2026-02-07': {'planned': {'type': 'rest'}},
+            }
+        }
+        # Activities from full calendar week (Mon Feb 2 onward) + plan dates
+        activities = [
+            {'date': '2026-02-02', 'type': 'cycling', 'duration_mins': 60},
+            {'date': '2026-02-03', 'type': 'yoga', 'duration_mins': 30},
+            {'date': '2026-02-05', 'type': 'running', 'duration_mins': 48},
+            {'date': '2026-02-06', 'type': 'strength_training', 'duration_mins': 50},
+        ]
+        result = _compare_planned_actual(plan, activities, date(2026, 2, 7))
+
+        assert result['sessions_completed'] == 2
+        assert result['sessions_missed'] == 0
+
+        # Pre-plan activities (Feb 2, Feb 3) should not appear
+        all_dates = [d['date'] for d in result['details']]
+        assert '2026-02-02' not in all_dates
+        assert '2026-02-03' not in all_dates
+
+    def test_calendar_week_filter_for_compliance(self):
+        """Activities before plan start but within calendar week are included for compliance.
+
+        This tests the filtering logic used in get_coaching_snapshot:
+        activities_this_week filters from monday_this_week, regardless of plan start.
+        """
+        monday_this_week = date(2026, 2, 2)  # Monday
+
+        # All fetched activities (from min(plan_start, monday))
+        all_fetched = [
+            {'date': '2026-02-02', 'type': 'cycling', 'duration_mins': 60},
+            {'date': '2026-02-03', 'type': 'yoga', 'duration_mins': 30},
+            {'date': '2026-02-05', 'type': 'running', 'duration_mins': 48},
+            {'date': '2026-02-07', 'type': 'strength_training', 'duration_mins': 50},
+        ]
+
+        # Calendar week filter (same logic as in get_coaching_snapshot)
+        activities_this_week = [
+            a for a in all_fetched
+            if a.get('date') and a['date'] >= monday_this_week.isoformat()
+        ]
+
+        # All 4 activities are within the calendar week (Mon Feb 2 - Sun Feb 8)
+        assert len(activities_this_week) == 4
+
+    def test_calendar_week_filter_excludes_prior_week(self):
+        """Activities from before the calendar week's Monday are excluded from compliance."""
+        monday_this_week = date(2026, 2, 9)  # Monday Feb 9
+
+        # Plan started Feb 5 (Thursday of previous week)
+        all_fetched = [
+            {'date': '2026-02-05', 'type': 'running', 'duration_mins': 40},
+            {'date': '2026-02-06', 'type': 'cycling', 'duration_mins': 60},
+            {'date': '2026-02-09', 'type': 'strength_training', 'duration_mins': 45},
+            {'date': '2026-02-10', 'type': 'running', 'duration_mins': 50},
+        ]
+
+        activities_this_week = [
+            a for a in all_fetched
+            if a.get('date') and a['date'] >= monday_this_week.isoformat()
+        ]
+
+        # Only Feb 9 and Feb 10 should be in the calendar week
+        assert len(activities_this_week) == 2
+        assert activities_this_week[0]['date'] == '2026-02-09'
+        assert activities_this_week[1]['date'] == '2026-02-10'
+
+    def test_fetch_start_uses_earlier_of_plan_and_monday(self):
+        """Fetch start date should be min(plan_start, monday_this_week)."""
+        today = date(2026, 2, 8)  # Saturday
+        monday_this_week = today - timedelta(days=today.weekday())  # Feb 2
+
+        # Case 1: Plan starts after Monday — fetch from Monday
+        plan_start_1 = date(2026, 2, 5)  # Thursday
+        assert min(plan_start_1, monday_this_week) == monday_this_week
+
+        # Case 2: Plan starts before Monday — fetch from plan start
+        plan_start_2 = date(2026, 1, 30)  # Friday of previous week
+        assert min(plan_start_2, monday_this_week) == plan_start_2
+
+        # Case 3: Plan starts on Monday — both are equal
+        plan_start_3 = date(2026, 2, 2)  # Monday
+        assert min(plan_start_3, monday_this_week) == monday_this_week
