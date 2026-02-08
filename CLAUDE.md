@@ -85,7 +85,9 @@ DAY                       <- What should today look like?
 
 **CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
-This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries.
+This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries, data quality flags.
+
+Check `data_quality` in the snapshot — it flags missing critical data (weight, age, name), unavailable recovery/sleep, and stale fitness history. The LLM should surface these to the athlete and recommend running `refresh_athlete_baseline()` to auto-populate from Garmin.
 
 ### Load Hierarchy (Injury Prevention)
 
@@ -210,7 +212,7 @@ coach-mcp/
 │   └── setup_wizard.py   # First-run setup wizard
 ├── tools/
 │   ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
-│   ├── fitness_tools.py   # refresh_athlete_baseline, get_training_readiness, get_load_status, etc.
+│   ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
 │   ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
 │   ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, etc.
 │   ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score
@@ -244,12 +246,21 @@ When `athlete_max_hr` is provided, `is_hard` uses relative threshold (>78% of ma
 Without it, falls back to absolute thresholds from config. This ensures the safety gate
 (`check_safety_rules()` consecutive hard day check) works regardless of athlete profile availability.
 
+## Garmin Profile Auto-Population
+
+`refresh_athlete_baseline()` now pulls athlete profile data from Garmin:
+- **Name** from `get_full_name()`
+- **Weight** from `get_body_composition()` (Garmin stores in grams, converted to kg)
+- **Birth date + age** from `get_user_profile()`
+
+This data is saved under the `garmin_profile` key in `athlete_baseline.json` (separate from manual `athlete.json`). On each refresh, `None` fields in `athlete.json` personal section are auto-populated from Garmin data. Manually set values are **never** overwritten.
+
 ## Data Files
 
 | File | Purpose | Managed By |
 |------|---------|------------|
-| `athlete.json` | Personal info, pillars, constraints, strength baselines | Manual + tools |
-| `athlete_baseline.json` | Garmin-derived capacity (auto-generated) | `refresh_athlete_baseline()` |
+| `athlete.json` | Personal info, pillars, constraints, strength baselines | Manual + tools (auto-populated from Garmin) |
+| `athlete_baseline.json` | Garmin-derived capacity + profile (auto-generated) | `refresh_athlete_baseline()` |
 | `methodology.json` | Safety rules, race templates, personas | Rarely changes |
 | `training_config.json` | Events, periodization, goals | Manual + tools |
 | `weekly_plan.json` | Rolling 7-day plan with session PURPOSE | `update_weekly_plan()` |
@@ -263,7 +274,9 @@ Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 
 ## Testing
 
-Tests use real API responses captured in `test_fixtures.json` (gitignored). Pattern for new tools:
+489 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
+
+Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `parsers.py`
 2. Add MCP tool with `@mcp.tool()` decorator in `tools/`
 3. Write tests with sample data matching Garmin structure
@@ -283,11 +296,18 @@ The coach should proactively identify gaps. Use `propose_suggestion(type='new_to
 
 Tool design: single responsibility, return JSON, fail gracefully with `{'error': ...}`.
 
+## Reliability & Safety
+
+- **Logging**: All 17 modules use `logging.getLogger(__name__)`. Every tool `except` block calls `logger.exception()` before returning JSON errors. Server-side tracebacks are preserved while clients get clean error messages.
+- **Atomic writes**: `save_json_file()` and `save_fitness_history()` write to `.tmp` then `Path.replace()` — a crash mid-write can't corrupt data files.
+- **Input validation**: `get_activities_range()` validates date format before API calls. `update_weekly_plan()` validates plan structure (must be dict with `days` dict). `research_injury()` rejects invalid severity.
+- **No bare except**: All `except:` blocks use `except Exception:` to avoid swallowing `KeyboardInterrupt`/`SystemExit`.
+
 ## Known Issues / TODO
 
-### 2. Coaching snapshot shows partial data when Garmin API fails
-- `get_coaching_snapshot()` returns with missing recovery/sleep data if Garmin API call fails
-- Need retry logic or clear flagging of missing data
+### ~~2. Coaching snapshot shows partial data when Garmin API fails~~ FIXED
+- `data_quality` dict in snapshot now explicitly flags: missing weight/age/name, unavailable recovery/sleep, stale fitness_history
+- All silent fallbacks now log warnings with `exc_info=True` for server-side debugging
 
 ### 3. Rehab sessions not pushed to Garmin calendar
 - Rehab sessions skipped with "unknown workout type" when pushing to Garmin
