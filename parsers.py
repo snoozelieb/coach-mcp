@@ -240,21 +240,26 @@ def calculate_baseline(activities: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def parse_personal_records(pr_data: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_personal_records(pr_data) -> list[dict[str, Any]]:
     """
     Parse personal records from Garmin response.
 
     Returns list of records with: record_type, value, unit, date, activity_id
     """
-    records = pr_data.get('personalRecords', [])
+    if isinstance(pr_data, list):
+        records = pr_data
+    elif isinstance(pr_data, dict):
+        records = pr_data.get('personalRecords', [])
+    else:
+        records = []
     parsed = []
 
     for record in records:
-        pr_type = record.get('prTypeLabelKey', record.get('typeKey', 'unknown'))
+        pr_type = record.get('prTypeLabelKey') or record.get('typeKey') or 'unknown'
         value = record.get('value')
 
         # Format time-based records (in seconds) to readable format
-        if value and 'time' in pr_type.lower():
+        if value and pr_type and 'time' in pr_type.lower():
             mins, secs = divmod(int(value), 60)
             hours, mins = divmod(mins, 60)
             if hours:
@@ -302,16 +307,22 @@ def parse_user_profile(
         'age': None,
     }
 
-    # Parse full name
-    if full_name and isinstance(full_name, dict):
-        first = full_name.get('firstName', '')
-        last = full_name.get('lastName', '')
-        name = f"{first} {last}".strip()
-        if name:
-            result['full_name'] = name
-        display = full_name.get('displayName')
-        if display:
-            result['display_name'] = display
+    # Parse full name (Garmin returns a plain string or a dict)
+    if full_name:
+        if isinstance(full_name, str):
+            name = full_name.strip()
+            if name:
+                result['full_name'] = name
+                result['display_name'] = name
+        elif isinstance(full_name, dict):
+            first = full_name.get('firstName', '')
+            last = full_name.get('lastName', '')
+            name = f"{first} {last}".strip()
+            if name:
+                result['full_name'] = name
+            display = full_name.get('displayName')
+            if display:
+                result['display_name'] = display
 
     # Parse weight from body composition (Garmin returns grams)
     if body_composition and isinstance(body_composition, dict):

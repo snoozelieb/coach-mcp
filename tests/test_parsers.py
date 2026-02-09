@@ -314,6 +314,31 @@ class TestParsePersonalRecords:
         result = parse_personal_records({})
         assert result == []
 
+    def test_handles_list_input(self):
+        """Garmin API returns a list directly, not a dict with personalRecords key."""
+        pr_list = [
+            {'prTypeLabelKey': 'pr_running_fastest_5k_time', 'value': 1320,
+             'unitKey': 'time', 'prStartTimeGmtFormatted': '2025-06-15 08:00:00',
+             'activityId': 11111111111},
+            {'prTypeLabelKey': 'pr_running_longest_distance', 'value': 21100,
+             'unitKey': 'distance'},
+        ]
+        result = parse_personal_records(pr_list)
+        assert len(result) == 2
+        assert result[0]['record_type'] == 'pr_running_fastest_5k_time'
+        assert result[0]['value_formatted'] == '22:00'
+
+    def test_handles_none_type_key(self):
+        """Records with no type key default to 'unknown'."""
+        result = parse_personal_records([{'value': 42}])
+        assert len(result) == 1
+        assert result[0]['record_type'] == 'unknown'
+
+    def test_handles_none_input(self):
+        """None input returns empty list."""
+        result = parse_personal_records(None)
+        assert result == []
+
 
 class TestParseTrainingReadiness:
     def test_parses_readiness_data(self):
@@ -531,6 +556,17 @@ class TestParseUserProfile:
         )
         assert result['birth_date'] == 'not-a-date'
         assert result['age'] is None
+
+    def test_string_full_name(self):
+        """Garmin get_full_name() returns a plain string, not a dict."""
+        result = parse_user_profile(full_name='Schoonraad Liebenberg')
+        assert result['full_name'] == 'Schoonraad Liebenberg'
+        assert result['display_name'] == 'Schoonraad Liebenberg'
+
+    def test_empty_string_full_name(self):
+        """Empty string treated as no name."""
+        result = parse_user_profile(full_name='   ')
+        assert result['full_name'] is None
 
     def test_display_name_fallback_from_user_profile(self):
         """Falls back to displayName from user profile when full_name has none."""
