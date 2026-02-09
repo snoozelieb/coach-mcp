@@ -295,15 +295,16 @@ def parse_user_profile(
     Args:
         full_name: Response from get_full_name() — typically a dict with firstName/lastName
         user_profile: Response from get_user_profile() — contains userData with birthDate etc.
-        body_composition: Response from get_body_composition() — contains totalAverage.weight
+        body_composition: Response from get_body_composition() — contains dateWeightList + totalAverage
 
     Returns:
-        Dict with: full_name, display_name, weight_kg, birth_date, age, max_hr (all nullable)
+        Dict with: full_name, display_name, weight_kg, weight_date, birth_date, age, max_hr (all nullable)
     """
     result = {
         'full_name': None,
         'display_name': None,
         'weight_kg': None,
+        'weight_date': None,
         'birth_date': None,
         'age': None,
         'max_hr': None,
@@ -326,12 +327,27 @@ def parse_user_profile(
             if display:
                 result['display_name'] = display
 
-    # Parse weight from body composition (Garmin returns grams)
+    # Parse weight from body composition — use most recent weigh-in from dateWeightList
     if body_composition and isinstance(body_composition, dict):
-        total_avg = body_composition.get('totalAverage', {})
-        weight_grams = total_avg.get('weight')
-        if weight_grams and weight_grams > 0:
-            result['weight_kg'] = round(weight_grams / 1000, 1)
+        weight_list = body_composition.get('dateWeightList', [])
+        if weight_list:
+            # Sort by calendarDate descending to get most recent
+            sorted_entries = sorted(
+                [e for e in weight_list if e.get('weight') and e['weight'] > 0],
+                key=lambda e: e.get('calendarDate', ''),
+                reverse=True,
+            )
+            if sorted_entries:
+                latest = sorted_entries[0]
+                result['weight_kg'] = round(latest['weight'] / 1000, 1)
+                result['weight_date'] = latest.get('calendarDate')
+
+        # Fallback to totalAverage if no dateWeightList entries
+        if result['weight_kg'] is None:
+            total_avg = body_composition.get('totalAverage', {})
+            weight_grams = total_avg.get('weight')
+            if weight_grams and weight_grams > 0:
+                result['weight_kg'] = round(weight_grams / 1000, 1)
 
     # Parse birth date and calculate age from user profile
     if user_profile and isinstance(user_profile, dict):

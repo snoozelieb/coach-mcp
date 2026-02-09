@@ -96,7 +96,8 @@ def refresh_athlete_baseline() -> str:
         try:
             full_name = garmin_api_call(lambda c: c.get_full_name())
             user_profile = garmin_api_call(lambda c: c.get_user_profile())
-            body_comp = garmin_api_call(lambda c: c.get_body_composition(today.isoformat()))
+            thirty_days_ago = (today - timedelta(days=30)).isoformat()
+            body_comp = garmin_api_call(lambda c: c.get_body_composition(thirty_days_ago, today.isoformat()))
             garmin_profile = parse_user_profile(full_name, user_profile, body_comp)
         except Exception:
             logger.warning("Failed to pull Garmin profile data", exc_info=True)

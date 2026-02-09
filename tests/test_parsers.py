@@ -512,15 +512,19 @@ class TestParseUserProfile:
     """Tests for parse_user_profile — Garmin profile data extraction."""
 
     def test_full_data(self):
-        """Parses name, weight, age, max_hr from all three Garmin responses."""
+        """Parses name, weight, weight_date, age, max_hr from all three Garmin responses."""
         result = parse_user_profile(
             full_name={'firstName': 'John', 'lastName': 'Doe', 'displayName': 'johndoe'},
             user_profile={'userData': {'birthDate': '1990-06-15', 'maxHeartRate': 192}},
-            body_composition={'totalAverage': {'weight': 75000}},
+            body_composition={
+                'dateWeightList': [{'calendarDate': '2026-02-07', 'weight': 75000}],
+                'totalAverage': {'weight': 75000},
+            },
         )
         assert result['full_name'] == 'John Doe'
         assert result['display_name'] == 'johndoe'
         assert result['weight_kg'] == 75.0
+        assert result['weight_date'] == '2026-02-07'
         assert result['birth_date'] == '1990-06-15'
         assert isinstance(result['age'], int)
         assert result['age'] >= 35  # Born 1990, test written 2026
@@ -565,17 +569,35 @@ class TestParseUserProfile:
         result = parse_user_profile(full_name={'firstName': 'John'})
         assert result['full_name'] == 'John'
 
-    def test_weight_conversion_from_grams(self):
-        """Converts Garmin grams to kg correctly."""
+    def test_weight_from_date_list_uses_most_recent(self):
+        """Uses the most recent entry from dateWeightList."""
         result = parse_user_profile(
-            body_composition={'totalAverage': {'weight': 82300}}
+            body_composition={
+                'dateWeightList': [
+                    {'calendarDate': '2026-01-20', 'weight': 80000},
+                    {'calendarDate': '2026-02-05', 'weight': 82300},
+                    {'calendarDate': '2026-01-28', 'weight': 81000},
+                ],
+            }
         )
         assert result['weight_kg'] == 82.3
+        assert result['weight_date'] == '2026-02-05'
+
+    def test_weight_falls_back_to_total_average(self):
+        """Falls back to totalAverage when dateWeightList is empty."""
+        result = parse_user_profile(
+            body_composition={'dateWeightList': [], 'totalAverage': {'weight': 82300}}
+        )
+        assert result['weight_kg'] == 82.3
+        assert result['weight_date'] is None
 
     def test_zero_weight_ignored(self):
-        """Zero weight is treated as missing."""
+        """Zero weight entries are skipped."""
         result = parse_user_profile(
-            body_composition={'totalAverage': {'weight': 0}}
+            body_composition={
+                'dateWeightList': [{'calendarDate': '2026-02-01', 'weight': 0}],
+                'totalAverage': {'weight': 0},
+            }
         )
         assert result['weight_kg'] is None
 

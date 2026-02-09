@@ -15,7 +15,12 @@ from conftest import (
 # Garmin profile mock data
 SAMPLE_FULL_NAME = {'firstName': 'John', 'lastName': 'Doe', 'displayName': 'johndoe'}
 SAMPLE_USER_PROFILE = {'userData': {'birthDate': '1990-06-15', 'displayName': 'johndoe', 'maxHeartRate': 192}}
-SAMPLE_BODY_COMP = {'totalAverage': {'weight': 75000}}
+SAMPLE_BODY_COMP = {
+    'dateWeightList': [
+        {'calendarDate': '2026-02-07', 'weight': 75000},
+    ],
+    'totalAverage': {'weight': 75000},
+}
 
 
 def _make_garmin_mock():
