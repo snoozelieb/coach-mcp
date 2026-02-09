@@ -11,7 +11,6 @@ Implements science-based metrics:
 Based on research from TrainingPeaks, Firstbeat, and Norwegian Olympic methodology.
 """
 import json
-import math
 from datetime import date, timedelta
 from typing import Any
 from collections import defaultdict
@@ -38,86 +37,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def calculate_training_load(
-    activity: dict[str, Any],
-    athlete_max_hr: int = None,
-    athlete_ftp: int = None,
-) -> float:
-    """
-    Calculate training load (stress) for a single activity.
-
-    Uses power-based TSS for cycling when Normalized Power and FTP are available,
-    TRIMP-like calculation when HR data available, or falls back to
-    duration-based estimate otherwise.
-
-    Args:
-        activity: Parsed activity dict with duration_mins, avg_hr, max_hr, type, norm_power
-        athlete_max_hr: Athlete's max HR for intensity calculation
-        athlete_ftp: Athlete's FTP in watts for power-based TSS
-
-    Returns:
-        Training load score (arbitrary units, higher = more stress)
-    """
-    duration_mins = activity.get('duration_mins', 0) or 0
-    avg_hr = activity.get('avg_hr', 0) or 0
-    activity_type = activity.get('type', '').lower()
-    norm_power = activity.get('norm_power') or 0
-
-    if duration_mins == 0:
-        return 0.0
-
-    # Power-based TSS for cycling when NP and FTP are available
-    # TSS = (duration_secs / 3600) * (NP / FTP)^2 * 100
-    sport_group = get_sport_group(activity_type)
-    if sport_group == 'cycling' and norm_power > 0 and athlete_ftp and athlete_ftp > 0:
-        duration_secs = duration_mins * 60
-        intensity_factor = norm_power / athlete_ftp
-        tss = (duration_secs / 3600) * (intensity_factor ** 2) * 100
-        # Scale to match TRIMP-like units (TSS ~100 for 1hr at FTP)
-        load = tss / 10
-        return round(load, 1)
-
-    # If we have HR data and athlete max HR, use HR-based calculation
-    if avg_hr > 0 and athlete_max_hr and athlete_max_hr > 0:
-        # Simplified TRIMP: duration * intensity factor
-        # Intensity = (avg_hr / max_hr) with exponential weighting
-        hr_ratio = min(avg_hr / athlete_max_hr, 1.0)
-        # Exponential factor gives more weight to higher intensities
-        intensity_factor = hr_ratio * math.exp(1.92 * hr_ratio)
-        load = duration_mins * intensity_factor / 10  # Scale down
-    else:
-        # No HR data - estimate based on activity type and duration
-        # Base multiplier by activity type (estimates)
-        type_multipliers = {
-            'running': 1.2,
-            'trail_running': 1.3,
-            'cycling': 0.9,
-            'swimming': 1.0,
-            'strength_training': 0.8,
-            'hiit': 1.5,
-            'interval_training': 1.4,
-            'ultimate_disc': 1.3,
-            'padel': 1.1,
-            'yoga': 0.3,
-            'pilates': 0.4,
-            'stretching': 0.2,
-            'walking': 0.4,
-        }
-        multiplier = type_multipliers.get(activity_type, 0.8)
-        load = duration_mins * multiplier / 10
-
-    return round(load, 1)
+def calculate_training_load(activity: dict[str, Any]) -> float:
+    """Return Garmin's training load for an activity, or 0.0 if unavailable."""
+    garmin_load = activity.get('garmin_training_load')
+    if garmin_load and garmin_load > 0:
+        return round(float(garmin_load), 1)
+    return 0.0
 
 
-def calculate_daily_load(
-    activities: list[dict[str, Any]],
-    athlete_max_hr: int = None,
-    athlete_ftp: int = None,
-) -> float:
-    """
-    Calculate total training load for a day's activities.
-    """
-    return sum(calculate_training_load(a, athlete_max_hr, athlete_ftp) for a in activities)
+def calculate_daily_load(activities: list[dict[str, Any]]) -> float:
+    """Calculate total training load for a day's activities."""
+    return sum(calculate_training_load(a) for a in activities)
 
 
 def calculate_ewma(values: list[float], time_constant: int) -> float:
@@ -530,16 +460,12 @@ def save_fitness_history(history: dict[str, Any]) -> None:
 
 def update_fitness_history(
     activities: list[dict[str, Any]],
-    athlete_max_hr: int = None,
-    athlete_ftp: int = None,
 ) -> dict[str, Any]:
     """
     Update fitness history with new activity data (v2 sport-aware format).
 
     Args:
-        activities: List of parsed activities with date, type, HR, power data
-        athlete_max_hr: Athlete's max HR for load calculation
-        athlete_ftp: Athlete's FTP in watts for power-based TSS
+        activities: List of parsed activities with date, type, garmin_training_load
 
     Returns:
         Updated fitness history dict
@@ -560,7 +486,7 @@ def update_fitness_history(
         activity_details = []
 
         for act in day_activities:
-            load = calculate_training_load(act, athlete_max_hr, athlete_ftp)
+            load = calculate_training_load(act)
             sport = get_sport_group(act.get('type', ''))
             by_sport[sport] += load
             activity_details.append({

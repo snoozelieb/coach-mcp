@@ -131,6 +131,7 @@ def parse_activity(activity: dict[str, Any]) -> dict[str, Any]:
         'avg_power': activity.get('avgPower'),
         'max_power': activity.get('maxPower'),
         'norm_power': activity.get('normPower'),
+        'garmin_training_load': activity.get('activityTrainingLoad'),
         'avg_cadence': avg_cadence,
         'training_effect': {
             'aerobic': aerobic_te,

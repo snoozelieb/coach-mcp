@@ -263,6 +263,22 @@ class TestParseActivity:
         assert result['norm_power'] == 195
 
 
+class TestGarminTrainingLoadParsing:
+    def test_garmin_training_load_extracted(self):
+        """Raw activity with activityTrainingLoad → parsed as garmin_training_load."""
+        activity = {
+            **SAMPLE_RUNNING_ACTIVITY,
+            'activityTrainingLoad': 127.5,
+        }
+        result = parse_activity(activity)
+        assert result['garmin_training_load'] == 127.5
+
+    def test_garmin_training_load_none_when_absent(self):
+        """Missing activityTrainingLoad → None."""
+        result = parse_activity(SAMPLE_RUNNING_ACTIVITY)
+        assert result['garmin_training_load'] is None
+
+
 class TestParseActivities:
     def test_parses_list_of_activities(self):
         activities = [SAMPLE_RUNNING_ACTIVITY, SAMPLE_STRENGTH_ACTIVITY]

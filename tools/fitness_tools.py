@@ -16,7 +16,7 @@ from garmin_client import garmin_api_call
 from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile
 from planner import load_athlete, load_methodology, load_json_file, save_json_file
 from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
-                     get_load_athlete_max_hr, get_athlete_hr_zones, get_fitness_trend,
+                     get_athlete_hr_zones, get_fitness_trend,
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics)
 from config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
 from datetime import date, timedelta
@@ -437,13 +437,8 @@ def refresh_fitness_history(days: int = 180) -> str:
         # Parse activities
         activities = parse_activities(raw_activities)
 
-        # Get athlete's max HR and FTP for load calculation
-        max_hr = get_load_athlete_max_hr()
-        athlete = load_athlete()
-        ftp = athlete.get('personal', {}).get('ftp') if athlete else None
-
         # Update fitness history (v2 sport-aware format)
-        history = update_fitness_history(activities, max_hr, ftp)
+        history = update_fitness_history(activities)
 
         # Calculate current metrics from total loads
         total_loads = _extract_total_loads(history.get('daily_loads', {}))

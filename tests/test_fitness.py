@@ -1,8 +1,8 @@
 """
-Tests for fitness.py — sport-specific load calculations, migration, sleep, patterns.
+Tests for fitness.py — Garmin training load, migration, sleep, patterns.
 
 Tests cover:
-- Power-based TSS calculation for cycling
+- Garmin activityTrainingLoad extraction
 - Sport group mapping
 - Schema v1 → v2 migration
 - Sport-specific CTL/ATL/TSB/ACWR
@@ -68,127 +68,38 @@ class TestGetSportGroup:
         assert get_sport_group('') == 'other'
 
 
-# ── Power-Based TSS ─────────────────────────────────────────────
+# ── Garmin Training Load ─────────────────────────────────────────
 
-class TestPowerBasedTSS:
-    """Test power-based Training Stress Score for cycling activities."""
+class TestGarminTrainingLoad:
+    """Test Garmin activityTrainingLoad extraction."""
 
-    def test_cycling_with_np_and_ftp(self):
-        """Cycling + NP + FTP → power-based TSS."""
-        activity = {
-            'type': 'indoor_cycling',
-            'duration_mins': 60,
-            'avg_hr': 140,
-            'norm_power': 185,  # equal to FTP
-        }
-        # TSS = (3600/3600) * (185/185)^2 * 100 = 100
-        # load = 100 / 10 = 10.0
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        assert load == 10.0
+    def test_garmin_load_returned(self):
+        """Activity with garmin_training_load → returns that value."""
+        activity = {'garmin_training_load': 127.5}
+        assert calculate_training_load(activity) == 127.5
 
-    def test_cycling_above_ftp(self):
-        """NP above FTP → TSS > 100/hr."""
-        activity = {
-            'type': 'cycling',
-            'duration_mins': 60,
-            'avg_hr': 155,
-            'norm_power': 222,  # 1.2× FTP
-        }
-        # TSS = 1 * (222/185)^2 * 100 = 1 * 1.44 * 100 = 144
-        # load = 144 / 10 = 14.4
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        assert load == 14.4
+    def test_garmin_load_zero_returns_zero(self):
+        """garmin_training_load: 0 → returns 0.0."""
+        activity = {'garmin_training_load': 0}
+        assert calculate_training_load(activity) == 0.0
 
-    def test_cycling_below_ftp(self):
-        """NP below FTP → TSS < 100/hr."""
-        activity = {
-            'type': 'mountain_biking',
-            'duration_mins': 60,
-            'avg_hr': 130,
-            'norm_power': 130,  # ~0.70× FTP
-        }
-        # TSS = 1 * (130/185)^2 * 100 = 1 * 0.4937 * 100 = 49.37
-        # load = 49.37 / 10 ≈ 4.9
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        assert load == 4.9
+    def test_garmin_load_none_returns_zero(self):
+        """garmin_training_load: None → returns 0.0."""
+        activity = {'garmin_training_load': None}
+        assert calculate_training_load(activity) == 0.0
 
-    def test_cycling_without_np_falls_back_to_hr(self):
-        """No NP → HR-based TRIMP even for cycling."""
-        activity = {
-            'type': 'cycling',
-            'duration_mins': 60,
-            'avg_hr': 140,
-            'norm_power': None,
-        }
-        load_with_ftp = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        load_without_ftp = calculate_training_load(activity, athlete_max_hr=190)
-        # Both should use HR-based calculation (same result)
-        assert load_with_ftp == load_without_ftp
-        assert load_with_ftp > 0
+    def test_garmin_load_missing_returns_zero(self):
+        """No garmin_training_load field → returns 0.0."""
+        activity = {'type': 'running', 'duration_mins': 45}
+        assert calculate_training_load(activity) == 0.0
 
-    def test_cycling_without_ftp_falls_back_to_hr(self):
-        """Has NP but no FTP → HR-based TRIMP."""
-        activity = {
-            'type': 'indoor_cycling',
-            'duration_mins': 60,
-            'avg_hr': 140,
-            'norm_power': 200,
-        }
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=None)
-        # Should use HR-based (FTP is None)
-        load_hr_only = calculate_training_load(
-            {'type': 'indoor_cycling', 'duration_mins': 60, 'avg_hr': 140},
-            athlete_max_hr=190,
-        )
-        assert load == load_hr_only
-
-    def test_running_ignores_power(self):
-        """Running activities should NOT use power TSS even if power is present."""
-        activity = {
-            'type': 'running',
-            'duration_mins': 60,
-            'avg_hr': 150,
-            'norm_power': 300,  # Running power (from Stryd etc)
-        }
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        # Should use HR-based, not power TSS (running is not cycling sport group)
-        load_no_power = calculate_training_load(
-            {'type': 'running', 'duration_mins': 60, 'avg_hr': 150},
-            athlete_max_hr=190,
-        )
-        assert load == load_no_power
-
-    def test_short_cycling_session(self):
-        """30-min session at FTP → TSS ~50 → load ~5."""
-        activity = {
-            'type': 'indoor_cycling',
-            'duration_mins': 30,
-            'avg_hr': 155,
-            'norm_power': 185,
-        }
-        load = calculate_training_load(activity, athlete_max_hr=190, athlete_ftp=185)
-        assert load == 5.0
-
-    def test_zero_duration_returns_zero(self):
-        activity = {
-            'type': 'cycling',
-            'duration_mins': 0,
-            'norm_power': 200,
-        }
-        assert calculate_training_load(activity, athlete_ftp=185) == 0.0
-
-
-class TestCalculateDailyLoadWithFtp:
-    def test_passes_ftp_through(self):
-        """Verify daily_load sums individual loads with FTP."""
+    def test_daily_load_sums_garmin_loads(self):
+        """Daily load sums garmin_training_load across activities."""
         activities = [
-            {'type': 'indoor_cycling', 'duration_mins': 60, 'avg_hr': 140, 'norm_power': 185},
-            {'type': 'strength_training', 'duration_mins': 30, 'avg_hr': 110},
+            {'garmin_training_load': 85.3},
+            {'garmin_training_load': 42.1},
         ]
-        total = calculate_daily_load(activities, athlete_max_hr=190, athlete_ftp=185)
-        cycling_load = calculate_training_load(activities[0], 190, 185)
-        strength_load = calculate_training_load(activities[1], 190, 185)
-        assert total == cycling_load + strength_load
+        assert calculate_daily_load(activities) == 127.4
 
 
 # ── Schema Migration ─────────────────────────────────────────────
@@ -361,10 +272,10 @@ class TestUpdateFitnessHistoryV2:
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         activities = [
-            {'date': '2026-02-01', 'type': 'cycling', 'duration_mins': 60, 'avg_hr': 140, 'norm_power': 185},
-            {'date': '2026-02-01', 'type': 'strength_training', 'duration_mins': 30, 'avg_hr': 110},
+            {'date': '2026-02-01', 'type': 'cycling', 'duration_mins': 60, 'garmin_training_load': 95.0},
+            {'date': '2026-02-01', 'type': 'strength_training', 'duration_mins': 30, 'garmin_training_load': 35.0},
         ]
-        history = update_fitness_history(activities, athlete_max_hr=190, athlete_ftp=185)
+        history = update_fitness_history(activities)
 
         day = history['daily_loads']['2026-02-01']
         assert 'total' in day
@@ -378,9 +289,9 @@ class TestUpdateFitnessHistoryV2:
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         activities = [
-            {'date': '2026-02-01', 'activity_id': 123, 'type': 'running', 'duration_mins': 45, 'avg_hr': 150},
+            {'date': '2026-02-01', 'activity_id': 123, 'type': 'running', 'duration_mins': 45, 'garmin_training_load': 72.0},
         ]
-        history = update_fitness_history(activities, athlete_max_hr=190)
+        history = update_fitness_history(activities)
 
         day = history['daily_loads']['2026-02-01']
         assert len(day['activities']) == 1
@@ -395,10 +306,10 @@ class TestUpdateFitnessHistoryV2:
         activities = []
         for i in range(50):
             d = (date.today() - timedelta(days=i)).isoformat()
-            activities.append({'date': d, 'type': 'cycling', 'duration_mins': 60, 'avg_hr': 140})
-            activities.append({'date': d, 'type': 'running', 'duration_mins': 30, 'avg_hr': 145})
+            activities.append({'date': d, 'type': 'cycling', 'duration_mins': 60, 'garmin_training_load': 85.0})
+            activities.append({'date': d, 'type': 'running', 'duration_mins': 30, 'garmin_training_load': 55.0})
 
-        history = update_fitness_history(activities, athlete_max_hr=190)
+        history = update_fitness_history(activities)
         snap = history['snapshots'][-1]
 
         assert 'total' in snap

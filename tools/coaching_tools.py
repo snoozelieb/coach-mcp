@@ -38,7 +38,6 @@ from fitness import (
     calculate_fitness_metrics,
     calculate_intensity_distribution,
     get_athlete_hr_zones,
-    get_load_athlete_max_hr,
     get_sleep_summary,
     calculate_ctl_target,
     _extract_total_loads,
@@ -894,10 +893,7 @@ def get_coaching_snapshot() -> str:
                 if raw_refresh:
                     from parsers import parse_activities as _pa
                     refreshed_activities = _pa(raw_refresh)
-                    max_hr = get_load_athlete_max_hr()
-                    athlete_data = load_athlete()
-                    ftp = athlete_data.get('personal', {}).get('ftp') if athlete_data else None
-                    history = update_fitness_history(refreshed_activities, max_hr, ftp)
+                    history = update_fitness_history(refreshed_activities)
             except Exception:
                 logger.warning("Fitness history auto-refresh failed", exc_info=True)
 
