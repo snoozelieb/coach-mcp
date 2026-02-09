@@ -512,10 +512,10 @@ class TestParseUserProfile:
     """Tests for parse_user_profile — Garmin profile data extraction."""
 
     def test_full_data(self):
-        """Parses name, weight, age from all three Garmin responses."""
+        """Parses name, weight, age, max_hr from all three Garmin responses."""
         result = parse_user_profile(
             full_name={'firstName': 'John', 'lastName': 'Doe', 'displayName': 'johndoe'},
-            user_profile={'userData': {'birthDate': '1990-06-15'}},
+            user_profile={'userData': {'birthDate': '1990-06-15', 'maxHeartRate': 192}},
             body_composition={'totalAverage': {'weight': 75000}},
         )
         assert result['full_name'] == 'John Doe'
@@ -524,6 +524,28 @@ class TestParseUserProfile:
         assert result['birth_date'] == '1990-06-15'
         assert isinstance(result['age'], int)
         assert result['age'] >= 35  # Born 1990, test written 2026
+        assert result['max_hr'] == 192
+
+    def test_max_hr_extracted(self):
+        """Extracts maxHeartRate from user profile."""
+        result = parse_user_profile(
+            user_profile={'userData': {'maxHeartRate': 185}}
+        )
+        assert result['max_hr'] == 185
+
+    def test_max_hr_none_when_absent(self):
+        """Missing maxHeartRate returns None."""
+        result = parse_user_profile(
+            user_profile={'userData': {'birthDate': '1990-01-01'}}
+        )
+        assert result['max_hr'] is None
+
+    def test_max_hr_zero_ignored(self):
+        """Zero maxHeartRate treated as missing."""
+        result = parse_user_profile(
+            user_profile={'userData': {'maxHeartRate': 0}}
+        )
+        assert result['max_hr'] is None
 
     def test_empty_inputs(self):
         """Returns all None when given no data."""

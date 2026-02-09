@@ -42,6 +42,7 @@ def _auto_populate_athlete(garmin_profile: dict) -> None:
         'name': 'full_name',
         'weight_kg': 'weight_kg',
         'age': 'age',
+        'max_hr': 'max_hr',
     }
 
     for athlete_key, profile_key in field_map.items():

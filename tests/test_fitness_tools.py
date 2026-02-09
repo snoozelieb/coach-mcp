@@ -14,7 +14,7 @@ from conftest import (
 
 # Garmin profile mock data
 SAMPLE_FULL_NAME = {'firstName': 'John', 'lastName': 'Doe', 'displayName': 'johndoe'}
-SAMPLE_USER_PROFILE = {'userData': {'birthDate': '1990-06-15', 'displayName': 'johndoe'}}
+SAMPLE_USER_PROFILE = {'userData': {'birthDate': '1990-06-15', 'displayName': 'johndoe', 'maxHeartRate': 192}}
 SAMPLE_BODY_COMP = {'totalAverage': {'weight': 75000}}
 
 
@@ -164,3 +164,24 @@ class TestAutoPopulateAthlete:
         assert updated['personal']['name'] == 'Manual Name'
         assert updated['personal']['weight_kg'] == 80.0
         assert updated['personal']['age'] == 40
+
+    @patch('tools.fitness_tools.garmin_api_call')
+    def test_fills_max_hr_from_garmin(self, mock_api_call, tmp_path, monkeypatch):
+        """Auto-populates max_hr when None in athlete.json."""
+        import tools.fitness_tools as fitness_mod
+        import planner
+        monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
+        monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
+
+        athlete = {
+            'personal': {'name': 'Test', 'max_hr': None}
+        }
+        (tmp_path / 'athlete.json').write_text(json.dumps(athlete))
+
+        mock_client = _make_garmin_mock()
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
+
+        fitness_mod.refresh_athlete_baseline()
+
+        updated = json.loads((tmp_path / 'athlete.json').read_text())
+        assert updated['personal']['max_hr'] == 192

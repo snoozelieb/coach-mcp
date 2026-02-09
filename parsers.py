@@ -298,7 +298,7 @@ def parse_user_profile(
         body_composition: Response from get_body_composition() — contains totalAverage.weight
 
     Returns:
-        Dict with: full_name, display_name, weight_kg, birth_date, age (all nullable)
+        Dict with: full_name, display_name, weight_kg, birth_date, age, max_hr (all nullable)
     """
     result = {
         'full_name': None,
@@ -306,6 +306,7 @@ def parse_user_profile(
         'weight_kg': None,
         'birth_date': None,
         'age': None,
+        'max_hr': None,
     }
 
     # Parse full name (Garmin returns a plain string or a dict)
@@ -347,6 +348,11 @@ def parse_user_profile(
                 result['age'] = age
             except (ValueError, TypeError):
                 pass
+
+        # Parse max heart rate from user settings
+        max_hr = user_data.get('maxHeartRate')
+        if max_hr and isinstance(max_hr, (int, float)) and max_hr > 0:
+            result['max_hr'] = int(max_hr)
 
         # Fallback: display name from user profile
         if not result['display_name']:
