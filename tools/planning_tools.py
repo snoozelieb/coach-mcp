@@ -697,20 +697,33 @@ def push_plan_to_garmin() -> str:
         if not plan or 'days' not in plan:
             return json.dumps({'error': 'No weekly plan found. Generate a plan first.'})
 
-        # DUPLICATE PREVENTION: Delete existing workouts created during plan period
-        week_start = plan.get('week_start', '2000-01-01')
-        existing_workouts = garmin_api_call(lambda c: c.get_workouts())
+        # DUPLICATE PREVENTION: Delete previously pushed workouts by stored IDs
+        previous_ids = plan.get('pushed_workout_ids', [])
         deleted_count = 0
 
-        for workout in existing_workouts:
-            workout_id = workout.get('workoutId')
-            created = workout.get('createdDate', '')[:10]
-
-            # Delete workouts created on or after plan start date (likely ours)
-            if created >= week_start:
+        if previous_ids:
+            # Normal path: delete the specific workouts we pushed last time
+            existing_workouts = garmin_api_call(lambda c: c.get_workouts())
+            existing_ids = {w.get('workoutId') for w in existing_workouts}
+            for wid in previous_ids:
+                if wid in existing_ids:
+                    try:
+                        garmin_api_call(
+                            lambda c, wid=wid: c.garth.delete(
+                                'connectapi', f'/workout-service/workout/{wid}', api=True
+                            )
+                        )
+                        deleted_count += 1
+                    except Exception:
+                        pass
+        else:
+            # First run after fix: no stored IDs, delete ALL workouts to clear duplicates
+            existing_workouts = garmin_api_call(lambda c: c.get_workouts())
+            for workout in existing_workouts:
+                wid = workout.get('workoutId')
                 try:
                     garmin_api_call(
-                        lambda c, wid=workout_id: c.garth.delete(
+                        lambda c, wid=wid: c.garth.delete(
                             'connectapi', f'/workout-service/workout/{wid}', api=True
                         )
                     )
@@ -869,6 +882,13 @@ def push_plan_to_garmin() -> str:
                         'type': workout_type,
                         'error': str(e)
                     })
+
+        # Store pushed workout IDs for cleanup on next push
+        pushed_ids = [p['workout_id'] for p in results['pushed'] if 'workout_id' in p]
+        if pushed_ids:
+            plan['pushed_workout_ids'] = pushed_ids
+            from planner import save_json_file
+            save_json_file(DATA_DIR / 'weekly_plan.json', plan)
 
         # Build summary message
         pushed_count = len(results['pushed'])

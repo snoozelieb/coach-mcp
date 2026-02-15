@@ -890,7 +890,7 @@ class TestBuildPilatesWorkout:
         assert "endConditionValue" not in exercise_step
 
     def test_exercise_notes_in_step_description(self):
-        """Exercise notes (form cues) appear as step description on watch."""
+        """Exercise notes (form cues) appear as step description on watch, prefixed with name."""
         session = {
             "type": "rehab",
             "exercises": [
@@ -900,7 +900,39 @@ class TestBuildPilatesWorkout:
         result = build_pilates_workout(session, "2025-01-01")
         exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
 
-        assert exercise_step["description"] == "Scrunch towel with toes"
+        assert exercise_step["description"] == "Toe Curls: Scrunch towel with toes"
+
+    def test_rehab_exercise_name_always_in_description(self):
+        """Step description starts with readable exercise name even without notes."""
+        session = {
+            "type": "rehab",
+            "exercises": [
+                {"name": "Single_Leg_Balance", "sets": 3, "reps": 1},
+            ],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert exercise_step["description"] == "Single Leg Balance"
+
+    def test_rehab_description_truncated_to_50(self):
+        """Long exercise name + notes still truncated to 50 chars."""
+        session = {
+            "type": "rehab",
+            "exercises": [
+                {
+                    "name": "Peroneal_Self_Massage",
+                    "sets": 1,
+                    "duration_secs": 180,
+                    "notes": "3min. Thumb pressure along lateral lower leg from knee to ankle",
+                },
+            ],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert len(exercise_step["description"]) <= 50
+        assert exercise_step["description"].startswith("Peroneal Self Massage:")
 
     def test_exercise_count_in_output(self):
         """Structured rehab workout includes exercise_count field."""

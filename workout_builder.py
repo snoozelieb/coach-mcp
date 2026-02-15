@@ -1171,8 +1171,13 @@ def build_pilates_workout(session: dict, date: str) -> dict:
         }
         if end_value is not None:
             exercise_step["endConditionValue"] = end_value
+        # Build step description: exercise name + notes
+        readable_name = ex_name.replace("_", " ").title()
         if ex_notes:
-            exercise_step["description"] = ex_notes[:50]
+            description = f"{readable_name}: {ex_notes}"
+        else:
+            description = readable_name
+        exercise_step["description"] = description[:50]
         child_step_order += 1
 
         # Rest step (lap button between sets)
