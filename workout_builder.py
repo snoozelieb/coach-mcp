@@ -112,16 +112,22 @@ PILATES_TYPES = {"pilates", "rehab", "rehabilitation"}
 # Session types that map to strength
 STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights", "strength_plus_rehab"}
 
-# Garmin valid exercise categories - map non-standard to valid ones
-# Valid Garmin categories: BENCH_PRESS, ROW, PULL_UP, LATERAL_RAISE, CURL,
-# TRICEPS_EXTENSION, CORE, DEADLIFT, SQUAT, SHOULDER_PRESS, LUNGE, CARDIO, OTHER
-# Note: HIP and CALF are NOT valid - use SQUAT or OTHER for leg exercises
+# Garmin workout API only accepts these categories (exercise DB has 47, workout API accepts 13).
+# Exercises with non-valid categories get category remapped + exerciseName cleared.
+VALID_WORKOUT_CATEGORIES = {
+    "BENCH_PRESS", "ROW", "PULL_UP", "LATERAL_RAISE", "CURL",
+    "TRICEPS_EXTENSION", "CORE", "DEADLIFT", "SQUAT",
+    "SHOULDER_PRESS", "LUNGE", "CARDIO", "OTHER",
+}
+
+# Map non-valid categories to their closest valid workout API category.
+# When a category is remapped, exerciseName must be cleared (the exercise
+# doesn't exist under the new category in Garmin's DB).
 GARMIN_CATEGORY_MAP = {
-    "GLUTE": "SQUAT",           # Hip/glute exercises -> SQUAT
-    "CALF_RAISE": "SQUAT",      # Calf raises -> SQUAT (OTHER doesn't work)
-    "HIP_STABILITY": "SQUAT",   # Hip stability -> SQUAT
-    "HIP": "SQUAT",             # Generic hip -> SQUAT
-    "CALF": "SQUAT",            # Calf -> SQUAT
+    # --- Generic muscle group names (LLM-written plans) ---
+    "GLUTE": "SQUAT",
+    "HIP": "SQUAT",
+    "CALF": "SQUAT",
     "HAMSTRING": "DEADLIFT",
     "CHEST": "BENCH_PRESS",
     "BACK": "ROW",
@@ -130,6 +136,31 @@ GARMIN_CATEGORY_MAP = {
     "SHOULDERS": "SHOULDER_PRESS",
     "ABS": "CORE",
     "LEGS": "SQUAT",
+    # --- Exercise DB categories not valid in workout API ---
+    "SUSPENSION": "ROW",              # Face pulls, TRX rows
+    "HAMSTRING_CURL": "DEADLIFT",     # Lying/seated leg curls
+    "LEG_CURL": "DEADLIFT",           # Leg curl variations
+    "CALF_RAISE": "SQUAT",            # Calf raises
+    "HIP_RAISE": "SQUAT",             # Hip thrusts, glute bridges
+    "HIP_STABILITY": "SQUAT",         # Hip stability drills
+    "HIP_SWING": "DEADLIFT",          # Kettlebell swings
+    "HYPEREXTENSION": "DEADLIFT",     # Back extensions
+    "LEG_RAISE": "CORE",              # Hanging leg raises
+    "PLANK": "CORE",                  # Plank variations
+    "CRUNCH": "CORE",                 # Crunch variations
+    "SIT_UP": "CORE",                 # Sit-up variations
+    "CHOP": "CORE",                   # Wood chops
+    "FLYE": "BENCH_PRESS",            # Chest flies
+    "PUSH_UP": "BENCH_PRESS",         # Push-up variations
+    "SHRUG": "ROW",                   # Trap shrugs
+    "SHOULDER_STABILITY": "SHOULDER_PRESS",  # Rotator cuff work
+    "OLYMPIC_LIFT": "DEADLIFT",       # Cleans, snatches
+    "PLYO": "SQUAT",                  # Box jumps, plyometrics
+    "BANDED_EXERCISES": "OTHER",      # Resistance band work
+    "CARRY": "OTHER",                 # Farmer's walks
+    "TOTAL_BODY": "OTHER",            # Full-body movements
+    "BATTLE_ROPE": "CARDIO",          # Battle rope drills
+    "WARM_UP": "CARDIO",              # Warmup movements
 }
 
 # Session types that map to swimming
@@ -548,6 +579,8 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
     # Determine if indoor (power) or outdoor (HR)
     indoor = is_indoor_cycling(session)
+    logger.info("Building cycling workout: type=%s, indoor=%s, target=%s",
+                session.get("type"), indoor, "POWER" if indoor else "HR")
 
     # Create workout name with indoor/outdoor tag for easy planning
     # Skip if description already has the tag
@@ -598,6 +631,8 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
         if main_target:
             main_step.targetValueOne = main_target[0]
             main_step.targetValueTwo = main_target[1]
+            if not indoor:
+                main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
 
         steps = [main_step]
     else:
@@ -631,6 +666,8 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
         if main_target:
             main_step.targetValueOne = main_target[0]
             main_step.targetValueTwo = main_target[1]
+            if not indoor:
+                main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
         steps.append(main_step)
         step_order += 1
 
@@ -649,6 +686,7 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
     return CyclingWorkout(
         workoutName=workout_name,
+        description=session.get("notes", session.get("purpose", ""))[:255],
         estimatedDurationInSecs=int(total_secs),
         workoutSegments=[
             WorkoutSegment(
@@ -1039,11 +1077,21 @@ def build_pilates_workout(session: dict, date: str) -> dict:
     Build a pilates workout from a plan session.
 
     Used for rehab/mobility work that the user tracks as Pilates on Garmin.
-    Simple timed structure.
+
+    If session contains an 'exercises' list, builds structured workout with
+    RepeatGroupDTO for each exercise (sets x reps/time + rest). Exercises
+    can use reps (END_REPS), duration_secs (END_TIME), or default to
+    END_LAP_BUTTON.
+
+    Sessions without exercises get a simple timed fallback.
+    Notes are included as the workout description so rehab routines show
+    on the watch.
     """
     duration_mins = session.get("duration_mins", 15)
     description = session.get("description", "")
     session_type = session.get("type", "").lower()
+    notes = session.get("notes", "")
+    exercises = session.get("exercises", [])
 
     # Generate proper name if not provided or if it's just notes
     if not description or description in ["Rehab/Mobility", "Do at pool or after", "3rd rehab session of week"]:
@@ -1058,9 +1106,9 @@ def build_pilates_workout(session: dict, date: str) -> dict:
     # Create workout name from description
     workout_name = description[:40]
 
-    # Build simple timed steps
-    steps = [
-        {
+    # Simple timed fallback when no exercises provided
+    if not exercises:
+        step = {
             "type": "ExecutableStepDTO",
             "stepOrder": 1,
             "stepType": STEP_INTERVAL,
@@ -1068,19 +1116,110 @@ def build_pilates_workout(session: dict, date: str) -> dict:
             "endConditionValue": float(total_secs),
             "targetType": TARGET_NONE,
         }
-    ]
+        if notes:
+            step["description"] = notes[:50]
+
+        return {
+            "workoutName": workout_name,
+            "description": notes[:255] if notes else "",
+            "sportType": PILATES_SPORT,
+            "estimatedDurationInSecs": int(total_secs),
+            "workoutSegments": [
+                {
+                    "segmentOrder": 1,
+                    "sportType": PILATES_SPORT,
+                    "workoutSteps": [step]
+                }
+            ]
+        }
+
+    # Structured rehab workout with RepeatGroupDTOs
+    steps = []
+    step_order = 1
+    child_step_order = 1
+    total_time = 0
+
+    for exercise in exercises:
+        ex_name = exercise.get("name", "Exercise")
+        sets = exercise.get("sets", 1)
+        reps = exercise.get("reps")
+        duration_secs = exercise.get("duration_secs")
+        ex_notes = exercise.get("notes", "")
+
+        # Determine end condition: reps > duration_secs > lap button
+        if reps:
+            end_condition = END_REPS
+            end_value = float(reps)
+            est_secs_per_set = 45
+        elif duration_secs:
+            end_condition = END_TIME
+            end_value = float(duration_secs)
+            est_secs_per_set = duration_secs
+        else:
+            end_condition = END_LAP_BUTTON
+            end_value = None
+            est_secs_per_set = 30
+
+        # Exercise step
+        exercise_step = {
+            "type": "ExecutableStepDTO",
+            "stepOrder": child_step_order,
+            "stepType": STEP_INTERVAL,
+            "childStepId": 1,
+            "endCondition": end_condition,
+            "targetType": TARGET_NONE,
+        }
+        if end_value is not None:
+            exercise_step["endConditionValue"] = end_value
+        if ex_notes:
+            exercise_step["description"] = ex_notes[:50]
+        child_step_order += 1
+
+        # Rest step (lap button between sets)
+        rest_step = {
+            "type": "ExecutableStepDTO",
+            "stepOrder": child_step_order,
+            "stepType": STEP_REST,
+            "childStepId": 1,
+            "endCondition": END_LAP_BUTTON,
+            "targetType": TARGET_NONE,
+        }
+        child_step_order += 1
+
+        # RepeatGroupDTO
+        repeat_group = {
+            "type": "RepeatGroupDTO",
+            "stepOrder": step_order,
+            "stepType": STEP_REPEAT,
+            "childStepId": 1,
+            "numberOfIterations": sets,
+            "workoutSteps": [exercise_step, rest_step],
+            "endCondition": {
+                "conditionTypeId": 7,
+                "conditionTypeKey": "iterations",
+                "displayOrder": 7,
+                "displayable": False,
+            },
+            "endConditionValue": float(sets),
+        }
+
+        steps.append(repeat_group)
+        step_order += 1
+        total_time += sets * (est_secs_per_set + 15)  # 15s rest estimate
 
     return {
         "workoutName": workout_name,
+        "description": notes[:255] if notes else "",
         "sportType": PILATES_SPORT,
-        "estimatedDurationInSecs": int(total_secs),
+        "estimatedDurationInSecs": int(total_time) if total_time > 0 else int(total_secs),
         "workoutSegments": [
             {
                 "segmentOrder": 1,
                 "sportType": PILATES_SPORT,
-                "workoutSteps": steps
+                "workoutSteps": steps,
             }
-        ]
+        ],
+        "exercise_count": len(exercises),
     }
 
 
@@ -1273,21 +1412,45 @@ def build_strength_workout(session: dict, date: str) -> dict:
     # Each exercise becomes a RepeatGroupDTO
     for exercise in exercises:
         ex_name = exercise.get("name", "UNKNOWN")
-        category = exercise.get("category", "OTHER")
-        # Map non-standard categories to valid Garmin categories
-        category = GARMIN_CATEGORY_MAP.get(category, category)
+        original_category = exercise.get("category", "OTHER")
+        # Map non-standard categories to valid Garmin workout API categories
+        category = GARMIN_CATEGORY_MAP.get(original_category, original_category)
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
         rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
         weight = exercise.get("weight_kg")
 
+        # If category was remapped or still isn't valid, the exerciseName
+        # won't match the new category in Garmin's DB — clear it and use
+        # description to show the exercise name on the watch instead.
+        if category != original_category or category not in VALID_WORKOUT_CATEGORIES:
+            garmin_exercise_name = ""
+            if category not in VALID_WORKOUT_CATEGORIES:
+                category = "OTHER"
+        else:
+            garmin_exercise_name = ex_name
+
         # If no explicit weight, try to get from strength baseline
         if not weight:
-            weight = get_baseline_weight(ex_name, category, strength_baseline)
+            weight = get_baseline_weight(ex_name, original_category, strength_baseline)
 
         # Get form cues from library if available
         exercise_note = get_exercise_note(ex_name, exercise_library)
+
+        # Build step description: exercise name (when not in exerciseName) + form cues
+        description = ""
+        if not garmin_exercise_name:
+            # Exercise name not in Garmin field — show it in description
+            readable_name = ex_name.replace("_", " ").title()
+            description = readable_name
+            if exercise_note:
+                # Append form cues after name, truncate to fit
+                description = f"{readable_name}: {exercise_note}"
+        elif exercise_note:
+            description = exercise_note
+        if description:
+            description = description[:50]
 
         # Build exercise step (inside repeat group)
         exercise_step = {
@@ -1299,12 +1462,12 @@ def build_strength_workout(session: dict, date: str) -> dict:
             "endConditionValue": float(reps),
             "targetType": TARGET_NONE,
             "category": category,
-            "exerciseName": ex_name,
+            "exerciseName": garmin_exercise_name,
         }
 
-        # Add form cues note if available
-        if exercise_note:
-            exercise_step["description"] = exercise_note
+        # Add description (exercise name and/or form cues)
+        if description:
+            exercise_step["description"] = description
 
         # Add weight if specified
         if weight:

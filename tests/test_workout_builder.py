@@ -49,6 +49,7 @@ from workout_builder import (
     PADEL_SPORT,
     DEFAULT_HR_ZONES,
     GARMIN_CATEGORY_MAP,
+    VALID_WORKOUT_CATEGORIES,
 )
 
 
@@ -380,6 +381,47 @@ class TestBuildCyclingWorkout:
         result = build_cycling_workout(session, "2025-01-01")
         assert result.workoutSegments[0].sportType == CYCLING_SPORT
 
+    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_outdoor_ride_has_description_from_notes(self, mock_hr):
+        """Outdoor cycling workout should include notes as description."""
+        session = {
+            "type": "easy_ride",
+            "duration_mins": 90,
+            "intensity": "easy",
+            "notes": "Z2 aerobic ride. HR 124-145 ONLY",
+        }
+        result = build_cycling_workout(session, "2025-01-01")
+        assert result.description == "Z2 aerobic ride. HR 124-145 ONLY"
+
+    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_outdoor_ride_falls_back_to_purpose(self, mock_hr):
+        """Falls back to purpose when no notes."""
+        session = {
+            "type": "easy_ride",
+            "duration_mins": 90,
+            "intensity": "easy",
+            "purpose": "Build aerobic base",
+        }
+        result = build_cycling_workout(session, "2025-01-01")
+        assert result.description == "Build aerobic base"
+
+    @patch("workout_builder.get_hr_target_for_intensity", return_value=(124, 145))
+    def test_outdoor_ride_step_has_hr_description(self, mock_hr):
+        """Outdoor ride main step should show HR range in description."""
+        session = {"type": "easy_ride", "duration_mins": 90, "intensity": "easy"}
+        result = build_cycling_workout(session, "2025-01-01")
+        main_step = result.workoutSegments[0].workoutSteps[0]
+        assert main_step.description == "HR 124-145 bpm"
+
+    @patch("workout_builder.get_power_target_for_intensity", return_value=(130, 160))
+    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_indoor_ride_step_has_no_hr_description(self, mock_hr, mock_power):
+        """Indoor ride steps should NOT have HR description."""
+        session = {"type": "wattbike", "duration_mins": 60, "intensity": "easy"}
+        result = build_cycling_workout(session, "2025-01-01")
+        main_step = result.workoutSegments[0].workoutSteps[1]
+        assert not hasattr(main_step, "description") or main_step.description is None
+
 
 # ─── build_running_workout ──────────────────────────────────────────
 
@@ -647,6 +689,65 @@ class TestBuildStrengthWorkout:
         ex2 = steps[3]["workoutSteps"][0]
         assert ex2["category"] == "SQUAT"
 
+    @patch("workout_builder.load_exercise_library", return_value={})
+    @patch("workout_builder.load_strength_baseline", return_value={})
+    def test_remapped_category_clears_exercise_name(self, mock_baseline, mock_library):
+        """When category is remapped, exerciseName must be cleared (doesn't exist in new category)."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "FACE_PULL", "category": "SUSPENSION", "sets": 3, "reps": 15},
+                {"name": "LYING_LEG_CURL", "category": "HAMSTRING_CURL", "sets": 3, "reps": 12},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        steps = result["workoutSegments"][0]["workoutSteps"]
+
+        # SUSPENSION -> ROW, but exerciseName cleared (FACE_PULL not under ROW)
+        face_pull = steps[2]["workoutSteps"][0]
+        assert face_pull["category"] == "ROW"
+        assert face_pull["exerciseName"] == ""
+        assert "Face Pull" in face_pull["description"]
+
+        # HAMSTRING_CURL -> DEADLIFT, exerciseName cleared
+        leg_curl = steps[3]["workoutSteps"][0]
+        assert leg_curl["category"] == "DEADLIFT"
+        assert leg_curl["exerciseName"] == ""
+        assert "Lying Leg Curl" in leg_curl["description"]
+
+    @patch("workout_builder.load_exercise_library", return_value={})
+    @patch("workout_builder.load_strength_baseline", return_value={})
+    def test_valid_category_keeps_exercise_name(self, mock_baseline, mock_library):
+        """Valid categories keep exerciseName intact (Garmin recognises the pair)."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        assert ex["category"] == "SQUAT"
+        assert ex["exerciseName"] == "BARBELL_SQUAT"
+
+    @patch("workout_builder.load_exercise_library", return_value={})
+    @patch("workout_builder.load_strength_baseline", return_value={})
+    def test_unknown_category_falls_back_to_other(self, mock_baseline, mock_library):
+        """Completely unknown category (not in map or valid set) falls back to OTHER."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "WEIRD_EXERCISE", "category": "MADE_UP_CATEGORY", "sets": 2, "reps": 10},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        assert ex["category"] == "OTHER"
+        assert ex["exerciseName"] == ""
+
 
 # ─── build_yoga_workout ─────────────────────────────────────────────
 
@@ -692,6 +793,138 @@ class TestBuildPilatesWorkout:
         session = {"type": "pilates", "duration_mins": 20, "description": "Core Stability"}
         result = build_pilates_workout(session, "2025-01-01")
         assert result["workoutName"] == "Core Stability"
+
+    def test_rehab_notes_in_workout_description(self):
+        """Rehab session notes should appear in workout description for Garmin."""
+        session = {
+            "type": "rehab",
+            "duration_mins": 15,
+            "notes": "ANKLE UNLOCK: Toe curls 3x15, Calf raises 3x12, Band dorsiflexion 3x10",
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        assert result["description"] == session["notes"]
+
+    def test_rehab_notes_in_step_description(self):
+        """Step-level description should have truncated notes."""
+        session = {
+            "type": "rehab",
+            "duration_mins": 15,
+            "notes": "ANKLE UNLOCK: Toe curls 3x15, Calf raises 3x12, Band dorsiflexion 3x10",
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]
+        assert "description" in step
+        assert len(step["description"]) <= 50
+
+    def test_no_notes_no_description(self):
+        """Sessions without notes should have empty description."""
+        session = {"type": "pilates", "duration_mins": 20}
+        result = build_pilates_workout(session, "2025-01-01")
+        assert result["description"] == ""
+        step = result["workoutSegments"][0]["workoutSteps"][0]
+        assert "description" not in step
+
+    def test_long_notes_truncated_in_description(self):
+        """Workout description truncated to 255 chars for Garmin API."""
+        long_notes = "A" * 300
+        session = {"type": "rehab", "duration_mins": 15, "notes": long_notes}
+        result = build_pilates_workout(session, "2025-01-01")
+        assert len(result["description"]) == 255
+
+    def test_structured_rehab_creates_repeat_groups(self):
+        """Exercises list creates RepeatGroupDTOs for each exercise."""
+        session = {
+            "type": "rehab",
+            "duration_mins": 15,
+            "description": "Ankle Rehab",
+            "exercises": [
+                {"name": "Toe Curls", "sets": 3, "reps": 15},
+                {"name": "Calf Raises", "sets": 3, "duration_secs": 30},
+                {"name": "Band Dorsiflexion", "sets": 3, "reps": 10},
+            ],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        steps = result["workoutSegments"][0]["workoutSteps"]
+
+        assert len(steps) == 3
+        for step in steps:
+            assert step["type"] == "RepeatGroupDTO"
+            assert step["stepType"] == STEP_REPEAT
+            assert step["numberOfIterations"] == 3
+            assert len(step["workoutSteps"]) == 2  # exercise + rest
+
+    def test_rep_based_exercise_uses_end_reps(self):
+        """Exercise with reps uses END_REPS end condition."""
+        session = {
+            "type": "rehab",
+            "exercises": [{"name": "Toe Curls", "sets": 3, "reps": 15}],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert exercise_step["endCondition"] == END_REPS
+        assert exercise_step["endConditionValue"] == 15.0
+
+    def test_timed_exercise_uses_end_time(self):
+        """Exercise with duration_secs uses END_TIME end condition."""
+        session = {
+            "type": "rehab",
+            "exercises": [{"name": "Calf Raises", "sets": 3, "duration_secs": 30}],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert exercise_step["endCondition"] == END_TIME
+        assert exercise_step["endConditionValue"] == 30.0
+
+    def test_no_reps_no_duration_uses_lap_button(self):
+        """Exercise without reps or duration_secs falls back to END_LAP_BUTTON."""
+        session = {
+            "type": "rehab",
+            "exercises": [{"name": "Stretch", "sets": 2}],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert exercise_step["endCondition"] == END_LAP_BUTTON
+        assert "endConditionValue" not in exercise_step
+
+    def test_exercise_notes_in_step_description(self):
+        """Exercise notes (form cues) appear as step description on watch."""
+        session = {
+            "type": "rehab",
+            "exercises": [
+                {"name": "Toe Curls", "sets": 3, "reps": 15, "notes": "Scrunch towel with toes"},
+            ],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+
+        assert exercise_step["description"] == "Scrunch towel with toes"
+
+    def test_exercise_count_in_output(self):
+        """Structured rehab workout includes exercise_count field."""
+        session = {
+            "type": "rehab",
+            "exercises": [
+                {"name": "Toe Curls", "sets": 3, "reps": 15},
+                {"name": "Calf Raises", "sets": 3, "duration_secs": 30},
+            ],
+        }
+        result = build_pilates_workout(session, "2025-01-01")
+
+        assert result["exercise_count"] == 2
+
+    def test_no_exercises_falls_back_to_simple_timer(self):
+        """Session without exercises list uses simple timed fallback."""
+        session = {"type": "rehab", "duration_mins": 15}
+        result = build_pilates_workout(session, "2025-01-01")
+
+        steps = result["workoutSegments"][0]["workoutSteps"]
+        assert len(steps) == 1
+        assert steps[0]["type"] == "ExecutableStepDTO"
+        assert steps[0]["endCondition"] == END_TIME
+        assert "exercise_count" not in result
 
 
 # ─── build_swimming_workout ─────────────────────────────────────────
@@ -964,3 +1197,41 @@ class TestGarminCategoryMap:
 
     def test_calf_maps_to_squat(self):
         assert GARMIN_CATEGORY_MAP["CALF"] == "SQUAT"
+
+    def test_suspension_maps_to_row(self):
+        """SUSPENSION (face pulls, TRX) must map to ROW for workout API."""
+        assert GARMIN_CATEGORY_MAP["SUSPENSION"] == "ROW"
+
+    def test_hamstring_curl_maps_to_deadlift(self):
+        """HAMSTRING_CURL (lying leg curl) must map to DEADLIFT for workout API."""
+        assert GARMIN_CATEGORY_MAP["HAMSTRING_CURL"] == "DEADLIFT"
+
+    def test_leg_curl_maps_to_deadlift(self):
+        assert GARMIN_CATEGORY_MAP["LEG_CURL"] == "DEADLIFT"
+
+    def test_plank_maps_to_core(self):
+        assert GARMIN_CATEGORY_MAP["PLANK"] == "CORE"
+
+    def test_push_up_maps_to_bench_press(self):
+        assert GARMIN_CATEGORY_MAP["PUSH_UP"] == "BENCH_PRESS"
+
+    def test_all_exercise_db_categories_mapped(self):
+        """Every non-valid exercise DB category should be in the map."""
+        valid_workout_categories = {
+            "BENCH_PRESS", "ROW", "PULL_UP", "LATERAL_RAISE", "CURL",
+            "TRICEPS_EXTENSION", "CORE", "DEADLIFT", "SQUAT",
+            "SHOULDER_PRESS", "LUNGE", "CARDIO", "OTHER",
+        }
+        # Categories from exercises.json that generate_strength_workout might use
+        exercise_db_categories = {
+            "SUSPENSION", "HAMSTRING_CURL", "LEG_CURL", "CALF_RAISE",
+            "HIP_RAISE", "HIP_STABILITY", "HIP_SWING", "HYPEREXTENSION",
+            "LEG_RAISE", "PLANK", "CRUNCH", "SIT_UP", "CHOP",
+            "FLYE", "PUSH_UP", "SHRUG", "SHOULDER_STABILITY",
+            "OLYMPIC_LIFT", "PLYO",
+        }
+        for cat in exercise_db_categories:
+            assert cat in GARMIN_CATEGORY_MAP, f"{cat} missing from GARMIN_CATEGORY_MAP"
+            assert GARMIN_CATEGORY_MAP[cat] in valid_workout_categories, (
+                f"{cat} maps to {GARMIN_CATEGORY_MAP[cat]} which is not a valid workout category"
+            )
