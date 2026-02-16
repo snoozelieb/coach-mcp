@@ -1274,6 +1274,16 @@ def build_padel_workout(session: dict, date: str) -> dict:
     }
 
 
+def load_exercise_db() -> dict:
+    """Load Garmin exercise database for (category, exerciseName) validation."""
+    db_path = Path(__file__).parent / "data" / "exercises.json"
+    if db_path.exists():
+        with open(db_path) as f:
+            data = json.load(f)
+        return data.get("exercises", {})
+    return {}
+
+
 def load_exercise_library() -> dict:
     """Load the exercise form cues library."""
     from pathlib import Path
@@ -1354,6 +1364,9 @@ def build_strength_workout(session: dict, date: str) -> dict:
     # Load strength baseline for weights
     strength_baseline = load_strength_baseline()
 
+    # Load Garmin exercise DB for (category, exerciseName) validation
+    exercise_db = load_exercise_db()
+
     # Create workout name from description
     workout_name = description[:40]
 
@@ -1418,23 +1431,43 @@ def build_strength_workout(session: dict, date: str) -> dict:
     for exercise in exercises:
         ex_name = exercise.get("name", "UNKNOWN")
         original_category = exercise.get("category", "OTHER")
-        # Map non-standard categories to valid Garmin workout API categories
-        category = GARMIN_CATEGORY_MAP.get(original_category, original_category)
+        # Map non-standard categories to valid Garmin workout API categories.
+        # Prefer exercise name as category key when it gives a better match
+        # (e.g. PLANK with category SUSPENSION → name "PLANK" maps to CORE).
+        if ex_name in GARMIN_CATEGORY_MAP:
+            category = GARMIN_CATEGORY_MAP[ex_name]
+        elif ex_name in VALID_WORKOUT_CATEGORIES:
+            category = ex_name
+        else:
+            category = GARMIN_CATEGORY_MAP.get(original_category, original_category)
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
         rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
         weight = exercise.get("weight_kg")
 
-        # If category was remapped or still isn't valid, the exerciseName
-        # won't match the new category in Garmin's DB — clear it and use
-        # description to show the exercise name on the watch instead.
-        if category != original_category or category not in VALID_WORKOUT_CATEGORIES:
+        # Validate (category, exerciseName) pair against Garmin's exercise DB.
+        # If the exercise doesn't exist under the target category, Garmin
+        # returns 400. Clear exerciseName and show in description instead.
+        if category not in VALID_WORKOUT_CATEGORIES:
             garmin_exercise_name = ""
-            if category not in VALID_WORKOUT_CATEGORIES:
-                category = "OTHER"
+            category = "OTHER"
+        elif category != original_category:
+            # Category was remapped — exercise won't exist under new category
+            garmin_exercise_name = ""
         else:
-            garmin_exercise_name = ex_name
+            # Category matches plan — verify against exercise DB
+            db_entry = exercise_db.get(ex_name, {})
+            db_category = db_entry.get("category")
+            if db_category and db_category != category:
+                # DB says this exercise is under a different category
+                # (e.g. SQUAT exercise is under SUSPENSION, not SQUAT)
+                garmin_exercise_name = ""
+            elif not db_category and ex_name not in exercise_db:
+                # Exercise not in DB at all — can't verify, be safe
+                garmin_exercise_name = ""
+            else:
+                garmin_exercise_name = ex_name
 
         # If no explicit weight, try to get from strength baseline
         if not weight:

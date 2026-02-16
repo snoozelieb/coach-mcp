@@ -648,11 +648,14 @@ class TestBuildStrengthWorkout:
 
         assert exercise_step["weightValue"] == 40.0
 
+    @patch("workout_builder.load_exercise_db", return_value={
+        "BARBELL_SQUAT": {"category": "SQUAT"}
+    })
     @patch("workout_builder.load_exercise_library", return_value={
         "barbell squat": {"garmin_note": "Drive through heels, chest up"}
     })
     @patch("workout_builder.load_strength_baseline", return_value={})
-    def test_exercise_library_note_included(self, mock_baseline, mock_library):
+    def test_exercise_library_note_included(self, mock_baseline, mock_library, mock_db):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -716,10 +719,13 @@ class TestBuildStrengthWorkout:
         assert leg_curl["exerciseName"] == ""
         assert "Lying Leg Curl" in leg_curl["description"]
 
+    @patch("workout_builder.load_exercise_db", return_value={
+        "BARBELL_SQUAT": {"category": "SQUAT"}
+    })
     @patch("workout_builder.load_exercise_library", return_value={})
     @patch("workout_builder.load_strength_baseline", return_value={})
-    def test_valid_category_keeps_exercise_name(self, mock_baseline, mock_library):
-        """Valid categories keep exerciseName intact (Garmin recognises the pair)."""
+    def test_valid_category_keeps_exercise_name(self, mock_baseline, mock_library, mock_db):
+        """Valid categories keep exerciseName intact when DB confirms the pair."""
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -731,6 +737,26 @@ class TestBuildStrengthWorkout:
         ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
         assert ex["category"] == "SQUAT"
         assert ex["exerciseName"] == "BARBELL_SQUAT"
+
+    @patch("workout_builder.load_exercise_db", return_value={
+        "SQUAT": {"category": "SUSPENSION"}
+    })
+    @patch("workout_builder.load_exercise_library", return_value={})
+    @patch("workout_builder.load_strength_baseline", return_value={})
+    def test_db_mismatch_clears_exercise_name(self, mock_baseline, mock_library, mock_db):
+        """When DB says exercise is under different category, exerciseName is cleared."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "SQUAT", "category": "SQUAT", "sets": 4, "reps": 10},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        assert ex["category"] == "SQUAT"
+        assert ex["exerciseName"] == ""
+        assert "Squat" in ex["description"]
 
     @patch("workout_builder.load_exercise_library", return_value={})
     @patch("workout_builder.load_strength_baseline", return_value={})
