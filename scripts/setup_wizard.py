@@ -56,7 +56,7 @@ def create_athlete_file() -> dict:
     # Calculate HR zones (5-zone model)
     hr_reserve = max_hr - resting_hr
     zones = {
-        "z1_recovery": [0, int(resting_hr + 0.6 * hr_reserve)],
+        "z1_recovery": [int(resting_hr + 0.5 * hr_reserve), int(resting_hr + 0.6 * hr_reserve)],
         "z2_aerobic": [int(resting_hr + 0.6 * hr_reserve), int(resting_hr + 0.7 * hr_reserve)],
         "z3_tempo": [int(resting_hr + 0.7 * hr_reserve), int(resting_hr + 0.8 * hr_reserve)],
         "z4_threshold": [int(resting_hr + 0.8 * hr_reserve), int(resting_hr + 0.9 * hr_reserve)],
