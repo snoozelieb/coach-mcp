@@ -760,8 +760,8 @@ class TestBuildStrengthWorkout:
 
     @patch("workout_builder.load_exercise_library", return_value={})
     @patch("workout_builder.load_strength_baseline", return_value={})
-    def test_unknown_category_falls_back_to_other(self, mock_baseline, mock_library):
-        """Completely unknown category (not in map or valid set) falls back to OTHER."""
+    def test_unknown_category_falls_back_to_cardio(self, mock_baseline, mock_library):
+        """Completely unknown category (not in map or valid set) falls back to CARDIO."""
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -771,7 +771,7 @@ class TestBuildStrengthWorkout:
         }
         result = build_strength_workout(session, "2025-01-01")
         ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
-        assert ex["category"] == "OTHER"
+        assert ex["category"] == "CARDIO"
         assert ex["exerciseName"] == ""
 
 
@@ -1278,7 +1278,7 @@ class TestGarminCategoryMap:
         valid_workout_categories = {
             "BENCH_PRESS", "ROW", "PULL_UP", "LATERAL_RAISE", "CURL",
             "TRICEPS_EXTENSION", "CORE", "DEADLIFT", "SQUAT",
-            "SHOULDER_PRESS", "LUNGE", "CARDIO", "OTHER",
+            "SHOULDER_PRESS", "LUNGE", "CARDIO",
         }
         # Categories from exercises.json that generate_strength_workout might use
         exercise_db_categories = {

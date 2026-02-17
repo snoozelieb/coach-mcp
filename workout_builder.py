@@ -117,7 +117,7 @@ STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights", "strength_p
 VALID_WORKOUT_CATEGORIES = {
     "BENCH_PRESS", "ROW", "PULL_UP", "LATERAL_RAISE", "CURL",
     "TRICEPS_EXTENSION", "CORE", "DEADLIFT", "SQUAT",
-    "SHOULDER_PRESS", "LUNGE", "CARDIO", "OTHER",
+    "SHOULDER_PRESS", "LUNGE", "CARDIO",
 }
 
 # Map non-valid categories to their closest valid workout API category.
@@ -156,9 +156,9 @@ GARMIN_CATEGORY_MAP = {
     "SHOULDER_STABILITY": "SHOULDER_PRESS",  # Rotator cuff work
     "OLYMPIC_LIFT": "DEADLIFT",       # Cleans, snatches
     "PLYO": "SQUAT",                  # Box jumps, plyometrics
-    "BANDED_EXERCISES": "OTHER",      # Resistance band work
-    "CARRY": "OTHER",                 # Farmer's walks
-    "TOTAL_BODY": "OTHER",            # Full-body movements
+    "BANDED_EXERCISES": "SQUAT",       # Banded leg extensions, clamshells
+    "CARRY": "CORE",                  # Farmer's walks (core stability)
+    "TOTAL_BODY": "CARDIO",           # Full-body conditioning
     "BATTLE_ROPE": "CARDIO",          # Battle rope drills
     "WARM_UP": "CARDIO",              # Warmup movements
 }
@@ -1451,7 +1451,7 @@ def build_strength_workout(session: dict, date: str) -> dict:
         # returns 400. Clear exerciseName and show in description instead.
         if category not in VALID_WORKOUT_CATEGORIES:
             garmin_exercise_name = ""
-            category = "OTHER"
+            category = "CARDIO"
         elif category != original_category:
             # Category was remapped — exercise won't exist under new category
             garmin_exercise_name = ""
