@@ -11,9 +11,36 @@
     "endurance_athlete": {
       "description": "Runner, cyclist, triathlete, swimmer - focused on aerobic events and distance",
       "suggested_pillars": [
-        {"name": "endurance", "target_hours_per_week": 4, "target_type": "hours", "types": ["running", "cycling", "swimming", "trail_running"]},
-        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training", "functional_strength"]},
-        {"name": "mobility", "target_mins_per_week": 60, "target_type": "minutes", "types": ["yoga", "pilates", "stretching"]}
+        {
+          "name": "endurance",
+          "target_hours_per_week": 4,
+          "target_type": "hours",
+          "types": [
+            "running",
+            "cycling",
+            "swimming",
+            "trail_running"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training",
+            "functional_strength"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 60,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "pilates",
+            "stretching"
+          ]
+        }
       ],
       "typical_weekly_hours": "6-10",
       "key_focus": "Aerobic base, injury prevention, event-specific preparation"
@@ -21,9 +48,35 @@
     "strength_athlete": {
       "description": "Powerlifter, bodybuilder, CrossFitter - focused on strength and muscle",
       "suggested_pillars": [
-        {"name": "strength", "target_sessions_per_week": 4, "target_type": "sessions", "types": ["strength_training", "powerlifting", "bodybuilding"]},
-        {"name": "conditioning", "target_mins_per_week": 60, "target_type": "minutes", "types": ["rowing", "cycling", "walking"]},
-        {"name": "mobility", "target_mins_per_week": 45, "target_type": "minutes", "types": ["stretching", "foam_rolling"]}
+        {
+          "name": "strength",
+          "target_sessions_per_week": 4,
+          "target_type": "sessions",
+          "types": [
+            "strength_training",
+            "powerlifting",
+            "bodybuilding"
+          ]
+        },
+        {
+          "name": "conditioning",
+          "target_mins_per_week": 60,
+          "target_type": "minutes",
+          "types": [
+            "rowing",
+            "cycling",
+            "walking"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 45,
+          "target_type": "minutes",
+          "types": [
+            "stretching",
+            "foam_rolling"
+          ]
+        }
       ],
       "typical_weekly_hours": "5-8",
       "key_focus": "Progressive overload, recovery, nutrition timing"
@@ -31,9 +84,31 @@
     "recreational": {
       "description": "General fitness, health maintenance, stress relief - no specific events",
       "suggested_pillars": [
-        {"name": "cardio", "target_mins_per_week": 150, "target_type": "minutes", "types": ["any_cardio"]},
-        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]},
-        {"name": "flexibility", "target_mins_per_week": 30, "target_type": "minutes", "types": ["yoga", "stretching"]}
+        {
+          "name": "cardio",
+          "target_mins_per_week": 150,
+          "target_type": "minutes",
+          "types": [
+            "any_cardio"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        },
+        {
+          "name": "flexibility",
+          "target_mins_per_week": 30,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "stretching"
+          ]
+        }
       ],
       "typical_weekly_hours": "3-5",
       "key_focus": "Consistency, enjoyment, sustainable habits"
@@ -41,9 +116,33 @@
     "return_from_injury": {
       "description": "Recovering from injury - conservative progression, focus on rehab",
       "suggested_pillars": [
-        {"name": "rehab", "target_sessions_per_week": 3, "target_type": "sessions", "types": ["physio_exercises", "mobility"]},
-        {"name": "low_impact_cardio", "target_mins_per_week": 90, "target_type": "minutes", "types": ["swimming", "cycling", "walking"]},
-        {"name": "strength", "target_sessions_per_week": 1, "target_type": "sessions", "types": ["strength_training"]}
+        {
+          "name": "rehab",
+          "target_sessions_per_week": 3,
+          "target_type": "sessions",
+          "types": [
+            "physio_exercises",
+            "mobility"
+          ]
+        },
+        {
+          "name": "low_impact_cardio",
+          "target_mins_per_week": 90,
+          "target_type": "minutes",
+          "types": [
+            "swimming",
+            "cycling",
+            "walking"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 1,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        }
       ],
       "typical_weekly_hours": "3-4",
       "key_focus": "Safe progression, pain-free movement, building back capacity"
@@ -51,10 +150,39 @@
     "multi_sport": {
       "description": "Multiple sports/activities - balancing competing demands",
       "suggested_pillars": [
-        {"name": "primary_sport", "target_hours_per_week": 3, "target_type": "hours", "types": ["ask_athlete"]},
-        {"name": "secondary_sport", "target_hours_per_week": 2, "target_type": "hours", "types": ["ask_athlete"]},
-        {"name": "strength", "target_sessions_per_week": 2, "target_type": "sessions", "types": ["strength_training"]},
-        {"name": "mobility", "target_mins_per_week": 45, "target_type": "minutes", "types": ["yoga", "stretching"]}
+        {
+          "name": "primary_sport",
+          "target_hours_per_week": 3,
+          "target_type": "hours",
+          "types": [
+            "ask_athlete"
+          ]
+        },
+        {
+          "name": "secondary_sport",
+          "target_hours_per_week": 2,
+          "target_type": "hours",
+          "types": [
+            "ask_athlete"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 45,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "stretching"
+          ]
+        }
       ],
       "typical_weekly_hours": "6-10",
       "key_focus": "Balance, avoiding overtraining, sport-specific strength"
@@ -190,10 +318,30 @@
     }
   },
   "activity_classification": {
-    "strength_types": ["strength_training", "indoor_cardio", "functional_strength"],
-    "mobility_types": ["yoga", "pilates", "stretching", "breathwork"],
-    "cardio_types": ["running", "cycling", "swimming", "trail_running", "open_water_swimming"],
-    "high_intensity_types": ["ultimate_disc", "hiit", "interval_training", "track_running"]
+    "strength_types": [
+      "strength_training",
+      "indoor_cardio",
+      "functional_strength"
+    ],
+    "mobility_types": [
+      "yoga",
+      "pilates",
+      "stretching",
+      "breathwork"
+    ],
+    "cardio_types": [
+      "running",
+      "cycling",
+      "swimming",
+      "trail_running",
+      "open_water_swimming"
+    ],
+    "high_intensity_types": [
+      "ultimate_disc",
+      "hiit",
+      "interval_training",
+      "track_running"
+    ]
   },
   "recovery_protocols": {
     "pre_sleep_stretching": {
@@ -207,40 +355,127 @@
       "by_activity": {
         "cycling": {
           "duration_mins": 12,
-          "target_areas": ["hip_flexors", "quads", "lower_back", "thoracic_spine", "neck"],
+          "target_areas": [
+            "hip_flexors",
+            "quads",
+            "lower_back",
+            "thoracic_spine",
+            "neck"
+          ],
           "suggested_sequence": [
-            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side - hip external rotators"},
-            {"name": "Kneeling hip flexor stretch", "duration_secs": 60, "notes": "Each side - counteract cycling position"},
-            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side - thoracic mobility"},
-            {"name": "Cat-cow", "duration_secs": 90, "notes": "Slow, breath-led - lower back release"},
-            {"name": "Child's pose with reach", "duration_secs": 90, "notes": "Extended arms - lat and shoulder release"},
-            {"name": "Neck rolls", "duration_secs": 60, "notes": "Gentle - release from aero position"}
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side - hip external rotators"
+            },
+            {
+              "name": "Kneeling hip flexor stretch",
+              "duration_secs": 60,
+              "notes": "Each side - counteract cycling position"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side - thoracic mobility"
+            },
+            {
+              "name": "Cat-cow",
+              "duration_secs": 90,
+              "notes": "Slow, breath-led - lower back release"
+            },
+            {
+              "name": "Child's pose with reach",
+              "duration_secs": 90,
+              "notes": "Extended arms - lat and shoulder release"
+            },
+            {
+              "name": "Neck rolls",
+              "duration_secs": 60,
+              "notes": "Gentle - release from aero position"
+            }
           ],
           "rationale": "Cycling creates hip flexor tightness, thoracic kyphosis, and neck strain. Focus on opening front body and releasing spine."
         },
         "running": {
           "duration_mins": 12,
-          "target_areas": ["calves", "hamstrings", "hip_flexors", "glutes", "lower_back"],
+          "target_areas": [
+            "calves",
+            "hamstrings",
+            "hip_flexors",
+            "glutes",
+            "lower_back"
+          ],
           "suggested_sequence": [
-            {"name": "Supine hamstring stretch", "duration_secs": 60, "notes": "Each leg - use strap if needed"},
-            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side - piriformis release"},
-            {"name": "Kneeling hip flexor stretch", "duration_secs": 60, "notes": "Each side"},
-            {"name": "Wall calf stretch", "duration_secs": 60, "notes": "Each leg - gastroc and soleus"},
-            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side"},
-            {"name": "Legs up the wall", "duration_secs": 120, "notes": "Passive recovery - venous return"}
+            {
+              "name": "Supine hamstring stretch",
+              "duration_secs": 60,
+              "notes": "Each leg - use strap if needed"
+            },
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side - piriformis release"
+            },
+            {
+              "name": "Kneeling hip flexor stretch",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Wall calf stretch",
+              "duration_secs": 60,
+              "notes": "Each leg - gastroc and soleus"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Legs up the wall",
+              "duration_secs": 120,
+              "notes": "Passive recovery - venous return"
+            }
           ],
           "rationale": "Running impacts posterior chain and hip flexors. Focus on calves, hamstrings, and hip opening."
         },
         "high_intensity": {
           "duration_mins": 15,
-          "target_areas": ["full_body", "nervous_system"],
+          "target_areas": [
+            "full_body",
+            "nervous_system"
+          ],
           "suggested_sequence": [
-            {"name": "Child's pose", "duration_secs": 90, "notes": "With deep breathing - nervous system reset"},
-            {"name": "Supine figure-4", "duration_secs": 60, "notes": "Each side"},
-            {"name": "Supine hamstring stretch", "duration_secs": 60, "notes": "Each leg"},
-            {"name": "Supine spinal twist", "duration_secs": 60, "notes": "Each side"},
-            {"name": "Happy baby", "duration_secs": 60, "notes": "Gentle rocking - hip release"},
-            {"name": "Savasana with 4-7-8 breathing", "duration_secs": 180, "notes": "Inhale 4, hold 7, exhale 8 - parasympathetic activation"}
+            {
+              "name": "Child's pose",
+              "duration_secs": 90,
+              "notes": "With deep breathing - nervous system reset"
+            },
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Supine hamstring stretch",
+              "duration_secs": 60,
+              "notes": "Each leg"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Happy baby",
+              "duration_secs": 60,
+              "notes": "Gentle rocking - hip release"
+            },
+            {
+              "name": "Savasana with 4-7-8 breathing",
+              "duration_secs": 180,
+              "notes": "Inhale 4, hold 7, exhale 8 - parasympathetic activation"
+            }
           ],
           "rationale": "High-intensity creates systemic stress. Focus on calming nervous system with longer holds and breathing."
         }
@@ -287,7 +522,10 @@
         "single_leg_drills": {
           "purpose": "Identify and correct dead spots, build neuromuscular patterns",
           "execution": "Unclip one foot, pedal with single leg. Focus on pulling through bottom of stroke.",
-          "cadence": [55, 65],
+          "cadence": [
+            55,
+            65
+          ],
           "duration": "1-2 min per leg",
           "sets": "4-6 per leg with rest between",
           "progression": "Start 4x1min, build to 4x2min each leg",
@@ -296,7 +534,19 @@
         "cadence_pyramids": {
           "purpose": "Build high-cadence efficiency without bouncing",
           "execution": "Progressive cadence increase then decrease. Stay seated, quiet upper body.",
-          "cadence_sequence": [95, 100, 105, 110, 115, 120, 115, 110, 105, 100, 95],
+          "cadence_sequence": [
+            95,
+            100,
+            105,
+            110,
+            115,
+            120,
+            115,
+            110,
+            105,
+            100,
+            95
+          ],
           "interval_duration_mins": 2,
           "power": "60-65% FTP (maintain steady power throughout)",
           "watch_for": "Bouncing in saddle, grip tightening, shoulder tension = too fast"
@@ -304,7 +554,10 @@
         "spin_ups": {
           "purpose": "Maximum smooth cadence development",
           "execution": "Gradually increase cadence to max smooth RPM, hold briefly, recover",
-          "target_cadence": [120, 140],
+          "target_cadence": [
+            120,
+            140
+          ],
           "duration_secs": 30,
           "sets": 3,
           "recovery_secs": 60,
@@ -314,7 +567,10 @@
           "purpose": "Real-time technique feedback under moderate load",
           "execution": "Watch Polar View display, adjust technique to maintain smooth shape",
           "power": "65-75% FTP",
-          "cadence": [85, 95],
+          "cadence": [
+            85,
+            95
+          ],
           "duration_mins": "5-10",
           "watch_for": "Spikes = power surges. Flat spots = dead spots. Asymmetry = L/R imbalance"
         }
@@ -325,12 +581,34 @@
           "duration_mins": 60,
           "tss_estimate": 40,
           "structure": [
-            {"phase": "warmup", "mins": 10, "notes": "Easy spin, watch Polar View"},
-            {"phase": "single_leg_drills", "mins": 16, "notes": "4x1min each leg with 1min recovery"},
-            {"phase": "recovery", "mins": 3},
-            {"phase": "cadence_pyramid", "mins": 22, "notes": "Full pyramid up and down"},
-            {"phase": "polar_view_focus", "mins": 5, "notes": "Steady power, watch display"},
-            {"phase": "cooldown", "mins": 4}
+            {
+              "phase": "warmup",
+              "mins": 10,
+              "notes": "Easy spin, watch Polar View"
+            },
+            {
+              "phase": "single_leg_drills",
+              "mins": 16,
+              "notes": "4x1min each leg with 1min recovery"
+            },
+            {
+              "phase": "recovery",
+              "mins": 3
+            },
+            {
+              "phase": "cadence_pyramid",
+              "mins": 22,
+              "notes": "Full pyramid up and down"
+            },
+            {
+              "phase": "polar_view_focus",
+              "mins": 5,
+              "notes": "Steady power, watch display"
+            },
+            {
+              "phase": "cooldown",
+              "mins": 4
+            }
           ]
         },
         "technique_plus_sweetspot": {
@@ -338,12 +616,33 @@
           "duration_mins": 90,
           "tss_estimate": 85,
           "structure": [
-            {"phase": "warmup", "mins": 10},
-            {"phase": "activation", "mins": 3, "notes": "Openers at tempo"},
-            {"phase": "sweetspot_intervals", "mins": 36, "notes": "3x12min at 88-93% FTP"},
-            {"phase": "recovery", "mins": 5},
-            {"phase": "technique_drills", "mins": 20, "notes": "Single leg or spin-ups"},
-            {"phase": "cooldown", "mins": 10}
+            {
+              "phase": "warmup",
+              "mins": 10
+            },
+            {
+              "phase": "activation",
+              "mins": 3,
+              "notes": "Openers at tempo"
+            },
+            {
+              "phase": "sweetspot_intervals",
+              "mins": 36,
+              "notes": "3x12min at 88-93% FTP"
+            },
+            {
+              "phase": "recovery",
+              "mins": 5
+            },
+            {
+              "phase": "technique_drills",
+              "mins": 20,
+              "notes": "Single leg or spin-ups"
+            },
+            {
+              "phase": "cooldown",
+              "mins": 10
+            }
           ]
         }
       },
@@ -360,6 +659,98 @@
           "L/R balance within 2% of target",
           "Smooth cadence up to 110+ RPM without bouncing"
         ]
+      }
+    }
+  },
+  "pillars": {
+    "strength_sessions_per_week": 4,
+    "strength_program": "6 Week Lean & Mean - 4 sessions/week. W1+W3 posterior chain, W2+W4 anterior chain. Progressive overload: Wk1-2 form, Wk3-4 add reps/tempo, Wk5-6 add weight/sets. Ankle mods until March 4 doc visit: walking lunges \u2192 reverse lunges BW, Bulgarians BW only, step-ups BW only."
+  },
+  "strength_programs": {
+    "lean_and_mean_6wk": {
+      "name": "6 Week Lean & Mean",
+      "duration_weeks": 6,
+      "structure": "posterior/anterior alternating",
+      "schedule": {
+        "day_1": "workout_1",
+        "day_2": "workout_2",
+        "day_3": "rest",
+        "day_4": "workout_3",
+        "day_5": "workout_4",
+        "day_6": "rest",
+        "day_7": "rest"
+      },
+      "progressive_overload": {
+        "weeks_1_2": "Pick weight for target reps with perfect form",
+        "weeks_3_4": "Add 1-2 reps per set OR slow down tempo (3s lowering)",
+        "weeks_5_6": "Increase weight slightly OR add an extra set to main lifts"
+      },
+      "step_targets": {
+        "weeks_1_2": 6000,
+        "weeks_3_4": 8000,
+        "weeks_5_6": 10000
+      },
+      "workouts": {
+        "workout_1": {
+          "name": "Posterior Chain",
+          "focus": "posterior_chain",
+          "exercises": [
+            {"name": "Barbell Hip Thrust", "sets": 4, "reps": "10-12"},
+            {"name": "Lat Pulldown", "sets": 3, "reps": "10-12"},
+            {"name": "Romanian Deadlift", "sets": 3, "reps": "10-12"},
+            {"name": "Seated Row (Cable)", "sets": 3, "reps": "12-15"},
+            {"name": "Glute Kickback (Cable)", "sets": 3, "reps": "15 each"}
+          ],
+          "core_finisher": {
+            "format": "30s per move, 2 rounds",
+            "exercises": ["Plank", "Dead Bug", "Side Plank L", "Side Plank R"]
+          }
+        },
+        "workout_2": {
+          "name": "Anterior Chain",
+          "focus": "anterior_chain",
+          "exercises": [
+            {"name": "Barbell Back Squat", "sets": 4, "reps": "8-10"},
+            {"name": "Incline Dumbbell Press", "sets": 3, "reps": "10-12"},
+            {"name": "Walking Lunges", "sets": 3, "reps": "12 each leg"},
+            {"name": "Overhead Press (Dumbbell)", "sets": 3, "reps": "10-12"},
+            {"name": "Leg Extension", "sets": 3, "reps": "12-15"}
+          ],
+          "core_finisher": {
+            "format": "10 reps per move, 2 rounds",
+            "exercises": ["Reverse Crunch", "Russian Twist", "Hollow Hold (20s)"]
+          }
+        },
+        "workout_3": {
+          "name": "Posterior Chain Heavy",
+          "focus": "posterior_chain_heavy",
+          "exercises": [
+            {"name": "Deadlift (Trap Bar or Barbell)", "sets": 4, "reps": "6-8"},
+            {"name": "Pull-Up or Assisted Pull-Up", "sets": 3, "reps": "Max Reps"},
+            {"name": "Bulgarian Split Squat", "sets": 3, "reps": "10 each leg"},
+            {"name": "Face Pulls", "sets": 3, "reps": "12-15"},
+            {"name": "Hamstring Curl (Machine)", "sets": 3, "reps": "12-15"}
+          ],
+          "core_finisher": {
+            "format": "30s per move, 2 rounds",
+            "exercises": ["Mountain Climbers", "Side Plank Hip Dips L", "Side Plank Hip Dips R"]
+          }
+        },
+        "workout_4": {
+          "name": "Anterior Chain Heavy",
+          "focus": "anterior_chain_heavy",
+          "exercises": [
+            {"name": "Front Squat", "sets": 4, "reps": "8-10"},
+            {"name": "Push-Up", "sets": 3, "reps": "Max Reps"},
+            {"name": "Step-Ups (Weighted)", "sets": 3, "reps": "12 each leg"},
+            {"name": "Arnold Press", "sets": 3, "reps": "10-12"},
+            {"name": "Leg Press", "sets": 3, "reps": "12-15"}
+          ],
+          "core_finisher": {
+            "format": "10 reps per move, 2 rounds",
+            "exercises": ["V-Up", "Plank Shoulder Tap", "Flutter Kick (20s)"]
+          }
+        }
       }
     }
   }

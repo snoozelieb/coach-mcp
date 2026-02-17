@@ -274,7 +274,7 @@ Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 
 ## Testing
 
-489 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
+499 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `parsers.py`
