@@ -13,7 +13,7 @@ Registers MCP tools for:
 
 from mcp_app import mcp
 from garmin_client import garmin_api_call
-from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile
+from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
 from planner import load_athlete, load_methodology, load_json_file, save_json_file
 from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_athlete_hr_zones, get_fitness_trend,
@@ -48,6 +48,17 @@ def _auto_populate_athlete(garmin_profile: dict) -> None:
     for athlete_key, profile_key in field_map.items():
         if personal.get(athlete_key) is None and garmin_profile.get(profile_key) is not None:
             personal[athlete_key] = garmin_profile[profile_key]
+            changed = True
+
+    # Always sync HR zones from Garmin (these are device-configured, not manually set)
+    garmin_zones = garmin_profile.get('hr_zones')
+    if garmin_zones:
+        zone_data = {k: v for k, v in garmin_zones.items() if k.startswith('z')}
+        if zone_data != personal.get('hr_zones'):
+            personal['hr_zones'] = zone_data
+            # Also sync max_hr and resting_hr from zone data if available
+            if garmin_zones.get('max_hr'):
+                personal['max_hr'] = garmin_zones['max_hr']
             changed = True
 
     if changed:
@@ -101,6 +112,18 @@ def refresh_athlete_baseline() -> str:
             garmin_profile = parse_user_profile(full_name, user_profile, body_comp)
         except Exception:
             logger.warning("Failed to pull Garmin profile data", exc_info=True)
+
+        # Pull HR zones from Garmin biometric service
+        garmin_hr_zones = None
+        try:
+            hr_zones_data = garmin_api_call(
+                lambda c: c.garth.connectapi('/biometric-service/heartRateZones')
+            )
+            garmin_hr_zones = parse_hr_zones(hr_zones_data)
+            if garmin_hr_zones:
+                garmin_profile['hr_zones'] = garmin_hr_zones
+        except Exception:
+            logger.warning("Failed to pull Garmin HR zones", exc_info=True)
 
         # Build the baseline profile (Garmin-derived only)
         profile = {

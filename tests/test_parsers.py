@@ -16,6 +16,7 @@ from parsers import (
     parse_personal_records,
     calculate_baseline,
     parse_user_profile,
+    parse_hr_zones,
 )
 from conftest import (
     SAMPLE_RUNNING_ACTIVITY,
@@ -617,11 +618,69 @@ class TestParseUserProfile:
         assert result['birth_date'] == 'not-a-date'
         assert result['age'] is None
 
+
+class TestParseHrZones:
+    """Tests for parse_hr_zones — Garmin biometric HR zone parsing."""
+
+    SAMPLE_GARMIN_ZONES = [{
+        "trainingMethod": "HR_MAX",
+        "restingHeartRateUsed": None,
+        "lactateThresholdHeartRateUsed": 170,
+        "zone1Floor": 100,
+        "zone2Floor": 120,
+        "zone3Floor": 140,
+        "zone4Floor": 155,
+        "zone5Floor": 170,
+        "maxHeartRateUsed": 190,
+        "sport": "DEFAULT",
+        "changeState": "UNCHANGED",
+    }]
+
+    def test_parses_default_zones(self):
+        """Extracts 5 HR zones from Garmin biometric response."""
+        result = parse_hr_zones(self.SAMPLE_GARMIN_ZONES)
+        assert result['z1_recovery'] == [100, 119]
+        assert result['z2_aerobic'] == [120, 139]
+        assert result['z3_tempo'] == [140, 154]
+        assert result['z4_threshold'] == [155, 169]
+        assert result['z5_max'] == [170, 190]
+
+    def test_includes_max_hr_and_lthr(self):
+        """Includes max_hr and LTHR in output."""
+        result = parse_hr_zones(self.SAMPLE_GARMIN_ZONES)
+        assert result['max_hr'] == 190
+        assert result['lthr'] == 170
+
+    def test_empty_list_returns_none(self):
+        assert parse_hr_zones([]) is None
+
+    def test_none_returns_none(self):
+        assert parse_hr_zones(None) is None
+
+    def test_missing_zone_floor_returns_none(self):
+        """If any zone floor is missing, returns None."""
+        incomplete = [{"sport": "DEFAULT", "maxHeartRateUsed": 190,
+                       "zone1Floor": 100, "zone2Floor": 120}]
+        assert parse_hr_zones(incomplete) is None
+
+    def test_picks_default_sport(self):
+        """When multiple sport entries exist, picks DEFAULT."""
+        multi = [
+            {"sport": "RUNNING", "zone1Floor": 105, "zone2Floor": 125,
+             "zone3Floor": 145, "zone4Floor": 160, "zone5Floor": 175, "maxHeartRateUsed": 195},
+            {"sport": "DEFAULT", "zone1Floor": 100, "zone2Floor": 120,
+             "zone3Floor": 140, "zone4Floor": 155, "zone5Floor": 170,
+             "maxHeartRateUsed": 190, "lactateThresholdHeartRateUsed": 170},
+        ]
+        result = parse_hr_zones(multi)
+        assert result['z1_recovery'] == [100, 119]
+        assert result['max_hr'] == 190
+
     def test_string_full_name(self):
         """Garmin get_full_name() returns a plain string, not a dict."""
-        result = parse_user_profile(full_name='Schoonraad Liebenberg')
-        assert result['full_name'] == 'Schoonraad Liebenberg'
-        assert result['display_name'] == 'Schoonraad Liebenberg'
+        result = parse_user_profile(full_name='Jane Smith')
+        assert result['full_name'] == 'Jane Smith'
+        assert result['display_name'] == 'Jane Smith'
 
     def test_empty_string_full_name(self):
         """Empty string treated as no name."""

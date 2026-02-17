@@ -377,3 +377,48 @@ def parse_user_profile(
                 result['display_name'] = display
 
     return result
+
+
+def parse_hr_zones(hr_zones_data: list) -> dict | None:
+    """
+    Parse HR zones from Garmin biometric API response.
+
+    Args:
+        hr_zones_data: Response from /biometric-service/heartRateZones — list of zone configs.
+
+    Returns:
+        Dict with z1_recovery through z5_max as [floor, ceiling] pairs, or None if data invalid.
+    """
+    if not hr_zones_data or not isinstance(hr_zones_data, list):
+        return None
+
+    # Use the DEFAULT sport entry (applies to all activities unless sport-specific override)
+    default_zones = None
+    for entry in hr_zones_data:
+        if entry.get('sport') == 'DEFAULT':
+            default_zones = entry
+            break
+    if not default_zones:
+        default_zones = hr_zones_data[0]
+
+    max_hr = default_zones.get('maxHeartRateUsed')
+    floors = [
+        default_zones.get('zone1Floor'),
+        default_zones.get('zone2Floor'),
+        default_zones.get('zone3Floor'),
+        default_zones.get('zone4Floor'),
+        default_zones.get('zone5Floor'),
+    ]
+
+    if not max_hr or not all(f is not None for f in floors):
+        return None
+
+    return {
+        'z1_recovery': [floors[0], floors[1] - 1],
+        'z2_aerobic': [floors[1], floors[2] - 1],
+        'z3_tempo': [floors[2], floors[3] - 1],
+        'z4_threshold': [floors[3], floors[4] - 1],
+        'z5_max': [floors[4], max_hr],
+        'max_hr': max_hr,
+        'lthr': default_zones.get('lactateThresholdHeartRateUsed'),
+    }
