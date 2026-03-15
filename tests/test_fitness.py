@@ -32,6 +32,7 @@ from fitness import (
     get_sleep_trend,
     persist_sleep_data,
     analyze_activity_patterns,
+    get_day_context,
 )
 
 
@@ -649,3 +650,57 @@ class TestIntensityDistributionWithZoneData:
         """Empty activities list returns data_source with all zeros."""
         result = calculate_intensity_distribution([], HR_ZONES)
         assert result.get('data_source') is None or result.get('zone_distribution') == {}
+
+
+# ── Day Context ───────────────────────────────────────────────
+
+class TestGetDayContext:
+    """Tests for get_day_context() — surrounding context for anomaly enrichment."""
+
+    def test_returns_sleep_data(self):
+        sleep_history = [
+            {'date': '2026-03-14', 'score': 82, 'duration_hrs': 7.2},
+        ]
+        ctx = get_day_context('2026-03-14', {}, sleep_history)
+        assert ctx['sleep_score'] == 82
+        assert ctx['sleep_hours'] == 7.2
+
+    def test_returns_prior_day_load(self):
+        daily_loads = {
+            '2026-03-13': {'total': 95.3, 'by_sport': {}, 'activities': []},
+        }
+        ctx = get_day_context('2026-03-14', daily_loads, [])
+        assert ctx['prior_day_load'] == 95.3
+
+    def test_prior_day_hard_flag(self):
+        daily_loads = {
+            '2026-03-13': {
+                'total': 85.0,
+                'by_sport': {'running': 85.0},
+                'activities': [{'sport': 'running', 'load': 85.0}],
+            },
+        }
+        ctx = get_day_context('2026-03-14', daily_loads, [])
+        assert ctx.get('prior_day_hard') is True
+
+    def test_no_data_returns_empty(self):
+        ctx = get_day_context('2026-03-14', {}, [])
+        assert ctx == {}
+
+    def test_missing_sleep_fields_excluded(self):
+        sleep_history = [
+            {'date': '2026-03-14', 'score': None, 'duration_hrs': 6.5},
+        ]
+        ctx = get_day_context('2026-03-14', {}, sleep_history)
+        assert 'sleep_score' not in ctx
+        assert ctx['sleep_hours'] == 6.5
+
+    def test_v1_daily_loads_numeric(self):
+        """Legacy v1 format where daily_loads values are plain numbers."""
+        daily_loads = {'2026-03-13': 42.5}
+        ctx = get_day_context('2026-03-14', daily_loads, [])
+        assert ctx['prior_day_load'] == 42.5
+
+    def test_invalid_date_returns_empty(self):
+        ctx = get_day_context('not-a-date', {}, [])
+        assert ctx == {}

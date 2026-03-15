@@ -74,11 +74,16 @@ from tools.strength_tools import _get_strength_baseline_data
 # Helper functions (used by MCP tools below)
 # ---------------------------------------------------------------------------
 
-def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
+def _compare_planned_actual(plan: dict, activities: list, today: date,
+                            daily_loads: dict = None, sleep_history: list = None) -> dict:
     """Compare planned sessions against actual activities.
 
     Surfaces anomalies for LLM reasoning instead of drawing conclusions.
     Status values: matched, partial, missing, unplanned, type_mismatch, pending.
+
+    When daily_loads and sleep_history are provided, anomalies are enriched
+    with surrounding context (sleep, prior day load) so the LLM can reason
+    about WHY an anomaly occurred.
     """
     if not plan or not plan.get('days'):
         return {'status': 'no_plan', 'note': 'No weekly plan to compare against'}
@@ -234,6 +239,18 @@ def _compare_planned_actual(plan: dict, activities: list, today: date) -> dict:
         if comparison['sessions_planned'] > 0 else None
     )
 
+    # Enrich anomalies with surrounding context when data is available
+    if (daily_loads or sleep_history) and comparison['anomalies']:
+        from fitness import get_day_context
+        for anomaly in comparison['anomalies']:
+            ctx = get_day_context(
+                anomaly['date'],
+                daily_loads or {},
+                sleep_history or [],
+            )
+            if ctx:
+                anomaly['context'] = ctx
+
     return comparison
 
 
@@ -373,6 +390,64 @@ def _derive_compliance_rate_pct(compliance: dict) -> float | None:
             if compliance[pillar].get('compliant', False):
                 pillars_met += 1
     return round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
+
+
+def _build_snapshot_flags(snapshot: dict) -> dict:
+    """Build a summary flags dict for quick scanning of snapshot state.
+
+    Returns counts and booleans only — no ranking or prioritization
+    (that's the LLM's job).
+    """
+    flags = {}
+
+    # ACWR warning
+    acwr_warnings = snapshot.get('acwr_warnings', [])
+    if acwr_warnings:
+        flags['acwr_warning'] = True
+
+    # Active injuries
+    injuries = snapshot.get('injuries', [])
+    if injuries:
+        flags['active_injuries'] = len(injuries)
+
+    # Anomaly count
+    pva = snapshot.get('planned_vs_actual', {})
+    anomalies = pva.get('anomalies', [])
+    if anomalies:
+        flags['anomaly_count'] = len(anomalies)
+
+    # Sleep deficit
+    sleep = snapshot.get('sleep', {})
+    if sleep.get('deficit_flag') or sleep.get('trend_direction') == 'declining':
+        flags['sleep_deficit'] = True
+
+    # Pending approvals
+    memory = snapshot.get('coaching_memory', {})
+    pending = memory.get('pending_approvals', [])
+    if pending:
+        flags['pending_approvals'] = len(pending)
+
+    # Decisions due for review (active decisions older than 7 days)
+    active = memory.get('active_decisions', [])
+    review_due = 0
+    today = date.today()
+    for d in active:
+        d_date = d.get('date', '')
+        try:
+            if d_date and (today - date.fromisoformat(d_date)).days > 7:
+                review_due += 1
+        except (ValueError, TypeError):
+            pass
+    if review_due:
+        flags['decisions_due_for_review'] = review_due
+
+    # Compliance below 70%
+    compliance = snapshot.get('compliance', {})
+    rate = compliance.get('compliance_rate_pct')
+    if rate is not None and rate < 70:
+        flags['compliance_below_70'] = True
+
+    return flags
 
 
 def _analyze_sport_priorities(events: list, current_block: dict, race_templates: dict) -> dict:
@@ -929,7 +1004,11 @@ def get_coaching_snapshot() -> str:
 
         # 3. Planned vs Actual comparison (uses full fetch range — the comparison
         # function filters by plan dates, so extra activities are harmless)
-        planned_vs_actual = _compare_planned_actual(current_plan, all_fetched_activities, today)
+        sleep_history = history.get('sleep_history', [])
+        planned_vs_actual = _compare_planned_actual(
+            current_plan, all_fetched_activities, today,
+            daily_loads=daily_loads, sleep_history=sleep_history,
+        )
 
         # 4. Fitness metrics — overall + per-sport
         #
@@ -1287,6 +1366,11 @@ def get_coaching_snapshot() -> str:
         except Exception:
             logger.warning("Failed to load coaching memory", exc_info=True)
             snapshot['coaching_memory'] = {'status': 'unavailable'}
+
+        # Snapshot flags — quick-scan summary for the LLM
+        flags = _build_snapshot_flags(snapshot)
+        if flags:
+            snapshot['flags'] = flags
 
         return json.dumps(snapshot, indent=2)
 

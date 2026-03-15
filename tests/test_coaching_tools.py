@@ -7,6 +7,7 @@ from tools.coaching_tools import (
     _compare_planned_actual,
     _parse_readiness_for_snapshot,
     _build_adaptation_patterns,
+    _build_snapshot_flags,
     _derive_sleep_trend_direction,
     _derive_hrv_trend,
     _derive_compliance_rate_pct,
@@ -760,3 +761,147 @@ class TestMidWeekPlanActivityFetch:
         # Case 3: Plan starts on Monday — both are equal
         plan_start_3 = date(2026, 2, 2)  # Monday
         assert min(plan_start_3, monday_this_week) == monday_this_week
+
+
+# ---------------------------------------------------------------------------
+# _compare_planned_actual — anomaly context enrichment
+# ---------------------------------------------------------------------------
+
+class TestAnomalyContextEnrichment:
+    """Tests for context enrichment when daily_loads/sleep_history are provided."""
+
+    def test_anomaly_gets_sleep_context(self):
+        """Missing session anomaly should include sleep data for that day."""
+        plan = {
+            'days': {
+                '2026-03-14': {'planned': {'type': 'running', 'duration_mins': 60}},
+            }
+        }
+        sleep_history = [
+            {'date': '2026-03-14', 'score': 45, 'duration_hrs': 4.8},
+        ]
+        result = _compare_planned_actual(
+            plan, [], date(2026, 3, 15),
+            daily_loads={}, sleep_history=sleep_history,
+        )
+        assert len(result['anomalies']) == 1
+        ctx = result['anomalies'][0].get('context', {})
+        assert ctx['sleep_hours'] == 4.8
+        assert ctx['sleep_score'] == 45
+
+    def test_anomaly_gets_prior_day_load(self):
+        """Anomaly should include prior day's load."""
+        plan = {
+            'days': {
+                '2026-03-14': {'planned': {'type': 'cycling', 'duration_mins': 90}},
+            }
+        }
+        daily_loads = {
+            '2026-03-13': {'total': 120.0, 'by_sport': {}, 'activities': []},
+        }
+        result = _compare_planned_actual(
+            plan, [], date(2026, 3, 15),
+            daily_loads=daily_loads, sleep_history=[],
+        )
+        ctx = result['anomalies'][0].get('context', {})
+        assert ctx['prior_day_load'] == 120.0
+
+    def test_no_context_without_data(self):
+        """Without daily_loads/sleep_history, anomalies have no context key."""
+        plan = {
+            'days': {
+                '2026-03-14': {'planned': {'type': 'running', 'duration_mins': 60}},
+            }
+        }
+        result = _compare_planned_actual(plan, [], date(2026, 3, 15))
+        assert 'context' not in result['anomalies'][0]
+
+    def test_backward_compatible_without_new_params(self):
+        """Existing call signature still works."""
+        plan = {
+            'days': {
+                '2026-03-14': {'planned': {'type': 'running', 'duration_mins': 60}},
+            }
+        }
+        result = _compare_planned_actual(plan, [], date(2026, 3, 15))
+        assert result['sessions_missed'] == 1
+
+
+# ---------------------------------------------------------------------------
+# _build_snapshot_flags
+# ---------------------------------------------------------------------------
+
+class TestBuildSnapshotFlags:
+    def test_empty_snapshot_returns_empty(self):
+        flags = _build_snapshot_flags({})
+        assert flags == {}
+
+    def test_acwr_warning_flagged(self):
+        snapshot = {'acwr_warnings': [{'level': 'overall', 'zone': 'elevated'}]}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['acwr_warning'] is True
+
+    def test_injuries_counted(self):
+        snapshot = {'injuries': [{'name': 'knee'}, {'name': 'ankle'}]}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['active_injuries'] == 2
+
+    def test_anomalies_counted(self):
+        snapshot = {
+            'planned_vs_actual': {
+                'anomalies': [
+                    {'flag': 'missing'},
+                    {'flag': 'type_mismatch'},
+                    {'flag': 'duration_delta'},
+                ],
+            },
+        }
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['anomaly_count'] == 3
+
+    def test_sleep_deficit_from_flag(self):
+        snapshot = {'sleep': {'deficit_flag': True}}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['sleep_deficit'] is True
+
+    def test_sleep_deficit_from_trend(self):
+        snapshot = {'sleep': {'trend_direction': 'declining'}}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['sleep_deficit'] is True
+
+    def test_pending_approvals(self):
+        snapshot = {'coaching_memory': {'pending_approvals': [{'id': 1}]}}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['pending_approvals'] == 1
+
+    def test_compliance_below_70(self):
+        snapshot = {'compliance': {'compliance_rate_pct': 50.0}}
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['compliance_below_70'] is True
+
+    def test_compliance_above_70_not_flagged(self):
+        snapshot = {'compliance': {'compliance_rate_pct': 85.0}}
+        flags = _build_snapshot_flags(snapshot)
+        assert 'compliance_below_70' not in flags
+
+    def test_decisions_due_for_review(self):
+        old_date = (date.today() - timedelta(days=10)).isoformat()
+        snapshot = {
+            'coaching_memory': {
+                'active_decisions': [{'date': old_date}],
+                'pending_approvals': [],
+            }
+        }
+        flags = _build_snapshot_flags(snapshot)
+        assert flags['decisions_due_for_review'] == 1
+
+    def test_recent_decisions_not_flagged(self):
+        recent_date = date.today().isoformat()
+        snapshot = {
+            'coaching_memory': {
+                'active_decisions': [{'date': recent_date}],
+                'pending_approvals': [],
+            }
+        }
+        flags = _build_snapshot_flags(snapshot)
+        assert 'decisions_due_for_review' not in flags

@@ -914,6 +914,52 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
     }
 
 
+def get_day_context(day_str: str, daily_loads: dict, sleep_history: list) -> dict:
+    """Return context for a specific date from already-loaded data.
+
+    Provides surrounding context (sleep, prior day load) so anomalies
+    can be reasoned about without additional API calls.
+
+    Args:
+        day_str: ISO date string (e.g. '2026-03-14')
+        daily_loads: daily_loads dict from fitness_history
+        sleep_history: sleep_history list from fitness_history
+
+    Returns:
+        Dict with available context fields. Empty dict if no data found.
+    """
+    context = {}
+
+    # Sleep data for this date
+    if sleep_history:
+        sleep_rec = next((r for r in sleep_history if r.get('date') == day_str), None)
+        if sleep_rec:
+            if sleep_rec.get('score') is not None:
+                context['sleep_score'] = sleep_rec['score']
+            if sleep_rec.get('duration_hrs') is not None:
+                context['sleep_hours'] = sleep_rec['duration_hrs']
+
+    # Prior day load
+    try:
+        day_date = date.fromisoformat(day_str)
+        prior_str = (day_date - timedelta(days=1)).isoformat()
+        prior_data = daily_loads.get(prior_str)
+        if isinstance(prior_data, dict):
+            if prior_data.get('total') is not None:
+                context['prior_day_load'] = round(prior_data['total'], 1)
+            # Check if prior day had a hard activity
+            for act in prior_data.get('activities', []):
+                if act.get('sport') in ('running', 'cycling') and prior_data.get('total', 0) > 80:
+                    context['prior_day_hard'] = True
+                    break
+        elif isinstance(prior_data, (int, float)) and prior_data > 0:
+            context['prior_day_load'] = round(prior_data, 1)
+    except (ValueError, TypeError):
+        pass
+
+    return context
+
+
 def get_athlete_hr_zones() -> dict[str, list[int]] | None:
     """Load athlete's HR zones from profile."""
     athlete_path = DATA_DIR / ATHLETE_FILE
