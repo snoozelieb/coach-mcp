@@ -229,18 +229,18 @@ class TestRejectCoachingChange:
 # ---------------------------------------------------------------------------
 
 class TestRecordAthleteResponse:
-    def test_caps_at_50_keeping_newest(self, decision_dir):
+    def test_caps_at_200_keeping_newest(self, decision_dir):
         log = json.loads((decision_dir / 'coaching_log.json').read_text())
         log['athlete_responses'] = [
             {'date': '2026-01-01', 'stimulus': f's{i}', 'response': f'r{i}'}
-            for i in range(55)
+            for i in range(205)
         ]
         (decision_dir / 'coaching_log.json').write_text(json.dumps(log))
 
         record_athlete_response('new_stimulus', 'new_response')
 
         log = json.loads((decision_dir / 'coaching_log.json').read_text())
-        assert len(log['athlete_responses']) == 50
+        assert len(log['athlete_responses']) == 200
         # Newest entry must survive — oldest entries are the ones dropped
         assert log['athlete_responses'][-1]['stimulus'] == 'new_stimulus'
         assert log['athlete_responses'][0]['stimulus'] == 's6'  # s0-s5 dropped
@@ -254,6 +254,32 @@ class TestRecordAthleteResponse:
 
         assert result['status'] == 'recorded'
         assert result['pattern'] == 'handles_volume_well'
+
+    def test_records_numeric_fields(self, decision_dir):
+        record_athlete_response(
+            stimulus='Interval session',
+            response='Readiness dropped 8 points',
+            load_change_pct=18.5,
+            compliance_result=True,
+            readiness_delta=-8.0,
+            injury_flag=False,
+            session_purpose_achieved=True,
+        )
+        log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        rec = log['athlete_responses'][-1]
+        assert rec['load_change_pct'] == 18.5
+        assert rec['compliance_result'] is True
+        assert rec['readiness_delta'] == -8.0
+        assert rec['injury_flag'] is False
+        assert rec['session_purpose_achieved'] is True
+
+    def test_numeric_fields_optional(self, decision_dir):
+        """Existing call without numeric fields still works."""
+        record_athlete_response('ride', 'good')
+        log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        rec = log['athlete_responses'][-1]
+        assert 'load_change_pct' not in rec
+        assert 'compliance_result' not in rec
 
 
 # ---------------------------------------------------------------------------

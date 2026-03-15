@@ -848,6 +848,93 @@ def calculate_readiness_baselines(sleep_history: list, readiness_history: list) 
     return result
 
 
+def derive_adaptation_thresholds(responses: list) -> dict:
+    """Derive athlete-specific thresholds from recorded responses with numeric data.
+
+    Groups responses by load_change_pct buckets and calculates success rates
+    per bucket. Only produces quantified output when n >= 8 responses have
+    numeric data.
+
+    Args:
+        responses: List of athlete response dicts from coaching_log
+
+    Returns:
+        Dict with quantified thresholds or accumulating status.
+    """
+    # Filter responses with numeric load data
+    numeric = [
+        r for r in responses
+        if r.get('load_change_pct') is not None
+    ]
+
+    if len(numeric) < 8:
+        return {
+            'status': 'accumulating',
+            'data_points': len(numeric),
+        }
+
+    # Group by load change buckets
+    buckets = {
+        'conservative': {'range': (-5, 10), 'responses': []},
+        'standard': {'range': (10, 20), 'responses': []},
+        'aggressive': {'range': (20, 40), 'responses': []},
+    }
+
+    for r in numeric:
+        pct = r['load_change_pct']
+        if pct < 10:
+            buckets['conservative']['responses'].append(r)
+        elif pct < 20:
+            buckets['standard']['responses'].append(r)
+        else:
+            buckets['aggressive']['responses'].append(r)
+
+    # Calculate per-bucket outcomes
+    volume_tolerance = {}
+    for bucket_name, bucket in buckets.items():
+        resps = bucket['responses']
+        if not resps:
+            continue
+
+        n = len(resps)
+        avg_load_change = round(sum(r['load_change_pct'] for r in resps) / n, 1)
+
+        # Success = compliant AND no injury
+        successes = sum(
+            1 for r in resps
+            if r.get('compliance_result', True) and not r.get('injury_flag', False)
+        )
+        success_rate = round(successes / n, 2)
+
+        volume_tolerance[bucket_name] = {
+            'avg_load_change_pct': avg_load_change,
+            'success_rate': success_rate,
+            'n': n,
+        }
+
+    # Determine safe max from highest bucket with >= 80% success and n >= 3
+    safe_max = None
+    for bucket_name in ['aggressive', 'standard', 'conservative']:
+        bt = volume_tolerance.get(bucket_name)
+        if bt and bt['n'] >= 3 and bt['success_rate'] >= 0.8:
+            safe_max = round(bt['avg_load_change_pct'])
+            break
+
+    # Confidence based on total data points
+    confidence = 'high' if len(numeric) >= 20 else 'moderate'
+
+    result = {
+        'status': 'quantified',
+        'volume_tolerance': volume_tolerance,
+        'confidence': confidence,
+        'data_points': len(numeric),
+    }
+    if safe_max is not None:
+        result['safe_load_increase_max_pct'] = safe_max
+
+    return result
+
+
 def analyze_activity_patterns(
     daily_loads: dict[str, Any],
     today: date = None,

@@ -35,6 +35,7 @@ from fitness import (
     get_day_context,
     persist_readiness_data,
     calculate_readiness_baselines,
+    derive_adaptation_thresholds,
 )
 
 
@@ -800,3 +801,81 @@ class TestCalculateReadinessBaselines:
             })
         result = calculate_readiness_baselines(sleep, [])
         assert result['sleep_score_14d_avg'] > result['sleep_score_30d_avg']
+
+
+# ── Derive Adaptation Thresholds ──────────────────────────────
+
+class TestDeriveAdaptationThresholds:
+    def test_empty_responses(self):
+        result = derive_adaptation_thresholds([])
+        assert result['status'] == 'accumulating'
+        assert result['data_points'] == 0
+
+    def test_insufficient_numeric_data(self):
+        responses = [
+            {'stimulus': 'ride', 'response': 'good', 'load_change_pct': 10}
+            for _ in range(5)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        assert result['status'] == 'accumulating'
+        assert result['data_points'] == 5
+
+    def test_responses_without_numeric_fields(self):
+        """Responses without load_change_pct are ignored."""
+        responses = [
+            {'stimulus': 'ride', 'response': 'good'}
+            for _ in range(20)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        assert result['status'] == 'accumulating'
+        assert result['data_points'] == 0
+
+    def test_sufficient_data_quantified(self):
+        responses = [
+            {'load_change_pct': 12, 'compliance_result': True, 'injury_flag': False}
+            for _ in range(10)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        assert result['status'] == 'quantified'
+        assert 'volume_tolerance' in result
+        assert result['confidence'] == 'moderate'
+
+    def test_high_confidence_with_many_points(self):
+        responses = [
+            {'load_change_pct': 15, 'compliance_result': True}
+            for _ in range(25)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        assert result['confidence'] == 'high'
+
+    def test_safe_max_from_successful_bucket(self):
+        """Conservative bucket with good success should yield safe_max."""
+        responses = [
+            {'load_change_pct': 5, 'compliance_result': True, 'injury_flag': False}
+            for _ in range(8)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        assert result['status'] == 'quantified'
+        assert 'safe_load_increase_max_pct' in result
+
+    def test_injury_reduces_success_rate(self):
+        """Bucket with injuries should have lower success rate."""
+        responses = [
+            {'load_change_pct': 25, 'compliance_result': True, 'injury_flag': True}
+            for _ in range(8)
+        ]
+        result = derive_adaptation_thresholds(responses)
+        aggressive = result['volume_tolerance'].get('aggressive', {})
+        assert aggressive.get('success_rate', 1.0) == 0.0
+
+    def test_mixed_buckets(self):
+        responses = []
+        # 4 conservative, 4 standard
+        for _ in range(4):
+            responses.append({'load_change_pct': 5, 'compliance_result': True})
+        for _ in range(4):
+            responses.append({'load_change_pct': 15, 'compliance_result': True})
+        result = derive_adaptation_thresholds(responses)
+        assert result['status'] == 'quantified'
+        assert 'conservative' in result['volume_tolerance']
+        assert 'standard' in result['volume_tolerance']

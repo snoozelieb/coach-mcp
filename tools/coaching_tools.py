@@ -328,26 +328,39 @@ def _build_adaptation_patterns() -> dict:
     These patterns help the LLM decide where in the load_increase_guidance
     range to operate (conservative/standard/aggressive).
 
-    Returns DATA only - no prescriptions.
+    Returns boolean flags (backward compat) plus quantified thresholds
+    when enough numeric response data is available.
     """
+    from fitness import derive_adaptation_thresholds
+
     try:
         log = load_coaching_log()
         responses = log.get('athlete_responses', [])
 
-        # Extract key patterns
+        # Extract key patterns (boolean flags — backward compat)
         patterns = {}
         for r in responses:
             pattern = r.get('pattern')
             if pattern:
                 patterns[pattern] = patterns.get(pattern, 0) + 1
 
-        return {
+        result = {
             'handles_volume_well': patterns.get('handles_volume_well', 0) > patterns.get('struggles_with_volume', 0),
             'recovers_quickly': patterns.get('recovers_quickly', 0) > patterns.get('slow_recovery', 0),
             'needs_extra_rest_after_intensity': patterns.get('needs_recovery_after_intensity', 0) > 0,
             'patterns_logged': len(patterns),
             'total_responses': len(responses),
         }
+
+        # Quantified adaptation thresholds (when numeric data available)
+        thresholds = derive_adaptation_thresholds(responses)
+        if thresholds.get('status') == 'quantified':
+            result['quantified'] = {
+                k: v for k, v in thresholds.items()
+                if k != 'status'
+            }
+
+        return result
     except Exception:
         return {
             'handles_volume_well': None,  # Unknown - no data

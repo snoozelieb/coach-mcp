@@ -378,17 +378,29 @@ def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
 def record_athlete_response(
     stimulus: str,
     response: str,
-    pattern: str = None
+    pattern: str = None,
+    load_change_pct: float = None,
+    compliance_result: bool = None,
+    readiness_delta: float = None,
+    injury_flag: bool = None,
+    session_purpose_achieved: bool = None
 ) -> str:
     """
     Record how the athlete responded to a training stimulus.
 
     Use this to track adaptation patterns that inform future planning.
+    Include numeric fields when available — they enable quantified
+    adaptation thresholds over time.
 
     Args:
         stimulus: What training was done (e.g., "Long ride 2.5hrs Z2")
         response: How athlete responded (e.g., "Training Readiness 72 next day")
         pattern: Optional pattern identified (e.g., "Responds well to long Z2")
+        load_change_pct: Week-over-week load change % when this stimulus occurred
+        compliance_result: Did the athlete complete the prescribed session?
+        readiness_delta: Change in readiness score (next day - day before)
+        injury_flag: Did this stimulus trigger injury/pain?
+        session_purpose_achieved: Was the session's intended purpose met?
 
     Returns:
         Confirmation of recorded response.
@@ -409,10 +421,22 @@ def record_athlete_response(
         if pattern:
             new_response['pattern'] = pattern
 
+        # Numeric fields for quantified adaptation (optional)
+        if load_change_pct is not None:
+            new_response['load_change_pct'] = load_change_pct
+        if compliance_result is not None:
+            new_response['compliance_result'] = compliance_result
+        if readiness_delta is not None:
+            new_response['readiness_delta'] = readiness_delta
+        if injury_flag is not None:
+            new_response['injury_flag'] = injury_flag
+        if session_purpose_achieved is not None:
+            new_response['session_purpose_achieved'] = session_purpose_achieved
+
         log['athlete_responses'].append(new_response)
 
-        # Keep only last 50 responses
-        log['athlete_responses'] = log['athlete_responses'][-50:]
+        # Keep only last 200 responses (supports long-term pattern analysis)
+        log['athlete_responses'] = log['athlete_responses'][-200:]
 
         save_coaching_log(log)
 

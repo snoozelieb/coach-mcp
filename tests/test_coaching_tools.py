@@ -370,6 +370,36 @@ class TestBuildAdaptationPatterns:
         # Tie: 2 == 2, so 2 > 2 is False
         assert result['handles_volume_well'] is False
 
+    @patch('tools.coaching_tools.load_coaching_log')
+    def test_quantified_included_when_sufficient_data(self, mock_log):
+        """When enough numeric responses exist, quantified thresholds appear."""
+        responses = [
+            {'pattern': 'handles_volume_well', 'load_change_pct': 12,
+             'compliance_result': True, 'injury_flag': False}
+            for _ in range(10)
+        ]
+        mock_log.return_value = {'athlete_responses': responses}
+
+        result = _build_adaptation_patterns()
+
+        assert 'quantified' in result
+        assert 'volume_tolerance' in result['quantified']
+        assert result['quantified']['confidence'] in ('moderate', 'high')
+
+    @patch('tools.coaching_tools.load_coaching_log')
+    def test_no_quantified_when_insufficient_data(self, mock_log):
+        """Boolean flags still work without quantified data."""
+        responses = [
+            {'pattern': 'handles_volume_well', 'load_change_pct': 12}
+            for _ in range(3)
+        ]
+        mock_log.return_value = {'athlete_responses': responses}
+
+        result = _build_adaptation_patterns()
+
+        assert 'quantified' not in result
+        assert result['handles_volume_well'] is True
+
 
 class TestDerivedFields:
     """Tests for derived fields relocated to root-level parents."""
