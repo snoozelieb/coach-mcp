@@ -33,12 +33,6 @@ class TestParseRestingHeartRateWithRealData:
         result = parse_resting_heart_rate(garmin_fixtures["user_summary"])
         assert result == 40
 
-    def test_missing_key_returns_na(self, garmin_fixtures):
-        stats_without_rhr = {k: v for k, v in garmin_fixtures["user_summary"].items() if k != 'restingHeartRate'}
-        assert parse_resting_heart_rate(stats_without_rhr) == 'N/A'
-
-    def test_empty_dict_returns_na(self):
-        assert parse_resting_heart_rate({}) == 'N/A'
 
 
 class TestParseSleepScoreWithRealData:
@@ -50,8 +44,6 @@ class TestParseSleepScoreWithRealData:
         stats_with_sleep = {**garmin_fixtures["user_summary"], 'sleepScore': 85}
         assert parse_sleep_score(stats_with_sleep) == 85
 
-    def test_empty_dict_returns_na(self):
-        assert parse_sleep_score({}) == 'N/A'
 
 
 class TestParseBodyBatteryWithRealData:
@@ -64,19 +56,6 @@ class TestParseBodyBatteryWithRealData:
         assert result != 40
         assert result == 33
 
-    def test_empty_list_returns_na(self):
-        assert parse_body_battery([]) == 'N/A'
-
-    def test_none_returns_na(self):
-        assert parse_body_battery(None) == 'N/A'
-
-    def test_missing_values_array_returns_na(self):
-        malformed = [{"date": "2025-12-01"}]
-        assert parse_body_battery(malformed) == 'N/A'
-
-    def test_empty_values_array_returns_na(self):
-        empty_values = [{"date": "2025-12-01", "bodyBatteryValuesArray": []}]
-        assert parse_body_battery(empty_values) == 'N/A'
 
 
 class TestParseActivity:

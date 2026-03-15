@@ -214,8 +214,8 @@ coach-mcp/
 │   ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
 │   ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
 │   ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
-│   ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, etc.
-│   ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score
+│   ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, get_week_constraints, etc.
+│   ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score (+ 11 helpers)
 │   ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
 │   ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
 │   ├── research_tools.py  # research_exercise, list_exercises, research_sport
@@ -274,7 +274,7 @@ Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 
 ## Testing
 
-499 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
+544 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `parsers.py`

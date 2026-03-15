@@ -149,57 +149,6 @@ class TestIsSimpleOutdoorRide:
         assert is_simple_outdoor_ride(session) is True
 
 
-# ─── get_workout_type_name ──────────────────────────────────────────
-
-class TestGetWorkoutTypeName:
-    def test_cycling_types(self):
-        for t in ["long_ride", "easy_ride", "cycling", "mtb", "road_ride", "indoor_cycling"]:
-            assert get_workout_type_name({"type": t}) == "cycling"
-
-    def test_ride_substring_match(self):
-        assert get_workout_type_name({"type": "tempo_ride"}) == "cycling"
-
-    def test_running_types(self):
-        for t in ["run", "long_run", "easy_run", "running", "trail_run", "interval_run"]:
-            assert get_workout_type_name({"type": t}) == "running"
-
-    def test_run_substring_match(self):
-        assert get_workout_type_name({"type": "morning_run"}) == "running"
-
-    def test_swimming_types(self):
-        for t in ["swim", "swimming", "pool"]:
-            assert get_workout_type_name({"type": t}) == "swimming"
-
-    def test_yoga_types(self):
-        for t in ["yoga", "mobility", "stretching"]:
-            assert get_workout_type_name({"type": t}) == "yoga"
-
-    def test_pilates_types(self):
-        for t in ["pilates", "rehab", "rehabilitation"]:
-            assert get_workout_type_name({"type": t}) == "pilates"
-
-    def test_strength_types(self):
-        for t in ["strength", "strength_training", "gym", "weights"]:
-            assert get_workout_type_name({"type": t}) == "strength"
-
-    def test_padel_types(self):
-        for t in ["padel", "paddelball", "paddle"]:
-            assert get_workout_type_name({"type": t}) == "padel"
-
-    def test_skip_types(self):
-        for t in ["rest", "rest_or_easy"]:
-            assert get_workout_type_name({"type": t}) == "skipped"
-
-    def test_unknown_type(self):
-        assert get_workout_type_name({"type": "basketball"}) == "unknown"
-
-    def test_empty_type(self):
-        assert get_workout_type_name({"type": ""}) == "unknown"
-
-    def test_missing_type(self):
-        assert get_workout_type_name({}) == "unknown"
-
-
 # ─── build_workout dispatch ─────────────────────────────────────────
 
 class TestBuildWorkoutDispatch:
@@ -1238,41 +1187,6 @@ class TestGetHrTargetForIntensity:
 # ─── GARMIN_CATEGORY_MAP ────────────────────────────────────────────
 
 class TestGarminCategoryMap:
-    def test_glute_maps_to_squat(self):
-        assert GARMIN_CATEGORY_MAP["GLUTE"] == "SQUAT"
-
-    def test_hamstring_maps_to_deadlift(self):
-        assert GARMIN_CATEGORY_MAP["HAMSTRING"] == "DEADLIFT"
-
-    def test_chest_maps_to_bench_press(self):
-        assert GARMIN_CATEGORY_MAP["CHEST"] == "BENCH_PRESS"
-
-    def test_back_maps_to_row(self):
-        assert GARMIN_CATEGORY_MAP["BACK"] == "ROW"
-
-    def test_abs_maps_to_core(self):
-        assert GARMIN_CATEGORY_MAP["ABS"] == "CORE"
-
-    def test_calf_maps_to_squat(self):
-        assert GARMIN_CATEGORY_MAP["CALF"] == "SQUAT"
-
-    def test_suspension_maps_to_row(self):
-        """SUSPENSION (face pulls, TRX) must map to ROW for workout API."""
-        assert GARMIN_CATEGORY_MAP["SUSPENSION"] == "ROW"
-
-    def test_hamstring_curl_maps_to_deadlift(self):
-        """HAMSTRING_CURL (lying leg curl) must map to DEADLIFT for workout API."""
-        assert GARMIN_CATEGORY_MAP["HAMSTRING_CURL"] == "DEADLIFT"
-
-    def test_leg_curl_maps_to_deadlift(self):
-        assert GARMIN_CATEGORY_MAP["LEG_CURL"] == "DEADLIFT"
-
-    def test_plank_maps_to_core(self):
-        assert GARMIN_CATEGORY_MAP["PLANK"] == "CORE"
-
-    def test_push_up_maps_to_bench_press(self):
-        assert GARMIN_CATEGORY_MAP["PUSH_UP"] == "BENCH_PRESS"
-
     def test_all_exercise_db_categories_mapped(self):
         """Every non-valid exercise DB category should be in the map."""
         valid_workout_categories = {

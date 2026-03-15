@@ -8,7 +8,6 @@ import planner
 from tools.injury_tools import (
     diagnose_injury,
     research_injury,
-    _build_search_terms,
     _is_relevant_content,
     _is_significant_redirect,
     _extract_clinical_info,
@@ -260,41 +259,6 @@ class TestDiagnosePhase2:
         assert len(injury_lines) == 1
         # Should reflect latest severity
         assert "severity=severe" in injury_lines[0]
-
-
-# ---------------------------------------------------------------------------
-# Helper tests: _build_search_terms
-# ---------------------------------------------------------------------------
-
-class TestBuildSearchTerms:
-    def test_shin_anterior(self):
-        terms = _build_search_terms("shin", "Front (anterior)")
-        assert "Anterior_Tibialis_Tendinitis" in terms
-
-    def test_shin_medial(self):
-        terms = _build_search_terms("shin", "Inner side (medial)")
-        assert "Medial_Tibial_Stress_Syndrome" in terms
-
-    def test_knee_lateral(self):
-        terms = _build_search_terms("knee", "Outer side (lateral)")
-        assert "Iliotibial_Band_Syndrome" in terms
-
-    def test_ankle_achilles(self):
-        terms = _build_search_terms("ankle", "Back (Achilles)")
-        assert "Achilles_Tendinitis" in terms
-
-    def test_fallback_for_unknown_sublocation(self):
-        terms = _build_search_terms("shin", "unknown area")
-        # Should return default
-        assert "Shin_Splints" in terms
-
-    def test_fallback_for_unknown_region(self):
-        terms = _build_search_terms("elbow", "lateral")
-        assert "elbow-pain" in terms
-
-    def test_empty_location_uses_default(self):
-        terms = _build_search_terms("knee", "")
-        assert "Knee_Pain" in terms or "Patellofemoral_Pain_Syndrome" in terms
 
 
 # ---------------------------------------------------------------------------

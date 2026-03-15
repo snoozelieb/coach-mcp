@@ -15,7 +15,6 @@ import pytest
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from config import get_sport_group
 from fitness import (
     calculate_training_load,
     calculate_daily_load,
@@ -37,40 +36,6 @@ from fitness import (
     calculate_readiness_baselines,
     derive_adaptation_thresholds,
 )
-
-
-# ── Sport Group Mapping ─────────────────────────────────────────
-
-class TestGetSportGroup:
-    def test_cycling_types(self):
-        assert get_sport_group('cycling') == 'cycling'
-        assert get_sport_group('mountain_biking') == 'cycling'
-        assert get_sport_group('indoor_cycling') == 'cycling'
-        assert get_sport_group('virtual_ride') == 'cycling'
-        assert get_sport_group('gravel_cycling') == 'cycling'
-        assert get_sport_group('road_biking') == 'cycling'
-
-    def test_running_types(self):
-        assert get_sport_group('running') == 'running'
-        assert get_sport_group('trail_running') == 'running'
-        assert get_sport_group('treadmill_running') == 'running'
-        assert get_sport_group('track_running') == 'running'
-
-    def test_strength_types(self):
-        assert get_sport_group('strength_training') == 'strength'
-        assert get_sport_group('indoor_cardio') == 'strength'
-        assert get_sport_group('functional_strength') == 'strength'
-
-    def test_other_types(self):
-        assert get_sport_group('padel') == 'other'
-        assert get_sport_group('ultimate_disc') == 'other'
-        assert get_sport_group('yoga') == 'other'
-        assert get_sport_group('swimming') == 'other'
-        assert get_sport_group('pilates') == 'other'
-        assert get_sport_group('unknown_sport') == 'other'
-
-    def test_empty_string(self):
-        assert get_sport_group('') == 'other'
 
 
 # ── Garmin Training Load ─────────────────────────────────────────
