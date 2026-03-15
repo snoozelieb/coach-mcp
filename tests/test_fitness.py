@@ -33,6 +33,8 @@ from fitness import (
     persist_sleep_data,
     analyze_activity_patterns,
     get_day_context,
+    persist_readiness_data,
+    calculate_readiness_baselines,
 )
 
 
@@ -704,3 +706,97 @@ class TestGetDayContext:
     def test_invalid_date_returns_empty(self):
         ctx = get_day_context('not-a-date', {}, [])
         assert ctx == {}
+
+
+# ── Persist Readiness Data ────────────────────────────────────
+
+class TestPersistReadinessData:
+    def test_adds_new_record(self):
+        history = {'readiness_history': []}
+        rec = {'date': '2026-03-14', 'score': 72, 'level': 'MODERATE', 'hrv_status': 'BALANCED', 'body_battery': 55}
+        result = persist_readiness_data(rec, history)
+        assert len(result['readiness_history']) == 1
+        assert result['readiness_history'][0]['score'] == 72
+
+    def test_deduplicates_by_date(self):
+        history = {
+            'readiness_history': [
+                {'date': '2026-03-14', 'score': 72},
+            ],
+        }
+        rec = {'date': '2026-03-14', 'score': 75}
+        result = persist_readiness_data(rec, history)
+        assert len(result['readiness_history']) == 1
+        assert result['readiness_history'][0]['score'] == 72  # Original preserved
+
+    def test_prunes_old_records(self):
+        old_date = (date.today() - timedelta(days=65)).isoformat()
+        recent_date = date.today().isoformat()
+        history = {
+            'readiness_history': [
+                {'date': old_date, 'score': 60},
+            ],
+        }
+        rec = {'date': recent_date, 'score': 72}
+        result = persist_readiness_data(rec, history)
+        assert len(result['readiness_history']) == 1
+        assert result['readiness_history'][0]['date'] == recent_date
+
+    def test_missing_date_ignored(self):
+        history = {'readiness_history': []}
+        rec = {'score': 72}
+        result = persist_readiness_data(rec, history)
+        assert len(result['readiness_history']) == 0
+
+    def test_creates_readiness_history_key(self):
+        history = {}
+        rec = {'date': '2026-03-14', 'score': 72}
+        result = persist_readiness_data(rec, history)
+        assert 'readiness_history' in result
+
+
+# ── Calculate Readiness Baselines ─────────────────────────────
+
+class TestCalculateReadinessBaselines:
+    def test_sufficient_data(self):
+        today = date.today()
+        sleep = [
+            {'date': (today - timedelta(days=i)).isoformat(), 'duration_hrs': 7.0 + i * 0.1, 'score': 75 + i}
+            for i in range(10)
+        ]
+        readiness = [
+            {'date': (today - timedelta(days=i)).isoformat(), 'score': 70 + i}
+            for i in range(10)
+        ]
+        result = calculate_readiness_baselines(sleep, readiness)
+        assert result['status'] == 'sufficient'
+        assert 'sleep_duration_14d_avg' in result
+        assert 'sleep_score_14d_avg' in result
+        assert 'readiness_14d_avg' in result
+
+    def test_insufficient_data(self):
+        result = calculate_readiness_baselines([], [])
+        assert result['status'] == 'insufficient_data'
+
+    def test_partial_sleep_only(self):
+        today = date.today()
+        sleep = [
+            {'date': (today - timedelta(days=i)).isoformat(), 'duration_hrs': 7.0, 'score': 80}
+            for i in range(5)
+        ]
+        result = calculate_readiness_baselines(sleep, [])
+        assert 'sleep_duration_14d_avg' in result
+        assert 'readiness_14d_avg' not in result
+
+    def test_30d_averages_differ_from_14d(self):
+        today = date.today()
+        # 14d: high scores, older 16d: low scores
+        sleep = []
+        for i in range(30):
+            score = 90 if i < 14 else 60
+            sleep.append({
+                'date': (today - timedelta(days=i)).isoformat(),
+                'duration_hrs': 7.5, 'score': score,
+            })
+        result = calculate_readiness_baselines(sleep, [])
+        assert result['sleep_score_14d_avg'] > result['sleep_score_30d_avg']

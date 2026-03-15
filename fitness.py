@@ -750,6 +750,104 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
     return history
 
 
+def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = None) -> dict[str, Any]:
+    """
+    Persist daily readiness data to fitness_history.json → readiness_history.
+
+    Modeled on persist_sleep_data(). Maintains a rolling 60-day window.
+
+    Args:
+        readiness_record: Dict with {date, score, level, hrv_status, body_battery}
+        history: Fitness history dict (loads from file if None)
+
+    Returns:
+        Updated fitness history dict
+    """
+    if history is None:
+        history = load_fitness_history()
+
+    existing = history.get('readiness_history', [])
+    existing_dates = {r['date'] for r in existing if r.get('date')}
+
+    rec_date = readiness_record.get('date')
+    if rec_date and rec_date not in existing_dates:
+        existing.append({
+            'date': rec_date,
+            'score': readiness_record.get('score'),
+            'level': readiness_record.get('level'),
+            'hrv_status': readiness_record.get('hrv_status'),
+            'body_battery': readiness_record.get('body_battery'),
+        })
+
+    # Prune to 60 days
+    cutoff = (date.today() - timedelta(days=60)).isoformat()
+    existing = [r for r in existing if r.get('date', '') >= cutoff]
+    existing.sort(key=lambda r: r.get('date', ''))
+
+    history['readiness_history'] = existing
+    return history
+
+
+def calculate_readiness_baselines(sleep_history: list, readiness_history: list) -> dict:
+    """Calculate rolling averages for personal baseline comparison.
+
+    Provides 14-day and 30-day averages so the LLM can compare today's
+    values against the athlete's personal normal, not population norms.
+
+    Args:
+        sleep_history: List of sleep records from fitness_history
+        readiness_history: List of readiness records from fitness_history
+
+    Returns:
+        Dict with rolling averages and data sufficiency status.
+    """
+    today_str = date.today().isoformat()
+    cutoff_14d = (date.today() - timedelta(days=14)).isoformat()
+    cutoff_30d = (date.today() - timedelta(days=30)).isoformat()
+
+    result = {}
+
+    # Sleep baselines
+    sleep_14d = [r for r in sleep_history if r.get('date', '') >= cutoff_14d]
+    sleep_30d = [r for r in sleep_history if r.get('date', '') >= cutoff_30d]
+
+    if sleep_14d:
+        durations = [r['duration_hrs'] for r in sleep_14d if r.get('duration_hrs') is not None]
+        scores = [r['score'] for r in sleep_14d if r.get('score') is not None]
+        if durations:
+            result['sleep_duration_14d_avg'] = round(sum(durations) / len(durations), 1)
+        if scores:
+            result['sleep_score_14d_avg'] = round(sum(scores) / len(scores), 0)
+
+    if sleep_30d:
+        durations = [r['duration_hrs'] for r in sleep_30d if r.get('duration_hrs') is not None]
+        scores = [r['score'] for r in sleep_30d if r.get('score') is not None]
+        if durations:
+            result['sleep_duration_30d_avg'] = round(sum(durations) / len(durations), 1)
+        if scores:
+            result['sleep_score_30d_avg'] = round(sum(scores) / len(scores), 0)
+
+    # Readiness baselines
+    readiness_14d = [r for r in readiness_history if r.get('date', '') >= cutoff_14d]
+    readiness_30d = [r for r in readiness_history if r.get('date', '') >= cutoff_30d]
+
+    if readiness_14d:
+        scores = [r['score'] for r in readiness_14d if r.get('score') is not None]
+        if scores:
+            result['readiness_14d_avg'] = round(sum(scores) / len(scores), 0)
+
+    if readiness_30d:
+        scores = [r['score'] for r in readiness_30d if r.get('score') is not None]
+        if scores:
+            result['readiness_30d_avg'] = round(sum(scores) / len(scores), 0)
+
+    # Data sufficiency
+    total_days = len(sleep_30d) + len(readiness_30d)
+    result['status'] = 'sufficient' if total_days >= 7 else 'insufficient_data'
+
+    return result
+
+
 def analyze_activity_patterns(
     daily_loads: dict[str, Any],
     today: date = None,

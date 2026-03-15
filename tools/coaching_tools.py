@@ -45,6 +45,8 @@ from fitness import (
     get_fitness_trend,
     get_sleep_trend,
     persist_sleep_data,
+    persist_readiness_data,
+    calculate_readiness_baselines,
     analyze_activity_patterns,
     update_fitness_history,
 )
@@ -390,6 +392,73 @@ def _derive_compliance_rate_pct(compliance: dict) -> float | None:
             if compliance[pillar].get('compliant', False):
                 pillars_met += 1
     return round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
+
+
+def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: dict) -> dict:
+    """Per-pillar compliance over 4 weeks from activity data.
+
+    Identifies chronically missed pillars so the LLM can address patterns
+    rather than one-off misses.
+
+    Args:
+        weekly_activities_4wk: List of 4 lists, each containing parsed activities for one week
+        pillars: Athlete's training_pillars dict (name → config)
+
+    Returns:
+        Dict with per_pillar compliance and lowest_compliance_pillar.
+    """
+    if not pillars or not weekly_activities_4wk:
+        return {'status': 'no_data'}
+
+    per_pillar = {}
+    total_weeks = len(weekly_activities_4wk)
+
+    for pillar_name, pillar_config in pillars.items():
+        target_type = pillar_config.get('target_type', 'sessions')
+        pillar_types = [t.lower() for t in pillar_config.get('types', [])]
+        met_weeks = 0
+
+        for week_activities in weekly_activities_4wk:
+            # Count matching activities
+            matching = [
+                a for a in week_activities
+                if a.get('type', '').lower() in pillar_types
+            ]
+
+            if target_type == 'sessions':
+                target = pillar_config.get('target_sessions_per_week', 0)
+                if len(matching) >= target and target > 0:
+                    met_weeks += 1
+            elif target_type == 'hours':
+                target_mins = pillar_config.get('target_hours_per_week', 0) * 60
+                total_mins = sum(a.get('duration_mins', 0) or 0 for a in matching)
+                if total_mins >= target_mins and target_mins > 0:
+                    met_weeks += 1
+            elif target_type == 'minutes':
+                target_mins = pillar_config.get('target_minutes_per_week', 0)
+                total_mins = sum(a.get('duration_mins', 0) or 0 for a in matching)
+                if total_mins >= target_mins and target_mins > 0:
+                    met_weeks += 1
+
+        per_pillar[pillar_name] = {
+            'met_weeks': met_weeks,
+            'total_weeks': total_weeks,
+            'chronic_miss': met_weeks <= total_weeks // 2,  # Missed more than half
+        }
+
+    # Find lowest compliance pillar
+    lowest = None
+    lowest_rate = 1.0
+    for name, data in per_pillar.items():
+        rate = data['met_weeks'] / data['total_weeks'] if data['total_weeks'] > 0 else 0
+        if rate < lowest_rate:
+            lowest_rate = rate
+            lowest = name
+
+    return {
+        'per_pillar': per_pillar,
+        'lowest_compliance_pillar': lowest,
+    }
 
 
 def _build_snapshot_flags(snapshot: dict) -> dict:
@@ -1119,10 +1188,49 @@ def get_coaching_snapshot() -> str:
         # 5. Compliance status
         compliance = check_weekly_compliance(activities_this_week)
 
+        # 5b. Compliance diagnostics (4-week pattern from daily_loads)
+        # Load athlete early — needed here and in section 8
+        athlete_path = DATA_DIR / ATHLETE_FILE
+        if athlete_path.exists():
+            with open(athlete_path) as f:
+                athlete = json.load(f)
+        else:
+            athlete = {}
+
+        compliance_diagnostics = None
+        training_pillars = athlete.get('training_pillars')
+        if training_pillars and daily_loads:
+            weekly_activities_4wk = []
+            for week_offset in range(4):  # 0=this week, 3=oldest
+                w_start = today - timedelta(days=today.weekday() + week_offset * 7)
+                w_end = w_start + timedelta(days=7)
+                week_acts = []
+                for day_data in daily_loads.values():
+                    if not isinstance(day_data, dict):
+                        continue
+                    for act in day_data.get('activities', []):
+                        act_date = act.get('date', '')
+                        if w_start.isoformat() <= act_date < w_end.isoformat():
+                            week_acts.append(act)
+                weekly_activities_4wk.append(week_acts)
+            compliance_diagnostics = _build_compliance_diagnostics(
+                weekly_activities_4wk, training_pillars
+            )
+
         # 6. Recovery status (today) + Sleep tracking
         try:
             readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
             recovery = _parse_readiness_for_snapshot(readiness_data)
+            # Persist readiness for baseline tracking
+            if recovery and recovery.get('status') != 'unavailable':
+                readiness_rec = {
+                    'date': today.isoformat(),
+                    'score': recovery.get('score'),
+                    'level': recovery.get('level'),
+                    'hrv_status': recovery.get('hrv_status'),
+                    'body_battery': recovery.get('body_battery'),
+                }
+                history = persist_readiness_data(readiness_rec, history)
         except Exception:
             logger.warning("Failed to fetch recovery data", exc_info=True)
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
@@ -1134,10 +1242,18 @@ def get_coaching_snapshot() -> str:
             sleep_recs = sleep_data.get('recent', [])
             if sleep_recs:
                 history = persist_sleep_data(sleep_recs, history)
-                save_fitness_history(history)
+
+        # Save history once (covers both readiness + sleep persistence)
+        save_fitness_history(history)
 
         # 6c. Sleep trend (30-day from persisted data)
         sleep_trend_30d = get_sleep_trend(history, days=30)
+
+        # 6d. Readiness baselines (personal norms)
+        readiness_baselines = calculate_readiness_baselines(
+            history.get('sleep_history', []),
+            history.get('readiness_history', []),
+        )
 
         # 7. Sport priority breakdown (multi-sport analysis)
         training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -1155,17 +1271,13 @@ def get_coaching_snapshot() -> str:
         )
 
         # 8. Active + improving injuries (both need attention)
-        athlete_path = DATA_DIR / ATHLETE_FILE
-        if athlete_path.exists():
-            with open(athlete_path) as f:
-                athlete = json.load(f)
+        if athlete:
             injuries = athlete.get('injury_history', [])
             relevant_injuries = [
                 i for i in injuries
                 if i.get('status') in ['active', 'improving']
             ]
         else:
-            athlete = {}
             relevant_injuries = []
 
         # 9. Intensity distribution (last 7 days) — enrich with per-activity zone data
@@ -1332,6 +1444,10 @@ def get_coaching_snapshot() -> str:
             'intensity_distribution': intensity_dist,
 
             'strength': _get_strength_sync_summary(activities_this_week),
+
+            'readiness_baselines': readiness_baselines if readiness_baselines.get('status') != 'insufficient_data' or len(readiness_baselines) > 1 else None,
+
+            'compliance_diagnostics': compliance_diagnostics,
 
         }
 

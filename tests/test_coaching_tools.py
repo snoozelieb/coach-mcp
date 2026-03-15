@@ -8,6 +8,7 @@ from tools.coaching_tools import (
     _parse_readiness_for_snapshot,
     _build_adaptation_patterns,
     _build_snapshot_flags,
+    _build_compliance_diagnostics,
     _derive_sleep_trend_direction,
     _derive_hrv_trend,
     _derive_compliance_rate_pct,
@@ -905,3 +906,74 @@ class TestBuildSnapshotFlags:
         }
         flags = _build_snapshot_flags(snapshot)
         assert 'decisions_due_for_review' not in flags
+
+
+# ---------------------------------------------------------------------------
+# _build_compliance_diagnostics
+# ---------------------------------------------------------------------------
+
+class TestBuildComplianceDiagnostics:
+    PILLARS = {
+        'strength': {
+            'target_type': 'sessions',
+            'target_sessions_per_week': 2,
+            'types': ['strength_training'],
+        },
+        'endurance': {
+            'target_type': 'hours',
+            'target_hours_per_week': 4,
+            'types': ['cycling', 'running'],
+        },
+    }
+
+    def test_no_data(self):
+        result = _build_compliance_diagnostics([], {})
+        assert result['status'] == 'no_data'
+
+    def test_all_met(self):
+        week = [
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'cycling', 'duration_mins': 120},
+            {'type': 'running', 'duration_mins': 120},
+        ]
+        weekly_4wk = [week] * 4
+        result = _build_compliance_diagnostics(weekly_4wk, self.PILLARS)
+        assert result['per_pillar']['strength']['met_weeks'] == 4
+        assert result['per_pillar']['strength']['chronic_miss'] is False
+        assert result['per_pillar']['endurance']['met_weeks'] == 4
+
+    def test_chronic_miss_detected(self):
+        good_week = [
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'cycling', 'duration_mins': 240},
+        ]
+        bad_week = [
+            {'type': 'cycling', 'duration_mins': 240},
+        ]
+        weekly_4wk = [bad_week, bad_week, bad_week, good_week]
+        result = _build_compliance_diagnostics(weekly_4wk, self.PILLARS)
+        assert result['per_pillar']['strength']['met_weeks'] == 1
+        assert result['per_pillar']['strength']['chronic_miss'] is True
+        assert result['lowest_compliance_pillar'] == 'strength'
+
+    def test_minutes_target_type(self):
+        pillars = {
+            'mobility': {
+                'target_type': 'minutes',
+                'target_minutes_per_week': 90,
+                'types': ['yoga', 'stretching'],
+            },
+        }
+        week_met = [{'type': 'yoga', 'duration_mins': 60}, {'type': 'stretching', 'duration_mins': 40}]
+        week_missed = [{'type': 'yoga', 'duration_mins': 30}]
+        weekly_4wk = [week_met, week_missed, week_met, week_missed]
+        result = _build_compliance_diagnostics(weekly_4wk, pillars)
+        assert result['per_pillar']['mobility']['met_weeks'] == 2
+
+    def test_empty_weeks(self):
+        weekly_4wk = [[], [], [], []]
+        result = _build_compliance_diagnostics(weekly_4wk, self.PILLARS)
+        assert result['per_pillar']['strength']['met_weeks'] == 0
+        assert result['per_pillar']['strength']['chronic_miss'] is True
