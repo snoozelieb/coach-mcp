@@ -206,5 +206,12 @@ SLEEP_NAP_EFFECTIVE_MINS = 15      # Minimum nap to count as recovery
 SLEEP_VARIANCE_THRESHOLD_HRS = 2   # Flag inconsistent sleep hygiene
 SLEEP_TARGET_DEFAULT_HRS = 7.5     # Fallback when athlete hasn't set personal target
 
+# Race type → sport group mapping (used for sport-specific CTL lookups)
+RACE_TYPE_SPORT_MAP = {
+    'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
+    'trail_ultra': 'running', 'running_marathon': 'running',
+    'running_half': 'running', 'running_ultra': 'running',
+}
+
 # Clinical reference sources
 PHYSIOPEDIA_BASE_URL = "https://www.physio-pedia.com"

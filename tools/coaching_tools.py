@@ -56,6 +56,7 @@ from config import (
     DEFAULT_EQUIVALENCE_GROUPS,
     RACE_TIME_WEIGHTS,
     RACE_TIME_WEIGHT_DEFAULT,
+    RACE_TYPE_SPORT_MAP,
     get_sport_group,
 )
 from datetime import date, timedelta
@@ -610,12 +611,7 @@ def get_coaching_score() -> str:
             progress_data['target_ctl'] = target_ctl
 
             # Use sport-specific CTL for the A-race sport
-            _sport_map = {
-                'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
-                'trail_ultra': 'running', 'running_marathon': 'running',
-                'running_half': 'running', 'running_ultra': 'running',
-            }
-            race_sport = _sport_map.get(race_type)
+            race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
             if race_sport and daily_loads:
                 sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
                 if sport_m.get('days_with_data', 0) > 0:
@@ -1151,12 +1147,7 @@ def get_coaching_snapshot() -> str:
         a_race = next((e for e in events if e.get('priority') == 'A'), None)
         if a_race and overall_metrics and overall_metrics.get('ctl'):
             race_type = a_race.get('type', 'default')
-            _sport_map = {
-                'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
-                'trail_ultra': 'running', 'running_marathon': 'running',
-                'running_half': 'running', 'running_ultra': 'running',
-            }
-            race_sport = _sport_map.get(race_type)
+            race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
 
             # Sport-specific CTL for race readiness
             sport_ctl = None
