@@ -1,9 +1,9 @@
 """Athlete tools - profile updates, threshold/FTP settings, methodology management."""
 
-from mcp_app import mcp
-from garmin_client import garmin_api_call
-from planner import load_json_file, save_json_file, load_athlete, load_methodology
-from config import ATHLETE_FILE, METHODOLOGY_FILE
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call
+from ..planner import load_json_file, save_json_file, load_athlete, load_methodology
+from ..config import ATHLETE_FILE, METHODOLOGY_FILE
 from datetime import date, timedelta
 import json
 import logging
@@ -103,7 +103,6 @@ def update_athlete(
             if 'pillars' not in parsed_data:
                 return json.dumps({'error': 'training_pillars requires pillars array'})
             # Add metadata
-            from datetime import date
             parsed_data['last_updated'] = date.today().isoformat()
             athlete['training_pillars'] = parsed_data
             updated = parsed_data

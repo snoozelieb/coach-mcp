@@ -2,8 +2,8 @@
 import json
 import pytest
 
-import planner
-from tools.athlete_tools import (
+import coach.planner as planner
+from coach.tools.athlete_tools import (
     update_athlete,
     set_threshold_pace,
     set_ftp,

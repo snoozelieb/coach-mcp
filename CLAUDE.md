@@ -197,32 +197,35 @@ python scripts/daily_loop.py --llm            # Morning audit with LLM
 
 ```
 coach-mcp/
-├── server.py              # MCP server orchestrator (imports tool modules)
-├── mcp_app.py             # Shared FastMCP instance
-├── garmin_client.py       # Garmin auth with token caching + retry
-├── workout_builder.py     # Converts plan sessions to Garmin workouts
-├── fitness.py             # CTL/ATL/TSB calculations, intensity distribution
-├── rules.py               # Compliance checker, safety rules, classify_activity
-├── planner.py             # Context builder, plan/suggestion management
-├── parsers.py             # Pure parsing functions for Garmin API responses
-├── config.py              # Shared configuration and constants
+├── server.py                # Entry point (imports coach package)
+├── coach/                   # Core package
+│   ├── __init__.py
+│   ├── config.py            # Shared configuration and constants
+│   ├── fitness.py           # CTL/ATL/TSB calculations, intensity distribution
+│   ├── garmin_client.py     # Garmin auth with token caching + retry
+│   ├── mcp_app.py           # Shared FastMCP instance
+│   ├── parsers.py           # Pure parsing functions for Garmin API responses
+│   ├── planner.py           # Context builder, plan/suggestion management
+│   ├── rules.py             # Compliance checker, safety rules, classify_activity
+│   ├── web_utils.py         # HTML stripping + page fetching
+│   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
+│   └── tools/               # MCP tool modules
+│       ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
+│       ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
+│       ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
+│       ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, get_week_constraints, etc.
+│       ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score (+ 11 helpers)
+│       ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
+│       ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
+│       ├── research_tools.py  # research_exercise, list_exercises, research_sport
+│       ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
+│       ├── race_tools.py      # research_race, list/add/remove/update_race
+│       ├── suggestion_tools.py # propose/list/approve/reject_suggestion
+│       └── goal_tools.py      # get_goal_progress
 ├── scripts/
-│   ├── daily_loop.py      # Morning audit automation
-│   ├── fetch_exercises.py # Fetch exercise DB from Garmin
-│   └── setup_wizard.py   # First-run setup wizard
-├── tools/
-│   ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
-│   ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
-│   ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
-│   ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, get_week_constraints, etc.
-│   ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score (+ 11 helpers)
-│   ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
-│   ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
-│   ├── research_tools.py  # research_exercise, list_exercises, research_sport
-│   ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
-│   ├── race_tools.py      # research_race, list/add/remove/update_race
-│   ├── suggestion_tools.py # propose/list/approve/reject_suggestion
-│   └── goal_tools.py      # get_goal_progress
+│   ├── daily_loop.py        # Morning audit automation
+│   ├── fetch_exercises.py   # Fetch exercise DB from Garmin
+│   └── setup_wizard.py     # First-run setup wizard
 ├── data/
 │   ├── athlete.json           # WHO - personal info, constraints, preferences, pillars
 │   ├── athlete_baseline.json  # WHO - Garmin-derived capacity (auto-generated)
@@ -277,14 +280,15 @@ Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 544 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
 
 Pattern for new tools:
-1. Create parsing function (pure, no I/O) in `parsers.py`
-2. Add MCP tool with `@mcp.tool()` decorator in `tools/`
+1. Create parsing function (pure, no I/O) in `coach/parsers.py`
+2. Add MCP tool with `@mcp.tool()` decorator in `coach/tools/`
 3. Write tests with sample data matching Garmin structure
 4. Run: `python -m pytest -v`
 
 Key testing patterns:
-- Patch `garmin_api_call` where it's **used** (the tool module), not where it's defined
+- Patch `garmin_api_call` where it's **used**: `@patch('coach.tools.X.garmin_api_call')`
 - Redirect `DATA_DIR` via `monkeypatch.setattr(planner, 'DATA_DIR', data_dir)` for file I/O tests
+- Import modules as: `import coach.planner as planner` (preserves monkeypatch target)
 - Clean install tests must monkeypatch DATA_DIR in **all** modules that use it
 
 ## When to Suggest New Tools

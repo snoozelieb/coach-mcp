@@ -9,7 +9,7 @@ from io import StringIO
 
 import requests
 
-from config import HTTP_TIMEOUT_SECONDS, PAGE_TEXT_MAX_CHARS
+from .config import HTTP_TIMEOUT_SECONDS, PAGE_TEXT_MAX_CHARS
 
 DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'

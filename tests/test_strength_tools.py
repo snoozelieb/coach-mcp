@@ -2,9 +2,9 @@
 import json
 import pytest
 
-import planner
-from config import PROGRESSION_INCREMENT_KG, MIN_SETS_FOR_PROGRESSION
-from tools.strength_tools import (
+import coach.planner as planner
+from coach.config import PROGRESSION_INCREMENT_KG, MIN_SETS_FOR_PROGRESSION
+from coach.tools.strength_tools import (
     _get_canonical_exercise_group,
     _calculate_progression,
     get_strength_baseline,

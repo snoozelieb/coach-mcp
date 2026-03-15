@@ -1,16 +1,16 @@
 """Planning tools - weekly plan management, periodization, prescriptions, Garmin push."""
 
-from mcp_app import mcp
-from garmin_client import garmin_api_call, schedule_workout
-from parsers import (parse_activities, parse_training_readiness,
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call, schedule_workout
+from ..parsers import (parse_activities, parse_training_readiness,
                      parse_resting_heart_rate, parse_sleep_score, parse_body_battery)
-from planner import (build_planning_context, get_current_plan, save_weekly_plan,
+from ..planner import (build_planning_context, get_current_plan, save_weekly_plan,
                      create_empty_week_template, get_pending_suggestions as get_suggestions,
                      load_athlete, load_methodology, load_coaching_log, save_coaching_log,
                      get_week_constraints as _get_week_constraints)
-from rules import load_training_config, check_weekly_compliance
-from fitness import load_fitness_history, calculate_fitness_metrics
-from config import DATA_DIR, RECENT_ACTIVITY_DAYS, TRAINING_CONFIG_FILE
+from ..rules import load_training_config, check_weekly_compliance
+from ..fitness import load_fitness_history, calculate_fitness_metrics
+from ..config import DATA_DIR, RECENT_ACTIVITY_DAYS, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
 import json
 import logging
@@ -690,7 +690,7 @@ def push_plan_to_garmin() -> str:
     Returns:
         JSON summary with count of pushed workouts, dates, and any errors.
     """
-    from workout_builder import build_workout, get_workout_type_name
+    from ..workout_builder import build_workout, get_workout_type_name
 
     try:
         plan = get_current_plan()
@@ -888,7 +888,7 @@ def push_plan_to_garmin() -> str:
         pushed_ids = [p['workout_id'] for p in results['pushed'] if 'workout_id' in p]
         if pushed_ids:
             plan['pushed_workout_ids'] = pushed_ids
-            from planner import save_json_file
+            from ..planner import save_json_file
             save_json_file(DATA_DIR / 'weekly_plan.json', plan)
 
         # Build summary message

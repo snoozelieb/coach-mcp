@@ -1,8 +1,8 @@
 """Data tools - Garmin data fetching (personal records, activities, daily metrics)."""
 
-from mcp_app import mcp
-from garmin_client import garmin_api_call
-from parsers import (parse_resting_heart_rate, parse_sleep_score, parse_body_battery,
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call
+from ..parsers import (parse_resting_heart_rate, parse_sleep_score, parse_body_battery,
                      parse_activities, parse_personal_records)
 from datetime import date
 import json

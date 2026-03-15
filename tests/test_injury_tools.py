@@ -4,8 +4,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from datetime import date
 
-import planner
-from tools.injury_tools import (
+import coach.planner as planner
+from coach.tools.injury_tools import (
     diagnose_injury,
     research_injury,
     _is_relevant_content,
@@ -25,7 +25,7 @@ def injury_dir(data_dir, monkeypatch):
     """Redirect planner.DATA_DIR to tmp_path and seed minimal athlete."""
     monkeypatch.setattr(planner, 'DATA_DIR', data_dir)
     # Also patch the injury_tools module's imports from planner
-    import tools.injury_tools as injury_mod
+    import coach.tools.injury_tools as injury_mod
     monkeypatch.setattr(injury_mod, 'load_athlete', lambda: json.loads(
         (data_dir / 'athlete.json').read_text()
     ) if (data_dir / 'athlete.json').exists() else {})
@@ -134,7 +134,7 @@ class TestDiagnosePhase2:
         "aggravating": "Walking",
     })
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_returns_clinical_picture(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.MILD_ANSWERS))
@@ -143,31 +143,31 @@ class TestDiagnosePhase2:
         assert result["clinical_picture"]["body_region"] == "shin"
         assert "possible_conditions" not in result
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_mild_severity(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.MILD_ANSWERS))
         assert result["severity_assessment"] == "mild"
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_moderate_severity(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.MODERATE_ANSWERS))
         assert result["severity_assessment"] == "moderate"
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_severe_severity(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.SEVERE_ANSWERS))
         assert result["severity_assessment"] == "severe"
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_red_flag_detection(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.SEVERE_ANSWERS))
         assert any("Severe" in rf for rf in result["red_flags"])
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_research_context_included(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {
             "source": "physio-pedia",
@@ -180,7 +180,7 @@ class TestDiagnosePhase2:
         assert result["research_context"]["url"] != ""
         assert result["research_context"]["research_status"] == "ok"
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_saves_to_injury_history(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         result = json.loads(diagnose_injury("shin", self.MILD_ANSWERS))
@@ -191,7 +191,7 @@ class TestDiagnosePhase2:
         assert len(athlete['injury_history']) == 1
         assert athlete['injury_history'][0]['body_region'] == 'shin'
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_saves_to_coaching_notes(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         diagnose_injury("shin", self.MILD_ANSWERS)
@@ -200,7 +200,7 @@ class TestDiagnosePhase2:
         assert "Injury: shin" in athlete['coaching_notes']
         assert "severity=mild" in athlete['coaching_notes']
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_deduplicates_same_day_same_region(self, mock_fetch, injury_dir):
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
         # Diagnose twice on same day
@@ -213,7 +213,7 @@ class TestDiagnosePhase2:
         # Should have updated severity to severe
         assert shin_entries[0]['severity'] == 'severe'
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_fetch_failure_returns_diagnosis_with_empty_research(self, mock_fetch, injury_dir):
         mock_fetch.side_effect = Exception("Network error")
         # Should NOT crash — returns error from outer except
@@ -224,7 +224,7 @@ class TestDiagnosePhase2:
         result = json.loads(diagnose_injury("shin", "not valid json"))
         assert "error" in result
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_candidate_conditions_present(self, mock_fetch, injury_dir):
         """Phase 2 response includes candidate_conditions derived from search terms."""
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
@@ -235,7 +235,7 @@ class TestDiagnosePhase2:
         conditions_lower = [c.lower() for c in result["candidate_conditions"]]
         assert any("anterior" in c or "shin" in c for c in conditions_lower)
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_needs_research_signal_when_no_content(self, mock_fetch, injury_dir):
         """When _fetch_injury_research returns empty dict, response has needs_research signal."""
         mock_fetch.return_value = {}
@@ -244,7 +244,7 @@ class TestDiagnosePhase2:
         assert "suggested_sources" in result["research_context"]
         assert len(result["research_context"]["suggested_sources"]) > 0
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_coaching_notes_not_duplicated(self, mock_fetch, injury_dir):
         """Calling diagnose twice on same day/region does NOT duplicate coaching_notes."""
         mock_fetch.return_value = {"source": "none", "content": "", "url": "", "clinical_info": {}}
@@ -362,7 +362,7 @@ class TestExtractClinicalInfo:
 # ---------------------------------------------------------------------------
 
 class TestFetchInjuryResearch:
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_tries_physiopedia_before_wikipedia(self, mock_fetch):
         """Physio-pedia is tried first; Wikipedia is fallback."""
         calls = []
@@ -377,7 +377,7 @@ class TestFetchInjuryResearch:
         assert result["source"] == "physio-pedia"
         assert "physio-pedia.com" in calls[0]
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_falls_back_to_wikipedia(self, mock_fetch):
         """When physio-pedia fails, Wikipedia is tried."""
         def fallback(url):
@@ -389,21 +389,21 @@ class TestFetchInjuryResearch:
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result["source"] == "wikipedia"
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_irrelevant_content_skipped(self, mock_fetch):
         """Content that fails relevance check is skipped."""
         mock_fetch.return_value = ("short", "https://www.physio-pedia.com/Shin_Splints")
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result == {}
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_complete_failure_returns_empty_dict(self, mock_fetch):
         """When all sources fail, returns empty dict."""
         mock_fetch.side_effect = Exception("Network error")
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result == {}
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_redirect_rejected(self, mock_fetch):
         """Content from a significant redirect is rejected."""
         mock_fetch.return_value = (
@@ -421,7 +421,7 @@ class TestFetchInjuryResearch:
 # ---------------------------------------------------------------------------
 
 class TestSaveDiagnosisSchema:
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_saved_entry_has_downstream_fields(self, mock_fetch, injury_dir):
         """Saved injury entry has type, restricted_activities, safe_activities for downstream consumers."""
         mock_fetch.return_value = {}
@@ -441,7 +441,7 @@ class TestSaveDiagnosisSchema:
         assert entry['status'] == 'active'
         assert 'body_region' in entry
 
-    @patch('tools.injury_tools._fetch_injury_research')
+    @patch('coach.tools.injury_tools._fetch_injury_research')
     def test_saved_entry_consumable_by_planning_context(self, mock_fetch, injury_dir):
         """Verify the saved entry has fields that build_planning_context reads."""
         mock_fetch.return_value = {}
@@ -483,7 +483,7 @@ class TestSaveDiagnosisSchema:
 # ---------------------------------------------------------------------------
 
 class TestResearchInjury:
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_tries_physiopedia_before_wikipedia(self, mock_fetch):
         # Return relevant content on first call (physio-pedia)
         mock_fetch.return_value = (CLINICAL_CONTENT, "https://www.physio-pedia.com/Shin_Splints")
@@ -493,19 +493,19 @@ class TestResearchInjury:
         assert any("physio-pedia" in s for s in result["sources"])
         assert "researched_info" in result
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_no_hardcoded_severity_guidance(self, mock_fetch):
         mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
         result = json.loads(research_injury("shin splints", severity="moderate"))
         assert "severity_context" not in result
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_no_hardcoded_activity_guidance(self, mock_fetch):
         mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
         result = json.loads(research_injury("shin splints"))
         assert "activity_guidance" not in result
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_uses_provided_url_first(self, mock_fetch):
         mock_fetch.return_value = (CLINICAL_CONTENT, "https://custom.com/injury")
         result = json.loads(research_injury(
@@ -513,7 +513,7 @@ class TestResearchInjury:
         ))
         assert "https://custom.com/injury" in result["sources"]
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_handles_all_fetch_failures(self, mock_fetch):
         mock_fetch.side_effect = Exception("Network error")
         result = json.loads(research_injury("shin splints"))
@@ -529,7 +529,7 @@ class TestResearchInjury:
         assert "moderate" in result["error"]
         assert "severe" in result["error"]
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_structured_extraction_in_researched_info(self, mock_fetch):
         # Return same URL to avoid redirect rejection
         mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
@@ -538,7 +538,7 @@ class TestResearchInjury:
         # Should have structured categories from _extract_clinical_info
         assert any(k in info for k in ["treatment", "rehabilitation", "recovery_timeline"])
 
-    @patch('tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_page_text_validated')
     def test_redirect_rejected_in_research(self, mock_fetch):
         """Significant redirects are rejected in research_injury too."""
         mock_fetch.return_value = (

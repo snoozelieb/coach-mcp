@@ -11,37 +11,37 @@ These tests verify:
 import json
 import pytest
 
-import planner
-import rules
-import fitness as fitness_calc_mod
-import parsers as parsers_mod
-import tools.fitness_tools as fitness_mod
-import tools.strength_tools as strength_mod
-import tools.coaching_tools as coaching_mod
-import tools.planning_tools as planning_mod
-from tools.athlete_tools import (
+import coach.planner as planner
+import coach.rules as rules
+import coach.fitness as fitness_calc_mod
+import coach.parsers as parsers_mod
+import coach.tools.fitness_tools as fitness_mod
+import coach.tools.strength_tools as strength_mod
+import coach.tools.coaching_tools as coaching_mod
+import coach.tools.planning_tools as planning_mod
+from coach.tools.athlete_tools import (
     update_athlete,
     set_threshold_pace,
     set_ftp,
     get_methodology,
     update_methodology,
 )
-from tools.strength_tools import get_strength_baseline, approve_progression
-from tools.fitness_tools import get_fitness_status, get_athlete
-from tools.planning_tools import get_weekly_plan, push_plan_to_garmin
-from tools.decision_tools import (
+from coach.tools.strength_tools import get_strength_baseline, approve_progression
+from coach.tools.fitness_tools import get_fitness_status, get_athlete
+from coach.tools.planning_tools import get_weekly_plan, push_plan_to_garmin
+from coach.tools.decision_tools import (
     log_coaching_decision,
     get_active_decisions,
     record_athlete_response,
     get_response_patterns,
 )
-from tools.coaching_tools import (
+from coach.tools.coaching_tools import (
     get_coaching_snapshot,
     get_coaching_score,
     get_compliance_report,
 )
-from tools.fitness_tools import get_load_status
-from rules import check_weekly_compliance
+from coach.tools.fitness_tools import get_load_status
+from coach.rules import check_weekly_compliance
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +213,9 @@ class TestGarminDependentToolsNoCredentials:
             raise Exception("No Garmin credentials configured")
 
         # Patch in every module that imports garmin_api_call
-        monkeypatch.setattr('tools.coaching_tools.garmin_api_call', _fail)
-        monkeypatch.setattr('tools.fitness_tools.garmin_api_call', _fail)
-        monkeypatch.setattr('tools.planning_tools.garmin_api_call', _fail)
+        monkeypatch.setattr('coach.tools.coaching_tools.garmin_api_call', _fail)
+        monkeypatch.setattr('coach.tools.fitness_tools.garmin_api_call', _fail)
+        monkeypatch.setattr('coach.tools.planning_tools.garmin_api_call', _fail)
 
     def test_coaching_snapshot_no_garmin(self, empty_install):
         """get_coaching_snapshot should return structured error, not crash."""
@@ -279,7 +279,7 @@ class TestSemanticCorrectnessEmptyState:
         # Mock garmin_api_call since push_plan calls it
         def _fail(*args, **kwargs):
             raise Exception("No Garmin credentials")
-        monkeypatch.setattr('tools.planning_tools.garmin_api_call', _fail)
+        monkeypatch.setattr('coach.tools.planning_tools.garmin_api_call', _fail)
 
         result = json.loads(push_plan_to_garmin())
 

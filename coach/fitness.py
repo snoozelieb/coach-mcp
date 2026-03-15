@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from typing import Any
 from collections import defaultdict
 
-from config import (
+from .config import (
     DATA_DIR,
     FITNESS_HISTORY_FILE,
     ATHLETE_FILE,
@@ -40,7 +40,7 @@ from config import (
     SLEEP_TARGET_DEFAULT_HRS,
     get_sport_group,
 )
-from garmin_client import garmin_api_call
+from .garmin_client import garmin_api_call
 import logging
 
 logger = logging.getLogger(__name__)

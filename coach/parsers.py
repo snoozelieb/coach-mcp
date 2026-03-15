@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any, Union
 
-from config import DATA_DIR
+from .config import DATA_DIR
 import logging
 
 logger = logging.getLogger(__name__)

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fitness import get_athlete_hr_zones
+from .fitness import get_athlete_hr_zones
 from garminconnect.workout import (
     CyclingWorkout,
     RunningWorkout,
@@ -1276,7 +1276,7 @@ def build_padel_workout(session: dict, date: str) -> dict:
 
 def load_exercise_db() -> dict:
     """Load Garmin exercise database for (category, exerciseName) validation."""
-    db_path = Path(__file__).parent / "data" / "exercises.json"
+    db_path = Path(__file__).parent.parent / "data" / "exercises.json"
     if db_path.exists():
         with open(db_path) as f:
             data = json.load(f)
@@ -1287,7 +1287,7 @@ def load_exercise_db() -> dict:
 def load_exercise_library() -> dict:
     """Load the exercise form cues library."""
     from pathlib import Path
-    library_path = Path(__file__).parent / "data" / "exercise_library.json"
+    library_path = Path(__file__).parent.parent / "data" / "exercise_library.json"
     if library_path.exists():
         with open(library_path) as f:
             return json.load(f)
@@ -1312,7 +1312,7 @@ def get_exercise_note(exercise_name: str, library: dict) -> str:
 def load_strength_baseline() -> dict:
     """Load the strength baseline from athlete profile."""
     from pathlib import Path
-    baseline_path = Path(__file__).parent / "data" / "athlete.json"
+    baseline_path = Path(__file__).parent.parent / "data" / "athlete.json"
     if baseline_path.exists():
         with open(baseline_path) as f:
             athlete = json.load(f)
@@ -1322,7 +1322,7 @@ def load_strength_baseline() -> dict:
 
 def get_baseline_weight(exercise_name: str, category: str, baseline: dict) -> float:
     """Get baseline weight for an exercise from strength baseline."""
-    from config import DEFAULT_EQUIVALENCE_GROUPS
+    from .config import DEFAULT_EQUIVALENCE_GROUPS
 
     # Normalize exercise lookup key
     category_key = category.lower().replace(' ', '_')

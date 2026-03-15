@@ -3,7 +3,7 @@ import pytest
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from tools.coaching_tools import (
+from coach.tools.coaching_tools import (
     _compare_planned_actual,
     _parse_readiness_for_snapshot,
     _build_adaptation_patterns,
@@ -320,7 +320,7 @@ class TestParseReadinessForSnapshot:
 # ---------------------------------------------------------------------------
 
 class TestBuildAdaptationPatterns:
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_patterns_from_coaching_log(self, mock_log):
         mock_log.return_value = {
             'athlete_responses': [
@@ -334,7 +334,7 @@ class TestBuildAdaptationPatterns:
         assert result['handles_volume_well'] is True
         assert result['total_responses'] == 2
 
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_empty_coaching_log(self, mock_log):
         mock_log.return_value = {'athlete_responses': []}
 
@@ -343,7 +343,7 @@ class TestBuildAdaptationPatterns:
         assert result['handles_volume_well'] is False
         assert result['total_responses'] == 0
 
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_coaching_log_exception_handled(self, mock_log):
         mock_log.side_effect = Exception("File not found")
 
@@ -352,7 +352,7 @@ class TestBuildAdaptationPatterns:
         assert result['handles_volume_well'] is None
         assert result['patterns_logged'] == 0
 
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_tied_patterns_default_to_false(self, mock_log):
         """When competing patterns have equal counts (e.g., 2x handles_volume_well
         vs 2x struggles_with_volume), the comparison > returns False."""
@@ -370,7 +370,7 @@ class TestBuildAdaptationPatterns:
         # Tie: 2 == 2, so 2 > 2 is False
         assert result['handles_volume_well'] is False
 
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_quantified_included_when_sufficient_data(self, mock_log):
         """When enough numeric responses exist, quantified thresholds appear."""
         responses = [
@@ -386,7 +386,7 @@ class TestBuildAdaptationPatterns:
         assert 'volume_tolerance' in result['quantified']
         assert result['quantified']['confidence'] in ('moderate', 'high')
 
-    @patch('tools.coaching_tools.load_coaching_log')
+    @patch('coach.tools.coaching_tools.load_coaching_log')
     def test_no_quantified_when_insufficient_data(self, mock_log):
         """Boolean flags still work without quantified data."""
         responses = [
@@ -518,7 +518,7 @@ class TestAnalyzeSportPriorities:
 class TestSnapshotCoachingMemory:
     """Test that coaching_memory is wired into the snapshot via get_coaching_context()."""
 
-    @patch('tools.coaching_tools.get_coaching_context')
+    @patch('coach.tools.coaching_tools.get_coaching_context')
     def test_coaching_memory_included(self, mock_ctx):
         """coaching_memory appears in snapshot with expected fields."""
         mock_ctx.return_value = {
@@ -535,7 +535,7 @@ class TestSnapshotCoachingMemory:
 
         # Build a minimal snapshot dict and apply the coaching_memory logic
         # (testing the wiring, not the full snapshot which needs Garmin)
-        from tools.coaching_tools import get_coaching_context as _gc
+        from coach.tools.coaching_tools import get_coaching_context as _gc
         coaching_ctx = _gc()
         coaching_memory = {
             'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
@@ -549,7 +549,7 @@ class TestSnapshotCoachingMemory:
         assert 'handles_volume_well' in coaching_memory['adaptation_patterns']
         assert len(coaching_memory['recent_responses']) == 1
 
-    @patch('tools.coaching_tools.get_coaching_context')
+    @patch('coach.tools.coaching_tools.get_coaching_context')
     def test_coaching_memory_limits_decisions(self, mock_ctx):
         """Only last 5 active decisions and 3 recent responses are included."""
         mock_ctx.return_value = {
@@ -570,7 +570,7 @@ class TestSnapshotCoachingMemory:
         assert len(coaching_memory['active_decisions']) == 5
         assert len(coaching_memory['recent_responses']) == 3
 
-    @patch('tools.coaching_tools.get_coaching_context')
+    @patch('coach.tools.coaching_tools.get_coaching_context')
     def test_coaching_memory_empty_log(self, mock_ctx):
         """Empty coaching log produces empty but valid coaching_memory."""
         mock_ctx.return_value = {

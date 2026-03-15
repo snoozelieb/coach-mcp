@@ -7,7 +7,7 @@ import json
 from datetime import date, timedelta
 from typing import Any
 
-from config import (
+from .config import (
     DATA_DIR,
     LONG_EFFORT_MIN_MINS,
     HARD_HR_AVG_THRESHOLD,

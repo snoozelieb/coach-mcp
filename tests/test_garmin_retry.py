@@ -15,14 +15,14 @@ from garminconnect import (
     GarminConnectAuthenticationError,
     GarminConnectTooManyRequestsError,
 )
-from garmin_client import garmin_api_call, _cached_client
-import garmin_client
+from coach.garmin_client import garmin_api_call, _cached_client
+import coach.garmin_client as garmin_client
 
 
 class TestGarminApiCallAuthRetry:
     """Test authentication error handling and retry logic."""
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_auth_error_triggers_force_refresh_and_retries(self, mock_get_client):
         """On auth error, should invalidate cache and retry with fresh client."""
         stale_client = Mock()
@@ -47,7 +47,7 @@ class TestGarminApiCallAuthRetry:
         mock_get_client.assert_any_call()
         mock_get_client.assert_any_call(force_refresh=True)
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_persistent_auth_error_raises_after_one_retry(self, mock_get_client):
         """If re-login also fails with auth error, should raise (no infinite loop)."""
         mock_client = Mock()
@@ -66,8 +66,8 @@ class TestGarminApiCallAuthRetry:
 class TestGarminApiCallRateLimit:
     """Test rate limit (429) handling."""
 
-    @patch('garmin_client.time.sleep')
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.time.sleep')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_rate_limit_waits_and_retries(self, mock_get_client, mock_sleep):
         """On 429, should wait GARMIN_RATE_LIMIT_WAIT_SECS and retry."""
         mock_client = Mock()
@@ -87,8 +87,8 @@ class TestGarminApiCallRateLimit:
         assert result == {"data": "after_wait"}
         mock_sleep.assert_called_once_with(10)  # GARMIN_RATE_LIMIT_WAIT_SECS
 
-    @patch('garmin_client.time.sleep')
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.time.sleep')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_persistent_rate_limit_raises(self, mock_get_client, mock_sleep):
         """If still rate-limited after wait, should raise."""
         mock_client = Mock()
@@ -106,7 +106,7 @@ class TestGarminApiCallRateLimit:
 class TestGarminApiCallOtherErrors:
     """Test that non-auth, non-rate-limit errors propagate immediately."""
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_connection_error_not_retried(self, mock_get_client):
         """Connection errors should propagate without retry."""
         mock_client = Mock()
@@ -121,7 +121,7 @@ class TestGarminApiCallOtherErrors:
         # Only one get_garmin_client call (no retry)
         assert mock_get_client.call_count == 1
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_value_error_not_retried(self, mock_get_client):
         """Generic errors should propagate without retry."""
         mock_client = Mock()
@@ -135,7 +135,7 @@ class TestGarminApiCallOtherErrors:
 
         assert mock_get_client.call_count == 1
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_runtime_error_not_retried(self, mock_get_client):
         """Runtime errors should propagate without retry."""
         mock_client = Mock()
@@ -153,7 +153,7 @@ class TestGarminApiCallOtherErrors:
 class TestGarminApiCallHappyPath:
     """Test normal (no error) behavior."""
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_passes_client_to_function(self, mock_get_client):
         """Should get client and pass it to the provided function."""
         mock_client = Mock()
@@ -163,7 +163,7 @@ class TestGarminApiCallHappyPath:
 
         mock_client.get_activities_by_date.assert_called_once_with("2025-01-01", "2025-01-07")
 
-    @patch('garmin_client.get_garmin_client')
+    @patch('coach.garmin_client.get_garmin_client')
     def test_returns_function_result(self, mock_get_client):
         """Should return whatever the function returns."""
         mock_client = Mock()
@@ -178,10 +178,10 @@ class TestGarminApiCallHappyPath:
 class TestScheduleWorkoutRetry:
     """Test that schedule_workout uses garmin_api_call internally."""
 
-    @patch('garmin_client.garmin_api_call')
+    @patch('coach.garmin_client.garmin_api_call')
     def test_schedule_workout_uses_garmin_api_call(self, mock_api_call):
         """schedule_workout should delegate to garmin_api_call."""
-        from garmin_client import schedule_workout
+        from coach.garmin_client import schedule_workout
 
         mock_api_call.return_value = {"status": "scheduled"}
 

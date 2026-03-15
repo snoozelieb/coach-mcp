@@ -1,10 +1,10 @@
 """Strength sync tools - sync Garmin strength sessions, manage baselines, progressions, exercises."""
 
-from mcp_app import mcp
-from garmin_client import garmin_api_call
-from parsers import parse_activities
-from planner import load_json_file, save_json_file, load_athlete
-from config import (
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call
+from ..parsers import parse_activities
+from ..planner import load_json_file, save_json_file, load_athlete
+from ..config import (
     DEFAULT_EQUIVALENCE_GROUPS,
     PROGRESSION_INCREMENT_KG,
     MIN_SETS_FOR_PROGRESSION,

@@ -3,7 +3,7 @@ Tests for training rule engine.
 """
 import pytest
 from unittest.mock import patch
-from rules import (
+from coach.rules import (
     classify_activity,
     check_weekly_compliance,
     check_safety_rules,
@@ -286,7 +286,7 @@ class TestCheckSafetyRules:
 
 
 class TestGetUpcomingEvents:
-    @patch('rules.load_training_config')
+    @patch('coach.rules.load_training_config')
     def test_returns_events_within_range(self, mock_config):
         from datetime import date, timedelta
 
@@ -305,7 +305,7 @@ class TestGetUpcomingEvents:
         assert result[0]['name'] == 'Event 1'  # Closest first
         assert result[1]['name'] == 'Event 2'
 
-    @patch('rules.load_training_config')
+    @patch('coach.rules.load_training_config')
     def test_calculates_days_until(self, mock_config):
         from datetime import date, timedelta
 
@@ -320,7 +320,7 @@ class TestGetUpcomingEvents:
 
         assert result[0]['days_until'] == 15
 
-    @patch('rules.load_training_config')
+    @patch('coach.rules.load_training_config')
     def test_excludes_past_events(self, mock_config):
         from datetime import date, timedelta
 

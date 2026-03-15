@@ -1,9 +1,9 @@
 """Research tools - exercise library lookup, exercise research, sport research."""
 
-from mcp_app import mcp
-from web_utils import fetch_page_text
-from planner import load_json_file, save_json_file
-from config import DATA_DIR, EXERCISE_LIBRARY_FILE, PAGE_TEXT_MAX_CHARS
+from ..mcp_app import mcp
+from ..web_utils import fetch_page_text
+from ..planner import load_json_file, save_json_file
+from ..config import DATA_DIR, EXERCISE_LIBRARY_FILE, PAGE_TEXT_MAX_CHARS
 from datetime import date
 import json
 import logging

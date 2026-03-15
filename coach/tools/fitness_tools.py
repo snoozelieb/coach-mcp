@@ -11,14 +11,14 @@ Registers MCP tools for:
 - get_athlete
 """
 
-from mcp_app import mcp
-from garmin_client import garmin_api_call, fetch_activity_hr_zones
-from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
-from planner import load_athlete, load_methodology, load_json_file, save_json_file
-from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
+from ..parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
+from ..planner import load_athlete, load_methodology, load_json_file, save_json_file
+from ..fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_athlete_hr_zones, get_fitness_trend,
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics)
-from config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
+from ..config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
 from datetime import date, timedelta
 import json
 import logging

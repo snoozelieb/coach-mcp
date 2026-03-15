@@ -1,10 +1,10 @@
 """Race tools - manage races/events and research race details."""
 
-from mcp_app import mcp
-from web_utils import fetch_page_text
-from planner import save_json_file
-from rules import load_training_config
-from config import (VALID_PRIORITIES, ELEVATION_SIGNIFICANCE_THRESHOLD,
+from ..mcp_app import mcp
+from ..web_utils import fetch_page_text
+from ..planner import save_json_file
+from ..rules import load_training_config
+from ..config import (VALID_PRIORITIES, ELEVATION_SIGNIFICANCE_THRESHOLD,
                     HIGH_ALTITUDE_THRESHOLD)
 from datetime import date, timedelta
 import json

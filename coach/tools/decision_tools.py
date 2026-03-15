@@ -1,7 +1,7 @@
 """Coaching decision tools - log decisions, manage approvals, track athlete responses."""
 
-from mcp_app import mcp
-from planner import load_coaching_log, save_coaching_log
+from ..mcp_app import mcp
+from ..planner import load_coaching_log, save_coaching_log
 from datetime import date, timedelta
 import json
 import logging

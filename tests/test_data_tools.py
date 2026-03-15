@@ -9,9 +9,9 @@ from unittest.mock import Mock, patch
 
 
 class TestGetDailyMetrics:
-    @patch('tools.data_tools.garmin_api_call')
+    @patch('coach.tools.data_tools.garmin_api_call')
     def test_composes_two_api_calls_into_one_result(self, mock_api_call, garmin_fixtures):
-        from tools.data_tools import get_daily_metrics
+        from coach.tools.data_tools import get_daily_metrics
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = garmin_fixtures["user_summary"]
@@ -25,9 +25,9 @@ class TestGetDailyMetrics:
         assert result['sleep_score'] == 'N/A'
         assert 'date' in result
 
-    @patch('tools.data_tools.garmin_api_call')
+    @patch('coach.tools.data_tools.garmin_api_call')
     def test_handles_empty_responses_gracefully(self, mock_api_call):
-        from tools.data_tools import get_daily_metrics
+        from coach.tools.data_tools import get_daily_metrics
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = {}
@@ -40,9 +40,9 @@ class TestGetDailyMetrics:
         assert result['body_battery'] == 'N/A'
         assert result['sleep_score'] == 'N/A'
 
-    @patch('tools.data_tools.garmin_api_call')
+    @patch('coach.tools.data_tools.garmin_api_call')
     def test_api_error_returns_error_json(self, mock_api_call):
-        from tools.data_tools import get_daily_metrics
+        from coach.tools.data_tools import get_daily_metrics
 
         mock_api_call.side_effect = Exception("Connection timeout")
         result = json.loads(get_daily_metrics())
@@ -55,20 +55,20 @@ class TestGetActivitiesRangeDateValidation:
     """Tests for date validation in get_activities_range."""
 
     def test_invalid_start_date_returns_error(self):
-        from tools.data_tools import get_activities_range
+        from coach.tools.data_tools import get_activities_range
         result = json.loads(get_activities_range("not-a-date"))
         assert 'error' in result
         assert 'start_date' in result['error']
 
     def test_invalid_end_date_returns_error(self):
-        from tools.data_tools import get_activities_range
+        from coach.tools.data_tools import get_activities_range
         result = json.loads(get_activities_range("2026-01-01", "bad-date"))
         assert 'error' in result
         assert 'end_date' in result['error']
 
-    @patch('tools.data_tools.garmin_api_call')
+    @patch('coach.tools.data_tools.garmin_api_call')
     def test_valid_dates_proceed_normally(self, mock_api_call):
-        from tools.data_tools import get_activities_range
+        from coach.tools.data_tools import get_activities_range
         mock_api_call.return_value = []
         result = json.loads(get_activities_range("2026-01-01", "2026-01-07"))
         assert 'error' not in result

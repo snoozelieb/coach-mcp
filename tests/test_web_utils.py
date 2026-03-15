@@ -4,7 +4,7 @@ import pytest
 import requests
 from unittest.mock import patch, Mock
 
-from web_utils import fetch_page_text
+from coach.web_utils import fetch_page_text
 
 
 # ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ from web_utils import fetch_page_text
 class TestFetchPageText:
     """Tests for fetch_page_text() with mocked HTTP requests."""
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_returns_stripped_text_from_html_response(self, mock_get):
         mock_response = Mock()
         mock_response.text = "<html><body><h1>Race Info</h1><p>Details here</p></body></html>"
@@ -29,7 +29,7 @@ class TestFetchPageText:
         mock_get.assert_called_once()
         mock_response.raise_for_status.assert_called_once()
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_truncates_to_max_chars(self, mock_get):
         long_text = "A" * 500
         mock_response = Mock()
@@ -41,7 +41,7 @@ class TestFetchPageText:
 
         assert len(result) <= 100
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_default_max_chars_uses_config_value(self, mock_get):
         # Build HTML whose stripped text exceeds PAGE_TEXT_MAX_CHARS (8000)
         huge_text = "X" * 20000
@@ -56,7 +56,7 @@ class TestFetchPageText:
         # but truncation to 8000 should still apply
         assert len(result) <= 8000
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_strips_skip_tags_from_response(self, mock_get):
         mock_response = Mock()
         mock_response.text = (
@@ -73,14 +73,14 @@ class TestFetchPageText:
         assert "Menu" not in result
         assert "Foot" not in result
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_request_exception_propagates(self, mock_get):
         mock_get.side_effect = requests.RequestException("Connection refused")
 
         with pytest.raises(requests.RequestException, match="Connection refused"):
             fetch_page_text("https://down.example.com")
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_http_error_propagates(self, mock_get):
         mock_response = Mock()
         mock_response.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
@@ -89,7 +89,7 @@ class TestFetchPageText:
         with pytest.raises(requests.HTTPError, match="404 Not Found"):
             fetch_page_text("https://example.com/missing")
 
-    @patch("web_utils.requests.get")
+    @patch("coach.web_utils.requests.get")
     def test_passes_correct_request_params(self, mock_get):
         mock_response = Mock()
         mock_response.text = "<p>ok</p>"

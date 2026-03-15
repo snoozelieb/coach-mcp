@@ -15,7 +15,7 @@ import pytest
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from fitness import (
+from coach.fitness import (
     calculate_training_load,
     calculate_daily_load,
     calculate_fitness_metrics,
@@ -238,7 +238,7 @@ class TestSportSpecificFitnessMetrics:
 
 class TestUpdateFitnessHistoryV2:
     def test_stores_per_sport_breakdown(self, tmp_path, monkeypatch):
-        import fitness
+        import coach.fitness as fitness
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         activities = [
@@ -255,7 +255,7 @@ class TestUpdateFitnessHistoryV2:
         assert day['total'] == day['by_sport']['cycling'] + day['by_sport']['strength']
 
     def test_stores_activity_details(self, tmp_path, monkeypatch):
-        import fitness
+        import coach.fitness as fitness
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         activities = [
@@ -269,7 +269,7 @@ class TestUpdateFitnessHistoryV2:
         assert day['activities'][0]['sport'] == 'running'
 
     def test_generates_per_sport_snapshots(self, tmp_path, monkeypatch):
-        import fitness
+        import coach.fitness as fitness
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         # Build enough history for meaningful CTL
@@ -492,7 +492,7 @@ class TestAnalyzeActivityPatterns:
 
 class TestLoadFitnessHistory:
     def test_auto_migrates_v1(self, tmp_path, monkeypatch):
-        import fitness
+        import coach.fitness as fitness
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         v1 = {
@@ -508,7 +508,7 @@ class TestLoadFitnessHistory:
         assert result['daily_loads']['2026-02-01']['total'] == 17.1
 
     def test_returns_fresh_v2_when_no_file(self, tmp_path, monkeypatch):
-        import fitness
+        import coach.fitness as fitness
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         result = load_fitness_history()

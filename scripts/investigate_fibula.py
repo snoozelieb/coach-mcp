@@ -21,10 +21,10 @@ from pathlib import Path
 # Project root on sys.path so we can import project modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from garmin_client import garmin_api_call  # noqa: E402
-from parsers import parse_activity  # noqa: E402
-from fitness import calculate_fitness_metrics  # noqa: E402
-from config import SPORT_GROUPS  # noqa: E402
+from coach.garmin_client import garmin_api_call  # noqa: E402
+from coach.parsers import parse_activity  # noqa: E402
+from coach.fitness import calculate_fitness_metrics  # noqa: E402
+from coach.config import SPORT_GROUPS  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

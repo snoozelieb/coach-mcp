@@ -35,10 +35,10 @@ def _make_garmin_mock():
 
 
 class TestRefreshAthleteBaseline:
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_creates_baseline_file_with_correct_structure(self, mock_api_call, tmp_path, monkeypatch):
         """The full pipeline: API → parse → calculate → write file."""
-        import tools.fitness_tools as fitness_mod
+        import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
 
         mock_client = _make_garmin_mock()
@@ -60,9 +60,9 @@ class TestRefreshAthleteBaseline:
         assert 'last_refreshed' in profile
         assert profile['baseline']['total_activities'] == 1
 
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_api_error_returns_error_json(self, mock_api_call):
-        from tools.fitness_tools import refresh_athlete_baseline
+        from coach.tools.fitness_tools import refresh_athlete_baseline
 
         mock_api_call.side_effect = Exception("Auth failed")
         result = json.loads(refresh_athlete_baseline())
@@ -70,10 +70,10 @@ class TestRefreshAthleteBaseline:
         assert 'error' in result
         assert 'Auth failed' in result['error']
 
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_garmin_profile_saved_to_baseline(self, mock_api_call, tmp_path, monkeypatch):
         """Garmin profile (name, weight, age) saved under garmin_profile key."""
-        import tools.fitness_tools as fitness_mod
+        import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
 
         mock_client = _make_garmin_mock()
@@ -91,10 +91,10 @@ class TestRefreshAthleteBaseline:
         assert 'garmin_profile' in profile
         assert profile['garmin_profile']['weight_kg'] == 75.0
 
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_garmin_profile_failure_non_fatal(self, mock_api_call, tmp_path, monkeypatch):
         """If profile APIs fail, baseline still succeeds with empty garmin_profile."""
-        import tools.fitness_tools as fitness_mod
+        import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
 
         call_count = [0]
@@ -118,11 +118,11 @@ class TestRefreshAthleteBaseline:
 
 
 class TestAutoPopulateAthlete:
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_fills_none_fields_from_garmin(self, mock_api_call, tmp_path, monkeypatch):
         """Auto-populates None fields in athlete.json from Garmin profile."""
-        import tools.fitness_tools as fitness_mod
-        import planner
+        import coach.tools.fitness_tools as fitness_mod
+        import coach.planner as planner
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
 
@@ -145,11 +145,11 @@ class TestAutoPopulateAthlete:
         # Manually set value should NOT be overwritten
         assert updated['personal']['max_hr'] == 190
 
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_does_not_overwrite_manual_values(self, mock_api_call, tmp_path, monkeypatch):
         """Never overwrites manually set values in athlete.json."""
-        import tools.fitness_tools as fitness_mod
-        import planner
+        import coach.tools.fitness_tools as fitness_mod
+        import coach.planner as planner
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
 
@@ -170,11 +170,11 @@ class TestAutoPopulateAthlete:
         assert updated['personal']['weight_kg'] == 80.0
         assert updated['personal']['age'] == 40
 
-    @patch('tools.fitness_tools.garmin_api_call')
+    @patch('coach.tools.fitness_tools.garmin_api_call')
     def test_fills_max_hr_from_garmin(self, mock_api_call, tmp_path, monkeypatch):
         """Auto-populates max_hr when None in athlete.json."""
-        import tools.fitness_tools as fitness_mod
-        import planner
+        import coach.tools.fitness_tools as fitness_mod
+        import coach.planner as planner
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
 

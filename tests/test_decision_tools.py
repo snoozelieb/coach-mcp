@@ -3,8 +3,8 @@ import json
 import pytest
 from datetime import date, timedelta
 
-import planner
-from tools.decision_tools import (
+import coach.planner as planner
+from coach.tools.decision_tools import (
     log_coaching_decision,
     get_active_decisions,
     update_decision_status,

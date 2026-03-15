@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from garminconnect.workout import CyclingWorkout, RunningWorkout, ExecutableStep
 
-from workout_builder import (
+from coach.workout_builder import (
     is_indoor_cycling,
     is_simple_outdoor_ride,
     get_workout_type_name,
@@ -154,21 +154,21 @@ class TestIsSimpleOutdoorRide:
 class TestBuildWorkoutDispatch:
     """Test that build_workout dispatches to the correct builder."""
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_returns_cycling_workout_for_ride(self, mock_hr):
         session = {"type": "easy_ride", "duration_mins": 60, "intensity": "easy"}
         result = build_workout(session, "2025-01-01")
         assert isinstance(result, CyclingWorkout)
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_returns_running_workout_for_run(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
         result = build_workout(session, "2025-01-01")
         assert isinstance(result, RunningWorkout)
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_returns_dict_for_strength(self, mock_baseline, mock_library):
         session = {"type": "strength", "duration_mins": 45}
         result = build_workout(session, "2025-01-01")
@@ -219,21 +219,21 @@ class TestBuildWorkoutDispatch:
         result = build_workout(session, "2025-01-01")
         assert result is None
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_ride_substring_dispatches_to_cycling(self, mock_hr):
         session = {"type": "tempo_ride", "duration_mins": 60, "intensity": "tempo"}
         result = build_workout(session, "2025-01-01")
         assert isinstance(result, CyclingWorkout)
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_run_substring_dispatches_to_running(self, mock_hr, mock_pace):
         session = {"type": "morning_run", "duration_mins": 30, "intensity": "easy"}
         result = build_workout(session, "2025-01-01")
         assert isinstance(result, RunningWorkout)
 
-    @patch("workout_builder.get_power_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_power_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=None)
     def test_ftp_test_dispatches_to_ftp_builder(self, mock_hr, mock_power):
         session = {"type": "ftp_test", "duration_mins": 50, "description": "FTP Test"}
         result = build_workout(session, "2025-01-01")
@@ -244,7 +244,7 @@ class TestBuildWorkoutDispatch:
 # ─── build_cycling_workout ──────────────────────────────────────────
 
 class TestBuildCyclingWorkout:
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_outdoor_ride_has_hr_target(self, mock_hr):
         session = {"type": "easy_ride", "duration_mins": 60, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
@@ -253,8 +253,8 @@ class TestBuildCyclingWorkout:
         assert "(Outdoor)" in result.workoutName
         assert result.estimatedDurationInSecs == 3600
 
-    @patch("workout_builder.get_power_target_for_intensity", return_value=(130, 160))
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_power_target_for_intensity", return_value=(130, 160))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_indoor_ride_has_power_target(self, mock_hr, mock_power):
         session = {"type": "wattbike", "duration_mins": 60, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
@@ -270,7 +270,7 @@ class TestBuildCyclingWorkout:
         assert main_step.targetValueOne == 130
         assert main_step.targetValueTwo == 160
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_simple_outdoor_ride_has_no_warmup(self, mock_hr):
         """Simple outdoor rides skip warmup/cooldown sections."""
         session = {"type": "easy_ride", "duration_mins": 90, "intensity": "easy"}
@@ -281,7 +281,7 @@ class TestBuildCyclingWorkout:
         assert len(steps) == 1
         assert steps[0].stepType == STEP_INTERVAL
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_outdoor_ride_single_step_full_duration(self, mock_hr):
         session = {"type": "long_ride", "duration_mins": 120, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
@@ -291,8 +291,8 @@ class TestBuildCyclingWorkout:
         assert len(steps) == 1
         assert steps[0].endConditionValue == 120 * 60
 
-    @patch("workout_builder.get_power_target_for_intensity", return_value=(150, 180))
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_power_target_for_intensity", return_value=(150, 180))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_indoor_ride_has_warmup_main_cooldown(self, mock_hr, mock_power):
         session = {"type": "indoor_cycling", "duration_mins": 60, "intensity": "tempo"}
         result = build_cycling_workout(session, "2025-01-01")
@@ -303,7 +303,7 @@ class TestBuildCyclingWorkout:
         assert steps[1].stepType == STEP_INTERVAL
         assert steps[2].stepType == STEP_COOLDOWN
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=None)
     def test_no_zones_uses_no_target(self, mock_hr):
         session = {"type": "easy_ride", "duration_mins": 60, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
@@ -312,7 +312,7 @@ class TestBuildCyclingWorkout:
         for step in steps:
             assert step.targetType == TARGET_NONE
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_description_already_tagged_not_double_tagged(self, mock_hr):
         session = {
             "type": "easy_ride",
@@ -324,13 +324,13 @@ class TestBuildCyclingWorkout:
         # Should not have double tags like "(Outdoor) (Outdoor)"
         assert result.workoutName.count("(Outdoor)") == 1
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_cycling_sport_type(self, mock_hr):
         session = {"type": "easy_ride", "duration_mins": 60, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
         assert result.workoutSegments[0].sportType == CYCLING_SPORT
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_outdoor_ride_has_description_from_notes(self, mock_hr):
         """Outdoor cycling workout should include notes as description."""
         session = {
@@ -342,7 +342,7 @@ class TestBuildCyclingWorkout:
         result = build_cycling_workout(session, "2025-01-01")
         assert result.description == "Z2 aerobic ride. HR 124-145 ONLY"
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_outdoor_ride_falls_back_to_purpose(self, mock_hr):
         """Falls back to purpose when no notes."""
         session = {
@@ -354,7 +354,7 @@ class TestBuildCyclingWorkout:
         result = build_cycling_workout(session, "2025-01-01")
         assert result.description == "Build aerobic base"
 
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(124, 145))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(124, 145))
     def test_outdoor_ride_step_has_hr_description(self, mock_hr):
         """Outdoor ride main step should show HR range in description."""
         session = {"type": "easy_ride", "duration_mins": 90, "intensity": "easy"}
@@ -362,8 +362,8 @@ class TestBuildCyclingWorkout:
         main_step = result.workoutSegments[0].workoutSteps[0]
         assert main_step.description == "HR 124-145 bpm"
 
-    @patch("workout_builder.get_power_target_for_intensity", return_value=(130, 160))
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_power_target_for_intensity", return_value=(130, 160))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_indoor_ride_step_has_no_hr_description(self, mock_hr, mock_power):
         """Indoor ride steps should NOT have HR description."""
         session = {"type": "wattbike", "duration_mins": 60, "intensity": "easy"}
@@ -375,8 +375,8 @@ class TestBuildCyclingWorkout:
 # ─── build_running_workout ──────────────────────────────────────────
 
 class TestBuildRunningWorkout:
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_uses_pace_when_available(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
@@ -387,8 +387,8 @@ class TestBuildRunningWorkout:
         main_step = steps[1]
         assert main_step.targetType == TARGET_PACE
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_falls_back_to_hr_when_no_pace(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
@@ -399,8 +399,8 @@ class TestBuildRunningWorkout:
         assert main_step.targetValueOne == 120
         assert main_step.targetValueTwo == 140
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=None)
     def test_no_targets_when_no_zones(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
@@ -411,8 +411,8 @@ class TestBuildRunningWorkout:
             # Specifically the main step
         assert steps[1].targetType == TARGET_NONE
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_has_warmup_main_cooldown(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 60, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
@@ -423,22 +423,22 @@ class TestBuildRunningWorkout:
         assert steps[1].stepType == STEP_INTERVAL
         assert steps[2].stepType == STEP_COOLDOWN
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_estimated_duration_matches_session(self, mock_hr, mock_pace):
         session = {"type": "long_run", "duration_mins": 90, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
         assert result.estimatedDurationInSecs == 90 * 60
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_running_sport_type(self, mock_hr, mock_pace):
         session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
         result = build_running_workout(session, "2025-01-01")
         assert result.workoutSegments[0].sportType == RUNNING_SPORT
 
-    @patch("workout_builder.get_pace_target_for_intensity", return_value=None)
-    @patch("workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
     def test_workout_name_from_description(self, mock_hr, mock_pace):
         session = {
             "type": "easy_run",
@@ -453,8 +453,8 @@ class TestBuildRunningWorkout:
 # ─── build_strength_workout ─────────────────────────────────────────
 
 class TestBuildStrengthWorkout:
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_simple_timed_workout_no_exercises(self, mock_baseline, mock_library):
         session = {"type": "strength", "duration_mins": 45}
         result = build_strength_workout(session, "2025-01-01")
@@ -465,8 +465,8 @@ class TestBuildStrengthWorkout:
         assert len(steps) == 1
         assert steps[0]["stepType"] == STEP_WARMUP
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_workout_with_exercises_has_warmup(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -482,8 +482,8 @@ class TestBuildStrengthWorkout:
         assert steps[0]["stepType"] == STEP_WARMUP
         assert steps[0]["endConditionValue"] == 300.0  # 5 min warmup
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_workout_has_rest_after_warmup(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -499,8 +499,8 @@ class TestBuildStrengthWorkout:
         assert steps[1]["stepType"] == STEP_REST
         assert steps[1]["endCondition"] == END_LAP_BUTTON
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_exercise_creates_repeat_group(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -518,8 +518,8 @@ class TestBuildStrengthWorkout:
         assert repeat_group["type"] == "RepeatGroupDTO"
         assert repeat_group["numberOfIterations"] == 4
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_repeat_group_contains_exercise_and_rest(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -543,8 +543,8 @@ class TestBuildStrengthWorkout:
         assert inner_steps[1]["stepType"] == STEP_REST
         assert inner_steps[1]["endCondition"] == END_LAP_BUTTON
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_multiple_exercises_create_multiple_groups(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -562,8 +562,8 @@ class TestBuildStrengthWorkout:
         assert len(steps) == 5
         assert result["exercise_count"] == 3
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_explicit_weight_included(self, mock_baseline, mock_library):
         session = {
             "type": "strength",
@@ -579,8 +579,8 @@ class TestBuildStrengthWorkout:
         assert exercise_step["weightValue"] == 60.0
         assert exercise_step["weightUnit"]["unitKey"] == "kilogram"
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={
         "bench_press": {"current": {"weight_kg": 40}}
     })
     def test_baseline_weight_used_when_no_explicit_weight(self, mock_baseline, mock_library):
@@ -597,13 +597,13 @@ class TestBuildStrengthWorkout:
 
         assert exercise_step["weightValue"] == 40.0
 
-    @patch("workout_builder.load_exercise_db", return_value={
+    @patch("coach.workout_builder.load_exercise_db", return_value={
         "BARBELL_SQUAT": {"category": "SQUAT"}
     })
-    @patch("workout_builder.load_exercise_library", return_value={
+    @patch("coach.workout_builder.load_exercise_library", return_value={
         "barbell squat": {"garmin_note": "Drive through heels, chest up"}
     })
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_exercise_library_note_included(self, mock_baseline, mock_library, mock_db):
         session = {
             "type": "strength",
@@ -618,8 +618,8 @@ class TestBuildStrengthWorkout:
 
         assert exercise_step["description"] == "Drive through heels, chest up"
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_garmin_category_mapping(self, mock_baseline, mock_library):
         """Non-standard categories should be mapped to valid Garmin categories."""
         session = {
@@ -641,8 +641,8 @@ class TestBuildStrengthWorkout:
         ex2 = steps[3]["workoutSteps"][0]
         assert ex2["category"] == "SQUAT"
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_remapped_category_clears_exercise_name(self, mock_baseline, mock_library):
         """When category is remapped, exerciseName must be cleared (doesn't exist in new category)."""
         session = {
@@ -668,11 +668,11 @@ class TestBuildStrengthWorkout:
         assert leg_curl["exerciseName"] == ""
         assert "Lying Leg Curl" in leg_curl["description"]
 
-    @patch("workout_builder.load_exercise_db", return_value={
+    @patch("coach.workout_builder.load_exercise_db", return_value={
         "BARBELL_SQUAT": {"category": "SQUAT"}
     })
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_valid_category_keeps_exercise_name(self, mock_baseline, mock_library, mock_db):
         """Valid categories keep exerciseName intact when DB confirms the pair."""
         session = {
@@ -687,11 +687,11 @@ class TestBuildStrengthWorkout:
         assert ex["category"] == "SQUAT"
         assert ex["exerciseName"] == "BARBELL_SQUAT"
 
-    @patch("workout_builder.load_exercise_db", return_value={
+    @patch("coach.workout_builder.load_exercise_db", return_value={
         "SQUAT": {"category": "SUSPENSION"}
     })
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_db_mismatch_clears_exercise_name(self, mock_baseline, mock_library, mock_db):
         """When DB says exercise is under different category, exerciseName is cleared."""
         session = {
@@ -707,8 +707,8 @@ class TestBuildStrengthWorkout:
         assert ex["exerciseName"] == ""
         assert "Squat" in ex["description"]
 
-    @patch("workout_builder.load_exercise_library", return_value={})
-    @patch("workout_builder.load_strength_baseline", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_unknown_category_falls_back_to_cardio(self, mock_baseline, mock_library):
         """Completely unknown category (not in map or valid set) falls back to CARDIO."""
         session = {
@@ -1063,7 +1063,7 @@ class TestBuildStructuredIndoorWorkout:
         assert steps[1].targetValueOne == 200
         assert steps[1].targetValueTwo == 240
 
-    @patch("workout_builder.get_athlete_power_zones", return_value={
+    @patch("coach.workout_builder.get_athlete_power_zones", return_value={
         "z4_threshold": [220, 260]
     })
     def test_power_pct_calculated_from_ftp(self, mock_zones):
@@ -1156,29 +1156,29 @@ class TestBuildStructuredIndoorWorkout:
 # ─── get_hr_target_for_intensity ────────────────────────────────────
 
 class TestGetHrTargetForIntensity:
-    @patch("workout_builder.get_athlete_hr_zones", return_value=None)
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
     def test_uses_default_zones_when_none(self, mock_zones):
         result = get_hr_target_for_intensity("easy")
         assert result == (DEFAULT_HR_ZONES["z2_aerobic"][0], DEFAULT_HR_ZONES["z2_aerobic"][1])
 
-    @patch("workout_builder.get_athlete_hr_zones", return_value={
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value={
         "z2_aerobic": [115, 145],
     })
     def test_uses_athlete_zones(self, mock_zones):
         result = get_hr_target_for_intensity("easy")
         assert result == (115, 145)
 
-    @patch("workout_builder.get_athlete_hr_zones", return_value=None)
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
     def test_recovery_maps_to_z1(self, mock_zones):
         result = get_hr_target_for_intensity("recovery")
         assert result == (DEFAULT_HR_ZONES["z1_recovery"][0], DEFAULT_HR_ZONES["z1_recovery"][1])
 
-    @patch("workout_builder.get_athlete_hr_zones", return_value=None)
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
     def test_threshold_maps_to_z4(self, mock_zones):
         result = get_hr_target_for_intensity("threshold")
         assert result == (DEFAULT_HR_ZONES["z4_threshold"][0], DEFAULT_HR_ZONES["z4_threshold"][1])
 
-    @patch("workout_builder.get_athlete_hr_zones", return_value=None)
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
     def test_unknown_intensity_defaults_to_z2(self, mock_zones):
         result = get_hr_target_for_intensity("unknown_intensity")
         assert result == (DEFAULT_HR_ZONES["z2_aerobic"][0], DEFAULT_HR_ZONES["z2_aerobic"][1])

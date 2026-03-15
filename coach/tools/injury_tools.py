@@ -5,10 +5,10 @@ Diagnosis logic is delegated to the LLM — this module provides clinical contex
 severity assessment, and research content for the LLM to reason about.
 """
 
-from mcp_app import mcp
-from web_utils import fetch_page_text, fetch_page_text_validated
-from planner import load_json_file, save_json_file, load_athlete
-from config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
+from ..mcp_app import mcp
+from ..web_utils import fetch_page_text, fetch_page_text_validated
+from ..planner import load_json_file, save_json_file, load_athlete
+from ..config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
                     INJURY_STATUS_OPTIONS, ATHLETE_FILE,
                     PHYSIOPEDIA_BASE_URL)
 from datetime import date

@@ -17,22 +17,22 @@ Also contains helper functions:
 """
 
 from collections import defaultdict
-from mcp_app import mcp
-from garmin_client import garmin_api_call, fetch_activity_hr_zones
-from parsers import parse_activities
-from planner import (
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
+from ..parsers import parse_activities
+from ..planner import (
     get_current_plan,
     load_athlete,
     load_methodology,
     load_coaching_log,
     get_coaching_context,
 )
-from rules import (
+from ..rules import (
     check_weekly_compliance,
     check_safety_rules,
     get_upcoming_events,
 )
-from fitness import (
+from ..fitness import (
     load_fitness_history,
     save_fitness_history,
     calculate_fitness_metrics,
@@ -50,7 +50,7 @@ from fitness import (
     analyze_activity_patterns,
     update_fitness_history,
 )
-from config import (
+from ..config import (
     DATA_DIR,
     TRAINING_CONFIG_FILE,
     ATHLETE_FILE,
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 
 # Import shared helper from strength_tools
-from tools.strength_tools import _get_strength_baseline_data
+from .strength_tools import _get_strength_baseline_data
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
 
     # Enrich anomalies with surrounding context when data is available
     if (daily_loads or sleep_history) and comparison['anomalies']:
-        from fitness import get_day_context
+        from ..fitness import get_day_context
         for anomaly in comparison['anomalies']:
             ctx = get_day_context(
                 anomaly['date'],
@@ -331,7 +331,7 @@ def _build_adaptation_patterns() -> dict:
     Returns boolean flags (backward compat) plus quantified thresholds
     when enough numeric response data is available.
     """
-    from fitness import derive_adaptation_thresholds
+    from ..fitness import derive_adaptation_thresholds
 
     try:
         log = load_coaching_log()
@@ -1043,7 +1043,7 @@ def get_coaching_snapshot() -> str:
                     lambda c: c.get_activities_by_date(refresh_start, today.isoformat())
                 )
                 if raw_refresh:
-                    from parsers import parse_activities as _pa
+                    from ..parsers import parse_activities as _pa
                     refreshed_activities = _pa(raw_refresh)
                     history = update_fitness_history(refreshed_activities)
             except Exception:

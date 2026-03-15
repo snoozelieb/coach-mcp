@@ -10,7 +10,7 @@ import json
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from config import (
+from .config import (
     DATA_DIR,
     ATHLETE_FILE,
     ATHLETE_BASELINE_FILE,

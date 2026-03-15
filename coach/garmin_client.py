@@ -9,7 +9,7 @@ from garminconnect import (
 )
 from dotenv import load_dotenv
 
-from config import TOKEN_DIR, GARMIN_RATE_LIMIT_WAIT_SECS
+from .config import TOKEN_DIR, GARMIN_RATE_LIMIT_WAIT_SECS
 
 load_dotenv()
 
@@ -121,7 +121,7 @@ def fetch_activity_hr_zones(activities: list[dict]) -> list[dict]:
     Returns:
         The same list with hr_time_in_zones added where available.
     """
-    from parsers import parse_hr_time_in_zones
+    from .parsers import parse_hr_time_in_zones
 
     for activity in activities:
         activity_id = activity.get('activity_id')

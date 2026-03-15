@@ -7,8 +7,8 @@ and make the codebase easier to maintain.
 from pathlib import Path
 
 # Paths
-DATA_DIR = Path(__file__).parent / "data"
-TOKEN_DIR = str(Path(__file__).parent / ".garth")  # String for garth compatibility
+DATA_DIR = Path(__file__).parent.parent / "data"
+TOKEN_DIR = str(Path(__file__).parent.parent / ".garth")  # String for garth compatibility
 
 # Data file names
 ATHLETE_FILE = "athlete.json"

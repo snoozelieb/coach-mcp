@@ -5,7 +5,7 @@ These tests have zero MCP dependency and test pure data transformations.
 """
 import json
 import pytest
-from parsers import (
+from coach.parsers import (
     check_setup,
     parse_resting_heart_rate,
     parse_sleep_score,
@@ -438,7 +438,7 @@ class TestCheckSetup:
 
     def test_returns_true_when_all_files_exist(self, tmp_path, monkeypatch):
         """check_setup returns True when athlete.json and training_config.json exist."""
-        import parsers
+        import coach.parsers as parsers
         monkeypatch.setattr(parsers, 'DATA_DIR', tmp_path)
 
         # Create the required files
@@ -449,7 +449,7 @@ class TestCheckSetup:
 
     def test_returns_false_when_athlete_missing(self, tmp_path, monkeypatch):
         """check_setup returns False when athlete.json is missing."""
-        import parsers
+        import coach.parsers as parsers
         monkeypatch.setattr(parsers, 'DATA_DIR', tmp_path)
 
         # Only create training_config.json
@@ -459,7 +459,7 @@ class TestCheckSetup:
 
     def test_returns_false_when_training_config_missing(self, tmp_path, monkeypatch):
         """check_setup returns False when training_config.json is missing."""
-        import parsers
+        import coach.parsers as parsers
         monkeypatch.setattr(parsers, 'DATA_DIR', tmp_path)
 
         # Only create athlete.json
@@ -469,7 +469,7 @@ class TestCheckSetup:
 
     def test_returns_false_when_both_missing(self, tmp_path, monkeypatch):
         """check_setup returns False when both required files are missing."""
-        import parsers
+        import coach.parsers as parsers
         monkeypatch.setattr(parsers, 'DATA_DIR', tmp_path)
 
         # Create no files - empty directory
@@ -477,7 +477,7 @@ class TestCheckSetup:
 
     def test_returns_true_with_extra_files(self, tmp_path, monkeypatch):
         """check_setup returns True even when extra files exist alongside required ones."""
-        import parsers
+        import coach.parsers as parsers
         monkeypatch.setattr(parsers, 'DATA_DIR', tmp_path)
 
         # Create required files plus extras

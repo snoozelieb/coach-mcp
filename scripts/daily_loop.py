@@ -35,10 +35,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import tool functions directly from their modules
-from tools.planning_tools import get_planning_context
-from tools.coaching_tools import get_compliance_report
-from tools.data_tools import get_daily_metrics, get_activities_range
-from planner import (
+from coach.tools.planning_tools import get_planning_context
+from coach.tools.coaching_tools import get_compliance_report
+from coach.tools.data_tools import get_daily_metrics, get_activities_range
+from coach.planner import (
     get_current_plan,
     save_weekly_plan,
 )

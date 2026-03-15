@@ -1,7 +1,7 @@
-from mcp_app import mcp
-from garmin_client import garmin_api_call
-from parsers import parse_activities
-from rules import load_training_config
+from ..mcp_app import mcp
+from ..garmin_client import garmin_api_call
+from ..parsers import parse_activities
+from ..rules import load_training_config
 from datetime import date, timedelta
 import json
 import logging

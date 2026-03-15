@@ -1,5 +1,5 @@
-from mcp_app import mcp
-from planner import (
+from ..mcp_app import mcp
+from ..planner import (
     save_suggestion,
     get_pending_suggestions as get_suggestions,
     approve_suggestion as approve_sug,
