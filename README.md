@@ -13,7 +13,7 @@ An MCP server that connects to Garmin Connect and provides AI-driven training co
 ### 1. Clone & set up virtual environment
 
 ```bash
-git clone https://github.com/your-username/coach-mcp.git
+git clone https://github.com/snoozelieb/coach-mcp.git
 cd coach-mcp
 
 python -m venv .venv
@@ -89,7 +89,7 @@ The coach will pull your Garmin data, ask about your goals and constraints, and 
 | File | Purpose | Git Status |
 |------|---------|------------|
 | `data/methodology.json` | Training pillars and safety rules | Shared (committed) |
-| `data/exercises.json` | Garmin exercise reference data | Shared (committed) |
+| `data/exercises.json` | Garmin exercise reference data | Generated (gitignored) — run `scripts/fetch_exercises.py` |
 | `data/athlete.json` | Your personal info, preferences | Personal (gitignored) |
 | `data/athlete_baseline.json` | Garmin-derived training capacity | Personal (gitignored) |
 | `data/training_config.json` | Your race calendar and current phase | Personal (gitignored) |
