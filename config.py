@@ -33,11 +33,6 @@ ACWR_LOW_THRESHOLD = 0.8    # Below this = undertrained/deconditioned
 ACWR_HIGH_THRESHOLD = 1.3   # Above this = injury risk elevated
 ACWR_DANGER_THRESHOLD = 1.5 # Above this = high injury risk
 
-# Intensity distribution targets (Norwegian model: 80/20)
-INTENSITY_LOW_TARGET_PCT = 80      # Zone 1-2 (recovery + aerobic)
-INTENSITY_MODERATE_TARGET_PCT = 15 # Zone 3 (tempo)
-INTENSITY_HIGH_TARGET_PCT = 5      # Zone 4-5 (threshold + VO2max)
-
 # CTL targets by race type (based on typical demands)
 # These are target CTL values to be race-ready
 CTL_TARGETS = {
@@ -55,19 +50,13 @@ CTL_TARGETS = {
 
 # TSS to hours approximation (varies by intensity, this is average)
 TSS_PER_HOUR_ESTIMATE = 50  # Typical Z2 endurance work
-TSS_PER_HOUR_EASY = 35      # Recovery/Z1 work
-TSS_PER_HOUR_HARD = 80      # Interval/threshold work
 
 # Safe load increase limits (injury prevention)
 MAX_WEEKLY_LOAD_INCREASE_PCT = 15  # Don't increase > 15% week over week
-MAX_ACUTE_LOAD_SPIKE_PCT = 20      # Single day spike limit
 
 # Minimum data requirements
 MIN_DAYS_FOR_CTL = 14      # Need at least 2 weeks for meaningful CTL
 MIN_DAYS_FOR_TRENDS = 28   # Need 4 weeks for trend analysis
-
-# Coaching decision types that require approval
-MAJOR_DECISION_TYPES = ['phase_transition', 'volume_change_major', 'goal_rebalance', 'skip_session']
 
 # Activity classification thresholds
 LONG_EFFORT_MIN_MINS = 60
@@ -190,6 +179,32 @@ def get_sport_group(activity_type: str) -> str:
     return _ACTIVITY_TO_SPORT.get(activity_type, 'other')
 
 
+
+# Polarization targets: Norwegian 80/20 model (Tønnessen et al)
+POLARIZATION_TARGETS = {
+    'low_pct': 80,       # Z1-Z2: easy aerobic
+    'moderate_pct': 15,  # Z3: tempo
+    'high_pct': 5,       # Z4-Z5: threshold/VO2max
+}
+
+# Race proximity weights for sport priority calculation
+# Maps max days_until → weight (closer race = higher weight)
+RACE_TIME_WEIGHTS = [
+    (14, 4),   # ≤2 weeks: peak/taper
+    (28, 3),   # ≤4 weeks: build/peak
+    (56, 2),   # ≤8 weeks: build
+]
+RACE_TIME_WEIGHT_DEFAULT = 1  # >8 weeks: base
+
+# Sleep quality thresholds (Norwegian sports medicine + Garmin sleep science)
+SLEEP_DEEP_PCT_MIN = 15            # 7-day avg deep sleep % for adequate recovery
+SLEEP_DEEP_PCT_EXCELLENT = 18      # Recent nights deep sleep % for excellent recovery
+SLEEP_SCORE_ADEQUATE = 70          # Chronic (7-day) sleep score
+SLEEP_SCORE_GOOD = 75              # Recent nights good threshold
+SLEEP_SCORE_EXCELLENT = 80         # Recent nights excellent threshold
+SLEEP_NAP_EFFECTIVE_MINS = 15      # Minimum nap to count as recovery
+SLEEP_VARIANCE_THRESHOLD_HRS = 2   # Flag inconsistent sleep hygiene
+SLEEP_TARGET_DEFAULT_HRS = 7.5     # Fallback when athlete hasn't set personal target
 
 # Clinical reference sources
 PHYSIOPEDIA_BASE_URL = "https://www.physio-pedia.com"
