@@ -13,6 +13,12 @@ data/fitness_history.json
 data/exercise_library.json
 data/exercises.json
 
+# Investigation output (large JSON files)
+data/investigation/
+
+# MCP builder scaffolding
+.agents/
+
 # Temp files from Claude Code
 tmpclaude-*
 
