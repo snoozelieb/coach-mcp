@@ -17,6 +17,7 @@ from parsers import (
     calculate_baseline,
     parse_user_profile,
     parse_hr_zones,
+    parse_hr_time_in_zones,
 )
 from conftest import (
     SAMPLE_RUNNING_ACTIVITY,
@@ -693,3 +694,59 @@ class TestParseHrZones:
             user_profile={'userData': {'displayName': 'athlete42'}}
         )
         assert result['display_name'] == 'athlete42'
+
+
+class TestParseHrTimeInZones:
+    """Tests for parse_hr_time_in_zones() — per-activity HR time-in-zone parsing."""
+
+    SAMPLE_5_ZONE = [
+        {"zoneNumber": 1, "secsInZone": 4282.946, "zoneLowBoundary": 116},
+        {"zoneNumber": 2, "secsInZone": 7981.892, "zoneLowBoundary": 131},
+        {"zoneNumber": 3, "secsInZone": 2581.99, "zoneLowBoundary": 146},
+        {"zoneNumber": 4, "secsInZone": 864.991, "zoneLowBoundary": 161},
+        {"zoneNumber": 5, "secsInZone": 403.999, "zoneLowBoundary": 176},
+    ]
+
+    def test_valid_5_zone_response(self):
+        result = parse_hr_time_in_zones(self.SAMPLE_5_ZONE)
+        assert result is not None
+        assert result['z1'] == round(4282.946 / 60, 1)
+        assert result['z2'] == round(7981.892 / 60, 1)
+        assert result['z3'] == round(2581.99 / 60, 1)
+        assert result['z4'] == round(864.991 / 60, 1)
+        assert result['z5'] == round(403.999 / 60, 1)
+
+    def test_returns_none_for_empty_list(self):
+        assert parse_hr_time_in_zones([]) is None
+
+    def test_returns_none_for_none(self):
+        assert parse_hr_time_in_zones(None) is None
+
+    def test_returns_none_for_non_list(self):
+        assert parse_hr_time_in_zones("not a list") is None
+
+    def test_skips_entries_missing_zone_number(self):
+        data = [
+            {"secsInZone": 100, "zoneLowBoundary": 116},
+            {"zoneNumber": 2, "secsInZone": 200, "zoneLowBoundary": 131},
+        ]
+        result = parse_hr_time_in_zones(data)
+        assert result == {'z2': round(200 / 60, 1)}
+
+    def test_skips_entries_missing_secs(self):
+        data = [
+            {"zoneNumber": 1, "zoneLowBoundary": 116},
+            {"zoneNumber": 2, "secsInZone": 300, "zoneLowBoundary": 131},
+        ]
+        result = parse_hr_time_in_zones(data)
+        assert 'z1' not in result
+        assert result['z2'] == round(300 / 60, 1)
+
+    def test_seconds_to_minutes_conversion(self):
+        data = [{"zoneNumber": 1, "secsInZone": 3600, "zoneLowBoundary": 100}]
+        result = parse_hr_time_in_zones(data)
+        assert result['z1'] == 60.0
+
+    def test_returns_none_when_all_entries_invalid(self):
+        data = [{"zoneLowBoundary": 116}]
+        assert parse_hr_time_in_zones(data) is None

@@ -12,7 +12,7 @@ Registers MCP tools for:
 """
 
 from mcp_app import mcp
-from garmin_client import garmin_api_call
+from garmin_client import garmin_api_call, fetch_activity_hr_zones
 from parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
 from planner import load_athlete, load_methodology, load_json_file, save_json_file
 from fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
@@ -524,8 +524,9 @@ def get_intensity_distribution(days: int = 28) -> str:
                 'period': f'{start} to {today.isoformat()}',
             })
 
-        # Parse activities
+        # Parse activities and enrich with per-activity HR zone data
         activities = parse_activities(raw_activities)
+        activities = fetch_activity_hr_zones(activities)
 
         # Get HR zones
         hr_zones = get_athlete_hr_zones()

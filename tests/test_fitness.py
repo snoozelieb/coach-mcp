@@ -21,6 +21,7 @@ from fitness import (
     calculate_daily_load,
     calculate_fitness_metrics,
     calculate_ewma,
+    calculate_intensity_distribution,
     migrate_fitness_history,
     load_fitness_history,
     save_fitness_history,
@@ -323,30 +324,34 @@ class TestUpdateFitnessHistoryV2:
 
 class TestPersistSleepData:
     def test_adds_new_records(self):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        two_days_ago = (date.today() - timedelta(days=2)).isoformat()
         history = {'sleep_history': []}
         records = [
-            {'date': '2026-02-05', 'duration_hrs': 7.2, 'score': 82, 'deep_pct': 22, 'rem_pct': 25, 'avg_hr': 55},
-            {'date': '2026-02-06', 'duration_hrs': 6.8, 'score': 75, 'deep_pct': 18, 'rem_pct': 22, 'avg_hr': 57},
+            {'date': two_days_ago, 'duration_hrs': 7.2, 'score': 82, 'deep_pct': 22, 'rem_pct': 25, 'avg_hr': 55},
+            {'date': yesterday, 'duration_hrs': 6.8, 'score': 75, 'deep_pct': 18, 'rem_pct': 22, 'avg_hr': 57},
         ]
         result = persist_sleep_data(records, history)
         assert len(result['sleep_history']) == 2
-        assert result['sleep_history'][0]['date'] == '2026-02-05'
+        assert result['sleep_history'][0]['date'] == two_days_ago
 
     def test_deduplicates_by_date(self):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        two_days_ago = (date.today() - timedelta(days=2)).isoformat()
         history = {
             'sleep_history': [
-                {'date': '2026-02-05', 'duration_hrs': 7.2, 'score': 82},
+                {'date': two_days_ago, 'duration_hrs': 7.2, 'score': 82},
             ],
         }
         records = [
-            {'date': '2026-02-05', 'duration_hrs': 7.5, 'score': 85},  # Duplicate date
-            {'date': '2026-02-06', 'duration_hrs': 6.8, 'score': 75},
+            {'date': two_days_ago, 'duration_hrs': 7.5, 'score': 85},  # Duplicate date
+            {'date': yesterday, 'duration_hrs': 6.8, 'score': 75},
         ]
         result = persist_sleep_data(records, history)
         assert len(result['sleep_history']) == 2
         # Original record preserved (not overwritten)
-        feb5 = next(r for r in result['sleep_history'] if r['date'] == '2026-02-05')
-        assert feb5['score'] == 82
+        dup = next(r for r in result['sleep_history'] if r['date'] == two_days_ago)
+        assert dup['score'] == 82
 
     def test_prunes_old_records(self):
         history = {
@@ -541,3 +546,106 @@ class TestLoadFitnessHistory:
         assert result['schema_version'] == 2
         assert result['daily_loads'] == {}
         assert result['sleep_history'] == []
+
+
+# ── Intensity Distribution with Zone Data ─────────────────────
+
+HR_ZONES = {
+    'z1_recovery': [0, 120],
+    'z2_aerobic': [120, 140],
+    'z3_tempo': [140, 155],
+    'z4_threshold': [155, 170],
+    'z5_max': [170, 200],
+}
+
+
+class TestIntensityDistributionWithZoneData:
+    """Tests for calculate_intensity_distribution() with hr_time_in_zones."""
+
+    def test_uses_zone_data_when_present(self):
+        """Activity with hr_time_in_zones should use actual zone data, not avg HR."""
+        activities = [{
+            'duration_mins': 120,
+            'avg_hr': 135,  # Would classify as Z2 (all low) by avg HR
+            'type': 'cycling',
+            'hr_time_in_zones': {
+                'z1': 30, 'z2': 40, 'z3': 20, 'z4': 20, 'z5': 10,
+            },
+        }]
+        result = calculate_intensity_distribution(activities, HR_ZONES)
+        zones = result['time_in_zones_mins']
+        assert zones['low'] == 70   # z1 + z2
+        assert zones['moderate'] == 20   # z3
+        assert zones['high'] == 30  # z4 + z5
+        assert result['data_source']['zone_data'] == 1
+        assert result['data_source']['avg_hr'] == 0
+
+    def test_fallback_to_avg_hr_without_zone_data(self):
+        """Without hr_time_in_zones, falls back to avg HR classification."""
+        activities = [{
+            'duration_mins': 60,
+            'avg_hr': 135,
+            'type': 'cycling',
+        }]
+        result = calculate_intensity_distribution(activities, HR_ZONES)
+        assert result['time_in_zones_mins']['low'] == 60
+        assert result['data_source']['avg_hr'] == 1
+        assert result['data_source']['zone_data'] == 0
+
+    def test_mixed_activities(self):
+        """Some activities with zone data, some without."""
+        activities = [
+            {
+                'duration_mins': 60,
+                'avg_hr': 135,
+                'type': 'cycling',
+                'hr_time_in_zones': {'z1': 10, 'z2': 20, 'z3': 15, 'z4': 10, 'z5': 5},
+            },
+            {
+                'duration_mins': 30,
+                'avg_hr': 160,
+                'type': 'running',
+                # No hr_time_in_zones — falls back to avg HR
+            },
+        ]
+        result = calculate_intensity_distribution(activities, HR_ZONES)
+        assert result['data_source']['zone_data'] == 1
+        assert result['data_source']['avg_hr'] == 1
+        # Zone data activity: low=30, mod=15, high=15
+        # Avg HR activity: 160 > z3_upper (155) → high=30
+        assert result['time_in_zones_mins']['low'] == 30
+        assert result['time_in_zones_mins']['moderate'] == 15
+        assert result['time_in_zones_mins']['high'] == 45
+
+    def test_below_z1_time_counted_as_low(self):
+        """Time not accounted for in zones (below Z1 floor) = low intensity."""
+        activities = [{
+            'duration_mins': 100,
+            'avg_hr': 120,
+            'type': 'cycling',
+            'hr_time_in_zones': {'z1': 30, 'z2': 20, 'z3': 10},
+            # Only 60 mins accounted, 40 mins unaccounted → added to low
+        }]
+        result = calculate_intensity_distribution(activities, HR_ZONES)
+        assert result['time_in_zones_mins']['low'] == 90  # 30 + 20 + 40 unaccounted
+        assert result['time_in_zones_mins']['moderate'] == 10
+
+    def test_data_source_counts(self):
+        """data_source should count activities per classification method."""
+        activities = [
+            {'duration_mins': 60, 'avg_hr': 130, 'type': 'cycling',
+             'hr_time_in_zones': {'z1': 30, 'z2': 30}},
+            {'duration_mins': 30, 'avg_hr': 150, 'type': 'running'},
+            {'duration_mins': 20, 'avg_hr': 0, 'type': 'yoga'},
+        ]
+        result = calculate_intensity_distribution(activities, HR_ZONES)
+        assert result['data_source'] == {
+            'zone_data': 1,
+            'avg_hr': 1,
+            'type_estimate': 1,
+        }
+
+    def test_empty_activities(self):
+        """Empty activities list returns data_source with all zeros."""
+        result = calculate_intensity_distribution([], HR_ZONES)
+        assert result.get('data_source') is None or result.get('zone_distribution') == {}

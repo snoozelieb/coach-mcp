@@ -108,6 +108,40 @@ def garmin_api_call(fn, *args, **kwargs):
         return fn(client, *args, **kwargs)
 
 
+def fetch_activity_hr_zones(activities: list[dict]) -> list[dict]:
+    """Enrich parsed activities with hr_time_in_zones from Garmin API.
+
+    Calls get_activity_hr_in_timezones() per activity and attaches the parsed
+    result as activity['hr_time_in_zones']. Failures are logged and skipped
+    (the activity falls back to avg HR classification in intensity distribution).
+
+    Args:
+        activities: List of parsed activity dicts (must have 'activity_id').
+
+    Returns:
+        The same list with hr_time_in_zones added where available.
+    """
+    from parsers import parse_hr_time_in_zones
+
+    for activity in activities:
+        activity_id = activity.get('activity_id')
+        if not activity_id:
+            continue
+        try:
+            raw = garmin_api_call(
+                lambda c, aid=activity_id: c.get_activity_hr_in_timezones(aid)
+            )
+            zones = parse_hr_time_in_zones(raw)
+            if zones:
+                activity['hr_time_in_zones'] = zones
+        except Exception:
+            logger.warning(
+                "Failed to fetch HR zones for activity %s", activity_id,
+                exc_info=True,
+            )
+    return activities
+
+
 def schedule_workout(workout_id: int, schedule_date: str) -> dict:
     """
     Schedule a workout to a specific date on Garmin Connect calendar.

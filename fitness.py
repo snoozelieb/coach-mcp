@@ -29,6 +29,15 @@ from config import (
     CTL_TARGETS,
     TSS_PER_HOUR_ESTIMATE,
     MAX_WEEKLY_LOAD_INCREASE_PCT,
+    POLARIZATION_TARGETS,
+    SLEEP_DEEP_PCT_MIN,
+    SLEEP_DEEP_PCT_EXCELLENT,
+    SLEEP_SCORE_ADEQUATE,
+    SLEEP_SCORE_GOOD,
+    SLEEP_SCORE_EXCELLENT,
+    SLEEP_NAP_EFFECTIVE_MINS,
+    SLEEP_VARIANCE_THRESHOLD_HRS,
+    SLEEP_TARGET_DEFAULT_HRS,
     get_sport_group,
 )
 from garmin_client import garmin_api_call
@@ -293,12 +302,27 @@ def calculate_intensity_distribution(
 
     total_duration = 0
 
+    # Track how many activities used each data source
+    source_zone_data = 0
+    source_avg_hr = 0
+    source_type_estimate = 0
+
     for activity in activities:
         duration = activity.get('duration_mins', 0) or 0
         avg_hr = activity.get('avg_hr', 0) or 0
         total_duration += duration
 
-        if avg_hr == 0:
+        hr_zones_data = activity.get('hr_time_in_zones')
+        if hr_zones_data:
+            # Actual time-in-zone from Garmin (preferred)
+            source_zone_data += 1
+            time_low += hr_zones_data.get('z1', 0) + hr_zones_data.get('z2', 0)
+            time_moderate += hr_zones_data.get('z3', 0)
+            time_high += hr_zones_data.get('z4', 0) + hr_zones_data.get('z5', 0)
+            # Time below Z1 floor (or unaccounted) = low intensity
+            accounted = sum(hr_zones_data.values())
+            time_low += max(0, duration - accounted)
+        elif avg_hr == 0:
             # No HR data - estimate from activity type
             activity_type = activity.get('type', '').lower()
             low_intensity_types = {'yoga', 'pilates', 'stretching', 'walking', 'breathwork'}
@@ -306,12 +330,16 @@ def calculate_intensity_distribution(
 
             if activity_type in low_intensity_types:
                 time_low += duration
+                source_type_estimate += 1
             elif activity_type in high_intensity_types:
                 time_high += duration
+                source_type_estimate += 1
             else:
                 time_unknown += duration
+                source_type_estimate += 1
         else:
-            # Use HR to determine zone
+            # Fallback: classify entire activity by avg HR
+            source_avg_hr += 1
             z2_upper = athlete_hr_zones.get('z2_aerobic', [0, 140])[1]
             z3_upper = athlete_hr_zones.get('z3_tempo', [0, 155])[1]
 
@@ -343,9 +371,9 @@ def calculate_intensity_distribution(
     # Calculate polarization score (how well they follow 80/20)
     # Perfect score = 100 when hitting exactly 80/15/5
     # Penalize deviation from target
-    low_deviation = abs(pct_low - 80)
-    moderate_deviation = abs(pct_moderate - 15)
-    high_deviation = abs(pct_high - 5)
+    low_deviation = abs(pct_low - POLARIZATION_TARGETS['low_pct'])
+    moderate_deviation = abs(pct_moderate - POLARIZATION_TARGETS['moderate_pct'])
+    high_deviation = abs(pct_high - POLARIZATION_TARGETS['high_pct'])
     total_deviation = low_deviation + moderate_deviation + high_deviation
     polarization_score = max(0, round(100 - total_deviation, 0))
 
@@ -374,8 +402,13 @@ def calculate_intensity_distribution(
         },
         'total_duration_mins': round(total_duration),
         'polarization_score': int(polarization_score),
-        'target_distribution': '80% low / 15% moderate / 5% high',
+        'target_distribution': f"{POLARIZATION_TARGETS['low_pct']}% low / {POLARIZATION_TARGETS['moderate_pct']}% moderate / {POLARIZATION_TARGETS['high_pct']}% high",
         'recommendation': recommendation,
+        'data_source': {
+            'zone_data': source_zone_data,
+            'avg_hr': source_avg_hr,
+            'type_estimate': source_type_estimate,
+        },
     }
 
 
@@ -881,16 +914,6 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
     }
 
 
-def get_load_athlete_max_hr() -> int | None:
-    """Load athlete's max HR from profile."""
-    athlete_path = DATA_DIR / ATHLETE_FILE
-    if athlete_path.exists():
-        with open(athlete_path) as f:
-            athlete = json.load(f)
-        return athlete.get('personal', {}).get('max_hr')
-    return None
-
-
 def get_athlete_hr_zones() -> dict[str, list[int]] | None:
     """Load athlete's HR zones from profile."""
     athlete_path = DATA_DIR / ATHLETE_FILE
@@ -1027,7 +1050,7 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
         target_hrs = round(personalized_need_mins / 60, 1)
         target_source = 'garmin_personalized'
     else:
-        target_hrs = 7.5  # Fallback
+        target_hrs = SLEEP_TARGET_DEFAULT_HRS
         target_source = 'default'
 
     # Calculate deficit against PERSONALIZED target
@@ -1038,7 +1061,7 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
     quality_issues = []
 
     # Deep sleep check (optimal 16-33% for adults)
-    if avg_deep_pct < 15:
+    if avg_deep_pct < SLEEP_DEEP_PCT_MIN:
         quality_issues.append(f'Low deep sleep ({avg_deep_pct}%) - physical recovery impaired')
     elif avg_deep_pct < 20:
         quality_issues.append(f'Borderline deep sleep ({avg_deep_pct}%)')
@@ -1055,22 +1078,22 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
     durations = [r['duration_hrs'] for r in sleep_records]
     if len(durations) > 1:
         variance = max(durations) - min(durations)
-        if variance > 2:
+        if variance > SLEEP_VARIANCE_THRESHOLD_HRS:
             quality_issues.append(f'Inconsistent sleep ({variance:.1f}hr variance) - poor sleep hygiene')
 
     # CHRONIC STATUS: 7-day average for overall training load decisions
     quantity_ok = avg_duration >= (target_hrs - 0.5)  # Within 30min of target
-    quality_ok = avg_score and avg_score >= 70 and avg_deep_pct >= 15
+    quality_ok = avg_score and avg_score >= SLEEP_SCORE_ADEQUATE and avg_deep_pct >= SLEEP_DEEP_PCT_MIN
 
     # ACUTE STATUS: Recent nights (last 2-3) for "can I do hard session tomorrow?"
     # High scores (80+) with good deep sleep can override moderate duration shortfall
-    recent_quality_excellent = recent_avg_score and recent_avg_score >= 80 and recent_avg_deep >= 18
-    recent_quality_good = recent_avg_score and recent_avg_score >= 75 and recent_avg_deep >= 15
+    recent_quality_excellent = recent_avg_score and recent_avg_score >= SLEEP_SCORE_EXCELLENT and recent_avg_deep >= SLEEP_DEEP_PCT_EXCELLENT
+    recent_quality_good = recent_avg_score and recent_avg_score >= SLEEP_SCORE_GOOD and recent_avg_deep >= SLEEP_DEEP_PCT_MIN
     recent_duration_ok = recent_avg_duration >= 6.5
     improving_trend = trend > 0.3  # Getting noticeably more sleep
 
     # Nap bonus: a nap today adds to acute recovery capacity
-    nap_recovery_boost = today_nap_mins >= 15  # 15+ min nap counts
+    nap_recovery_boost = today_nap_mins >= SLEEP_NAP_EFFECTIVE_MINS
 
     # CHRONIC status (7-day) - unchanged thresholds
     if avg_duration < 6:

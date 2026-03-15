@@ -379,6 +379,31 @@ def parse_user_profile(
     return result
 
 
+def parse_hr_time_in_zones(hr_tz_data: list) -> dict | None:
+    """
+    Parse per-activity HR time-in-zones from Garmin API response.
+
+    Garmin's get_activity_hr_in_timezones() returns a list of:
+        {"zoneNumber": 1, "secsInZone": 4282.946, "zoneLowBoundary": 116}
+
+    Returns:
+        Dict with z1..z5 keys mapped to minutes, or None if data is invalid/empty.
+    """
+    if not hr_tz_data or not isinstance(hr_tz_data, list):
+        return None
+
+    result = {}
+    for entry in hr_tz_data:
+        zone_num = entry.get('zoneNumber')
+        secs = entry.get('secsInZone')
+        if zone_num is None or secs is None:
+            continue
+        key = f'z{zone_num}'
+        result[key] = round(secs / 60, 1)
+
+    return result if result else None
+
+
 def parse_hr_zones(hr_zones_data: list) -> dict | None:
     """
     Parse HR zones from Garmin biometric API response.

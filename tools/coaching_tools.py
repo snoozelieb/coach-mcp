@@ -18,7 +18,7 @@ Also contains helper functions:
 
 from collections import defaultdict
 from mcp_app import mcp
-from garmin_client import garmin_api_call
+from garmin_client import garmin_api_call, fetch_activity_hr_zones
 from parsers import parse_activities
 from planner import (
     get_current_plan,
@@ -54,6 +54,8 @@ from config import (
     ATHLETE_FILE,
     CTL_TARGETS,
     DEFAULT_EQUIVALENCE_GROUPS,
+    RACE_TIME_WEIGHTS,
+    RACE_TIME_WEIGHT_DEFAULT,
     get_sport_group,
 )
 from datetime import date, timedelta
@@ -414,15 +416,12 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
         priority_weights = {'A': 4, 'B': 3, 'C': 2, 'D': 1}
         priority_weight = priority_weights.get(priority, 1)
 
-        # Time-based weight (races in next 8 weeks get more weight)
-        if days_until <= 14:
-            time_weight = 4  # Very close - peak/taper
-        elif days_until <= 28:
-            time_weight = 3  # Close - build/peak
-        elif days_until <= 56:
-            time_weight = 2  # Medium - build
-        else:
-            time_weight = 1  # Far - base
+        # Time-based weight (closer race = higher weight)
+        time_weight = RACE_TIME_WEIGHT_DEFAULT
+        for max_days, weight in RACE_TIME_WEIGHTS:
+            if days_until <= max_days:
+                time_weight = weight
+                break
 
         score = priority_weight * time_weight
 
@@ -1094,7 +1093,8 @@ def get_coaching_snapshot() -> str:
             athlete = {}
             relevant_injuries = []
 
-        # 9. Intensity distribution (last 7 days)
+        # 9. Intensity distribution (last 7 days) — enrich with per-activity zone data
+        activities_this_week = fetch_activity_hr_zones(activities_this_week)
         athlete_hr_zones = get_athlete_hr_zones()
         intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
 
