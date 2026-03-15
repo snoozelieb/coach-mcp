@@ -16,7 +16,9 @@ from config import (
     ATHLETE_BASELINE_FILE,
     METHODOLOGY_FILE,
     COACHING_LOG_FILE,
+    TRAINING_CONFIG_FILE,
     RACE_TEMPLATE_WINDOW_DAYS,
+    RACE_TYPE_SPORT_MAP,
 )
 import logging
 
@@ -538,3 +540,121 @@ def create_empty_week_template() -> dict[str, Any]:
         'generated_by': 'LLM',
         'last_updated': today.isoformat(),
     }
+
+
+def get_week_constraints(
+    athlete: dict = None,
+    training_config: dict = None,
+    methodology: dict = None,
+    injuries: list = None,
+    compliance_diagnostics: dict = None,
+) -> dict:
+    """Return constraints and requirements for the LLM to build a week.
+
+    Assembles structured reference data from athlete profile, training config,
+    and methodology. The LLM uses this to construct the actual plan.
+
+    All parameters are optional — loads from files if not provided.
+    """
+    if athlete is None:
+        athlete = load_athlete()
+    if training_config is None:
+        tc_path = DATA_DIR / TRAINING_CONFIG_FILE
+        training_config = json.loads(tc_path.read_text()) if tc_path.exists() else {}
+    if methodology is None:
+        methodology = load_methodology()
+    if injuries is None:
+        injuries = []
+
+    constraints = {}
+
+    # Blocked days from life constraints
+    life_constraints = athlete.get('life_constraints', {})
+    blocked = life_constraints.get('blocked_days', [])
+    if blocked:
+        constraints['blocked_days'] = blocked
+
+    # Available training days
+    available_days = life_constraints.get('available_days')
+    if available_days:
+        constraints['available_days'] = available_days
+
+    # Pillar requirements
+    pillars = athlete.get('training_pillars', {})
+    if pillars:
+        pillar_reqs = {}
+        for name, config in pillars.items():
+            req = {'types': config.get('types', [])}
+            target_type = config.get('target_type', 'sessions')
+            if target_type == 'sessions':
+                req['min_sessions'] = config.get('target_sessions_per_week', 0)
+            elif target_type == 'hours':
+                req['min_mins'] = round(config.get('target_hours_per_week', 0) * 60)
+            elif target_type == 'minutes':
+                req['min_mins'] = config.get('target_minutes_per_week', 0)
+            pillar_reqs[name] = req
+        constraints['pillar_requirements'] = pillar_reqs
+
+    # Current phase
+    current_block = training_config.get('current_block', {})
+    phase = current_block.get('phase', 'base')
+    constraints['phase'] = phase
+
+    # A-race info and key sessions from race template
+    events = training_config.get('events', [])
+    a_race = next((e for e in events if e.get('priority') == 'A'), None)
+    if a_race:
+        race_type = a_race.get('type', 'default')
+        template = methodology.get('race_templates', {}).get(race_type, {})
+        key_sessions = template.get('key_sessions', [])
+        phase_guidance = template.get('phase_guidance', {}).get(phase, '')
+
+        constraints['a_race'] = {
+            'name': a_race.get('name'),
+            'type': race_type,
+            'date': a_race.get('date'),
+            'sport': RACE_TYPE_SPORT_MAP.get(race_type),
+        }
+        if key_sessions:
+            constraints['key_session_types'] = [
+                s.get('type') for s in key_sessions if s.get('priority') in ('critical', 'high')
+            ]
+        if phase_guidance:
+            constraints['phase_guidance'] = phase_guidance
+
+    # Session guidelines (phase-appropriate parameters)
+    session_guidelines = methodology.get('session_guidelines', {})
+    if session_guidelines:
+        phase_guidelines = {}
+        for session_type, phases in session_guidelines.items():
+            if session_type.startswith('_'):
+                continue
+            guideline = phases.get(phase)
+            if guideline:
+                phase_guidelines[session_type] = guideline
+        if phase_guidelines:
+            constraints['session_guidelines'] = phase_guidelines
+
+    # Active injuries / restrictions
+    if injuries:
+        active = [i for i in injuries if i.get('status') in ('active', 'improving')]
+        if active:
+            constraints['injury_restrictions'] = [
+                {
+                    'name': i.get('name', 'unknown'),
+                    'severity': i.get('severity'),
+                    'restrictions': i.get('restrictions', []),
+                }
+                for i in active
+            ]
+
+    # Chronic compliance misses (from diagnostics)
+    if compliance_diagnostics and compliance_diagnostics.get('per_pillar'):
+        chronic = [
+            name for name, data in compliance_diagnostics['per_pillar'].items()
+            if data.get('chronic_miss')
+        ]
+        if chronic:
+            constraints['chronic_misses'] = chronic
+
+    return constraints

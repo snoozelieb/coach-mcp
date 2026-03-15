@@ -6,7 +6,8 @@ from parsers import (parse_activities, parse_training_readiness,
                      parse_resting_heart_rate, parse_sleep_score, parse_body_battery)
 from planner import (build_planning_context, get_current_plan, save_weekly_plan,
                      create_empty_week_template, get_pending_suggestions as get_suggestions,
-                     load_athlete, load_methodology, load_coaching_log, save_coaching_log)
+                     load_athlete, load_methodology, load_coaching_log, save_coaching_log,
+                     get_week_constraints as _get_week_constraints)
 from rules import load_training_config, check_weekly_compliance
 from fitness import load_fitness_history, calculate_fitness_metrics
 from config import DATA_DIR, RECENT_ACTIVITY_DAYS, TRAINING_CONFIG_FILE
@@ -903,4 +904,64 @@ def push_plan_to_garmin() -> str:
 
     except Exception as e:
         logger.exception("push_plan_to_garmin failed")
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool()
+def get_week_constraints() -> str:
+    """Get constraints and requirements for building next week's plan.
+
+    Returns blocked days, pillar requirements, phase-appropriate session
+    guidelines with duration ranges and principles, key session types from
+    race template, injury restrictions, and chronic compliance misses.
+
+    The LLM assembles the actual plan using these constraints as guardrails.
+    Call this before building or adjusting a weekly plan.
+
+    Returns:
+        JSON with structured constraints for week planning.
+    """
+    try:
+        athlete = load_athlete()
+        injuries = athlete.get('injury_history', [])
+
+        # Load compliance diagnostics if available (from coaching snapshot)
+        compliance_diagnostics = None
+        try:
+            from tools.coaching_tools import _build_compliance_diagnostics
+            training_pillars = athlete.get('training_pillars')
+            if training_pillars:
+                history = load_fitness_history()
+                daily_loads = history.get('daily_loads', {})
+                if daily_loads:
+                    today = date.today()
+                    weekly_activities_4wk = []
+                    for week_offset in range(4):
+                        w_start = today - timedelta(days=today.weekday() + week_offset * 7)
+                        w_end = w_start + timedelta(days=7)
+                        week_acts = []
+                        for day_data in daily_loads.values():
+                            if not isinstance(day_data, dict):
+                                continue
+                            for act in day_data.get('activities', []):
+                                act_date = act.get('date', '')
+                                if w_start.isoformat() <= act_date < w_end.isoformat():
+                                    week_acts.append(act)
+                        weekly_activities_4wk.append(week_acts)
+                    compliance_diagnostics = _build_compliance_diagnostics(
+                        weekly_activities_4wk, training_pillars
+                    )
+        except Exception:
+            logger.warning("Could not load compliance diagnostics", exc_info=True)
+
+        constraints = _get_week_constraints(
+            athlete=athlete,
+            injuries=injuries,
+            compliance_diagnostics=compliance_diagnostics,
+        )
+
+        return json.dumps(constraints, indent=2)
+
+    except Exception as e:
+        logger.exception("get_week_constraints failed")
         return json.dumps({'error': str(e)})

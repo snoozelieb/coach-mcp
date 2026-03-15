@@ -753,5 +753,44 @@
         }
       }
     }
+  },
+  "session_guidelines": {
+    "_description": "Phase-appropriate session parameters. The LLM uses these as starting points, then adapts based on athlete context (CTL, compliance, injuries).",
+    "long_ride": {
+      "base": {"duration_range": [90, 150], "intensity": "easy", "hr_zone": "Z2", "principle": "Aerobic base. Scale duration to current CTL."},
+      "build": {"duration_range": [120, 180], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Sustained endurance. Include tempo blocks if CTL > 40."},
+      "peak": {"duration_range": [150, 240], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Race-specific duration. Practice nutrition strategy."},
+      "taper": {"duration_range": [60, 90], "intensity": "easy", "hr_zone": "Z2", "principle": "Maintain feel. Reduce volume 40-60%."}
+    },
+    "long_run": {
+      "base": {"duration_range": [60, 90], "intensity": "easy", "hr_zone": "Z2", "principle": "Time on feet. Walk breaks OK for beginners."},
+      "build": {"duration_range": [75, 120], "intensity": "easy", "hr_zone": "Z2", "principle": "Progressive distance. Last 20min at goal pace if feeling good."},
+      "peak": {"duration_range": [90, 150], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Race-specific terrain and nutrition practice."},
+      "taper": {"duration_range": [40, 60], "intensity": "easy", "hr_zone": "Z2", "principle": "Short, easy. Maintain neuromuscular feel."}
+    },
+    "intervals": {
+      "base": {"duration_range": [30, 45], "intensity": "moderate", "hr_zone": "Z3-Z4", "principle": "Tempo only in base. No VO2max work."},
+      "build": {"duration_range": [45, 75], "intensity": "hard", "hr_zone": "Z4-Z5", "principle": "VO2max stimulus. Beginner: 3x3min. Experienced: 5x5min."},
+      "peak": {"duration_range": [45, 60], "intensity": "hard", "hr_zone": "Z4-Z5", "principle": "Race-specific intensity. Reduce interval volume, maintain intensity."},
+      "taper": {"duration_range": [30, 40], "intensity": "moderate", "hr_zone": "Z3-Z4", "principle": "Short openers only. 3-4 short efforts to keep sharpness."}
+    },
+    "strength": {
+      "base": {"duration_range": [45, 60], "intensity": "moderate", "principle": "Foundation. Compound lifts, moderate load, good form."},
+      "build": {"duration_range": [45, 60], "intensity": "moderate", "principle": "Sport-specific. Heavier loads, fewer reps, explosive movements."},
+      "peak": {"duration_range": [30, 45], "intensity": "moderate", "principle": "Maintenance only. Reduce volume 50%, keep intensity."},
+      "taper": {"duration_range": [20, 30], "intensity": "easy", "principle": "Light activation. Bodyweight or very light loads."}
+    },
+    "mobility": {
+      "base": {"duration_range": [20, 45], "intensity": "easy", "principle": "Address limitations. Focus on hip/ankle/thoracic mobility."},
+      "build": {"duration_range": [20, 30], "intensity": "easy", "principle": "Maintenance. Pre/post workout routines."},
+      "peak": {"duration_range": [15, 30], "intensity": "easy", "principle": "Recovery-focused. Gentle stretching and foam rolling."},
+      "taper": {"duration_range": [20, 30], "intensity": "easy", "principle": "Daily mobility. Reduce stiffness from reduced training."}
+    },
+    "recovery_ride": {
+      "base": {"duration_range": [30, 60], "intensity": "easy", "hr_zone": "Z1", "principle": "Active recovery. Keep HR below Z2."},
+      "build": {"duration_range": [30, 60], "intensity": "easy", "hr_zone": "Z1", "principle": "Flush legs after hard sessions."},
+      "peak": {"duration_range": [30, 45], "intensity": "easy", "hr_zone": "Z1", "principle": "Very easy. Mental recovery as much as physical."},
+      "taper": {"duration_range": [20, 30], "intensity": "easy", "hr_zone": "Z1", "principle": "Optional. Only if legs feel heavy."}
+    }
   }
 }

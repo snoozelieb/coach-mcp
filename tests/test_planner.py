@@ -14,6 +14,7 @@ from planner import (
     create_empty_week_template,
     save_json_file,
     load_json_file,
+    get_week_constraints,
     DATA_DIR,
 )
 import planner
@@ -243,3 +244,131 @@ class TestUpdateWeeklyPlanValidation:
         valid_plan = {'days': {'2026-02-08': {'planned': {'type': 'running'}}}}
         result = json.loads(update_weekly_plan(json.dumps(valid_plan)))
         assert result['status'] == 'success'
+
+
+# ---------------------------------------------------------------------------
+# get_week_constraints
+# ---------------------------------------------------------------------------
+
+class TestGetWeekConstraints:
+    def test_basic_constraints(self):
+        athlete = {
+            'life_constraints': {'blocked_days': ['Wednesday']},
+            'training_pillars': {
+                'strength': {
+                    'target_type': 'sessions',
+                    'target_sessions_per_week': 2,
+                    'types': ['strength_training'],
+                },
+            },
+        }
+        training_config = {
+            'current_block': {'phase': 'build'},
+        }
+        methodology = {
+            'session_guidelines': {
+                'strength': {
+                    'build': {'duration_range': [45, 60], 'intensity': 'moderate'},
+                },
+            },
+        }
+        result = get_week_constraints(
+            athlete=athlete,
+            training_config=training_config,
+            methodology=methodology,
+        )
+        assert result['blocked_days'] == ['Wednesday']
+        assert result['phase'] == 'build'
+        assert 'strength' in result['pillar_requirements']
+        assert result['pillar_requirements']['strength']['min_sessions'] == 2
+        assert 'strength' in result['session_guidelines']
+
+    def test_empty_athlete(self):
+        result = get_week_constraints(athlete={}, training_config={}, methodology={})
+        assert result['phase'] == 'base'
+        assert 'blocked_days' not in result
+        assert 'pillar_requirements' not in result
+
+    def test_injury_restrictions(self):
+        injuries = [
+            {'name': 'knee', 'status': 'active', 'severity': 'moderate',
+             'restrictions': ['no running']},
+            {'name': 'old_ankle', 'status': 'resolved'},  # Should be excluded
+        ]
+        result = get_week_constraints(
+            athlete={}, training_config={}, methodology={},
+            injuries=injuries,
+        )
+        assert len(result['injury_restrictions']) == 1
+        assert result['injury_restrictions'][0]['name'] == 'knee'
+
+    def test_a_race_key_sessions(self):
+        training_config = {
+            'current_block': {'phase': 'build'},
+            'events': [
+                {'name': 'sani2c', 'priority': 'A', 'type': 'multi_day_mtb', 'date': '2026-05-01'},
+            ],
+        }
+        methodology = {
+            'race_templates': {
+                'multi_day_mtb': {
+                    'key_sessions': [
+                        {'type': 'long_ride', 'priority': 'critical'},
+                        {'type': 'intervals', 'priority': 'high'},
+                        {'type': 'recovery', 'priority': 'medium'},
+                    ],
+                    'phase_guidance': {'build': 'Focus on sustained power.'},
+                },
+            },
+        }
+        result = get_week_constraints(
+            athlete={}, training_config=training_config, methodology=methodology,
+        )
+        assert result['a_race']['name'] == 'sani2c'
+        assert result['a_race']['sport'] == 'cycling'
+        assert 'long_ride' in result['key_session_types']
+        assert 'intervals' in result['key_session_types']
+        assert 'recovery' not in result['key_session_types']  # medium priority excluded
+        assert result['phase_guidance'] == 'Focus on sustained power.'
+
+    def test_chronic_misses_from_diagnostics(self):
+        compliance_diagnostics = {
+            'per_pillar': {
+                'strength': {'met_weeks': 1, 'total_weeks': 4, 'chronic_miss': True},
+                'endurance': {'met_weeks': 4, 'total_weeks': 4, 'chronic_miss': False},
+            },
+        }
+        result = get_week_constraints(
+            athlete={}, training_config={}, methodology={},
+            compliance_diagnostics=compliance_diagnostics,
+        )
+        assert result['chronic_misses'] == ['strength']
+
+    def test_hours_pillar_converted_to_mins(self):
+        athlete = {
+            'training_pillars': {
+                'endurance': {
+                    'target_type': 'hours',
+                    'target_hours_per_week': 4,
+                    'types': ['cycling', 'running'],
+                },
+            },
+        }
+        result = get_week_constraints(athlete=athlete, training_config={}, methodology={})
+        assert result['pillar_requirements']['endurance']['min_mins'] == 240
+
+    def test_session_guidelines_filtered_by_phase(self):
+        methodology = {
+            'session_guidelines': {
+                '_description': 'should be skipped',
+                'intervals': {
+                    'base': {'intensity': 'moderate'},
+                    'build': {'intensity': 'hard'},
+                },
+            },
+        }
+        training_config = {'current_block': {'phase': 'base'}}
+        result = get_week_constraints(
+            athlete={}, training_config=training_config, methodology=methodology,
+        )
+        assert result['session_guidelines']['intervals']['intensity'] == 'moderate'
