@@ -109,22 +109,6 @@ def fetch_garmin_exercises():
     return response.json()
 
 
-def get_muscles_for_category(category: str) -> list:
-    """Get muscle groups for an exercise category."""
-    category_upper = category.upper()
-
-    # Direct match
-    if category_upper in MUSCLE_MAPPINGS:
-        return MUSCLE_MAPPINGS[category_upper]
-
-    # Partial match
-    for key, muscles in MUSCLE_MAPPINGS.items():
-        if key in category_upper or category_upper in key:
-            return muscles
-
-    return []
-
-
 def get_injury_prevention_for_exercise(exercise_name: str) -> list:
     """Check if an exercise is good for injury prevention."""
     exercise_upper = exercise_name.upper()

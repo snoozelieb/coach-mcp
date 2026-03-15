@@ -462,14 +462,16 @@ class TestAnalyzeSportPriorities:
     def test_closer_race_gets_higher_volume_pct(self):
         """A close B-race should get more volume than a far A-race when time_weight
         dominates. Verify the actual percentages, not just has_multi_sport."""
+        close_date = (date.today() + timedelta(days=13)).isoformat()
+        far_date = (date.today() + timedelta(days=200)).isoformat()
         events = [
-            {'name': 'far_race', 'date': '2026-09-01', 'priority': 'A', 'type': 'multi_day_mtb'},
-            {'name': 'close_race', 'date': '2026-02-20', 'priority': 'B', 'type': 'trail_ultra'},
+            {'name': 'far_race', 'date': far_date, 'priority': 'A', 'type': 'multi_day_mtb'},
+            {'name': 'close_race', 'date': close_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
         result = _analyze_sport_priorities(events, {}, {})
 
         # close B-race (13 days away): priority_weight=3, time_weight=4 → score=12
-        # far A-race (206 days away): priority_weight=4, time_weight=1 → score=4
+        # far A-race (200 days away): priority_weight=4, time_weight=1 → score=4
         running = result['sports']['running']
         cycling = result['sports']['cycling']
         assert running['volume_pct'] > cycling['volume_pct']
