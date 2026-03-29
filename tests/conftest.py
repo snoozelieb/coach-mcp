@@ -2,6 +2,7 @@
 import json
 import pytest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,23 @@ SAMPLE_PARSED_ACTIVITIES = [
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+class _MockContext:
+    """Lightweight mock for fastmcp.Context used in direct tool calls."""
+    def __init__(self):
+        self.report_progress = AsyncMock()
+        self.info = AsyncMock()
+        self.debug = AsyncMock()
+        self.warning = AsyncMock()
+        self.error = AsyncMock()
+        self.log = AsyncMock()
+
+
+@pytest.fixture
+def mock_ctx():
+    """Provide a mock fastmcp Context for async tool tests."""
+    return _MockContext()
+
 
 @pytest.fixture(scope="session")
 def garmin_fixtures():

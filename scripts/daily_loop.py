@@ -6,8 +6,13 @@ This script orchestrates the morning training review:
 2. AUDIT - Compare actual vs planned activities
 3. BRIEF - Generate morning brief with recovery status and today's plan
 
+Modes:
+  python scripts/daily_loop.py          # Template-based brief (no LLM)
+  python scripts/daily_loop.py --llm    # LLM-powered brief via MCP sampling
+
 Run via Task Scheduler at 05:00 daily.
 """
+import asyncio
 import json
 import logging
 import sys
@@ -43,9 +48,39 @@ from coach.planner import (
     save_weekly_plan,
 )
 
-def run_morning_audit() -> dict[str, Any]:
+
+class _NullContext:
+    """No-op context for calling async tools outside MCP.
+
+    Implements all Context methods that tools might call so that
+    adding new ctx.info()/ctx.warning() calls in tools won't break
+    this standalone script.
+    """
+    async def report_progress(self, *args, **kwargs):
+        pass
+
+    async def info(self, *args, **kwargs):
+        pass
+
+    async def debug(self, *args, **kwargs):
+        pass
+
+    async def warning(self, *args, **kwargs):
+        pass
+
+    async def error(self, *args, **kwargs):
+        pass
+
+    async def log(self, *args, **kwargs):
+        pass
+
+
+async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
     """
     Execute the morning audit loop.
+
+    Args:
+        use_llm: If True, use MCP sampling for LLM-powered brief generation.
 
     Returns a summary of the audit results.
     """
@@ -54,6 +89,7 @@ def run_morning_audit() -> dict[str, Any]:
     logger.info("=" * 50)
 
     today = date.today()
+    ctx = _NullContext()
     results = {
         'date': today.isoformat(),
         'status': 'success',
@@ -85,13 +121,17 @@ def run_morning_audit() -> dict[str, Any]:
 
         # Step 4: Build context for LLM
         logger.info("Step 4: Building planning context")
-        context_json = get_planning_context()
+        context_json = await get_planning_context(ctx)
         context = json.loads(context_json)
         results['steps']['context'] = {'status': 'built', 'keys': list(context.keys())}
 
         # Step 5: Generate morning brief
         logger.info("Step 5: Generating morning brief")
-        brief = generate_morning_brief(context, compliance, audit_result)
+        if use_llm:
+            logger.info("Using LLM-powered brief generation")
+            brief = await _generate_llm_brief(context, compliance, audit_result)
+        else:
+            brief = generate_morning_brief(context, compliance, audit_result)
         results['steps']['brief'] = brief
         results['morning_brief'] = brief
 
@@ -105,6 +145,76 @@ def run_morning_audit() -> dict[str, Any]:
         results['error'] = str(e)
 
     return results
+
+
+async def _generate_llm_brief(
+    context: dict[str, Any],
+    compliance: dict[str, Any],
+    audit: dict[str, Any],
+) -> str:
+    """Generate a morning brief using the Anthropic API directly.
+
+    This runs outside an MCP session, so we use the Anthropic SDK
+    rather than MCP sampling (which requires a connected client).
+    """
+    import os
+    try:
+        import anthropic
+    except ImportError:
+        logger.warning("anthropic package not installed — falling back to template brief")
+        return generate_morning_brief(context, compliance, audit)
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY not set — falling back to template brief")
+        return generate_morning_brief(context, compliance, audit)
+
+    today = date.today()
+    day_name = today.strftime('%A')
+
+    # Build a compact data payload for the LLM
+    data = {
+        'date': today.isoformat(),
+        'day': day_name,
+        'recovery': context.get('recovery', {}),
+        'today_plan': None,
+        'yesterday_audit': {
+            'status': audit.get('status'),
+            'message': audit.get('message'),
+        },
+        'compliance_deficits': compliance.get('compliance', {}).get('deficits', []),
+        'upcoming_events': context.get('upcoming_events', [])[:2],
+        'safety_warnings': compliance.get('safety', {}).get('warnings', []),
+    }
+
+    # Get today's plan
+    plan = get_current_plan()
+    today_str = today.isoformat()
+    if plan and 'days' in plan and today_str in plan['days']:
+        data['today_plan'] = plan['days'][today_str].get('planned')
+
+    system_prompt = (
+        "You are an expert adaptive training coach generating a concise morning brief. "
+        "Be direct: 'You need rest' not 'Maybe consider taking it easy.' "
+        "Output markdown. Keep it under 200 words. "
+        "Sections: Yesterday, Today's Session, Recovery Check, Key Focus."
+    )
+
+    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"Generate morning brief from this data:\n```json\n{json.dumps(data, indent=2)}\n```"
+            }],
+        )
+        return response.content[0].text
+    except Exception as e:
+        logger.warning(f"LLM brief generation failed: {e} — falling back to template")
+        return generate_morning_brief(context, compliance, audit)
 
 
 def audit_yesterday(today: date) -> dict[str, Any]:
@@ -259,6 +369,6 @@ def generate_morning_brief(
 
 
 if __name__ == "__main__":
-    # Run standalone morning audit
-    results = run_morning_audit()
+    use_llm = '--llm' in sys.argv
+    results = asyncio.run(run_morning_audit(use_llm=use_llm))
     print("\n" + results.get('morning_brief', 'No brief generated'))

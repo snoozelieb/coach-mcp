@@ -217,9 +217,10 @@ class TestGarminDependentToolsNoCredentials:
         monkeypatch.setattr('coach.tools.fitness_tools.garmin_api_call', _fail)
         monkeypatch.setattr('coach.tools.planning_tools.garmin_api_call', _fail)
 
-    def test_coaching_snapshot_no_garmin(self, empty_install):
+    @pytest.mark.asyncio
+    async def test_coaching_snapshot_no_garmin(self, empty_install, mock_ctx):
         """get_coaching_snapshot should return structured error, not crash."""
-        result = json.loads(get_coaching_snapshot())
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
 
         # Should have an error key with a readable message
         assert 'error' in result

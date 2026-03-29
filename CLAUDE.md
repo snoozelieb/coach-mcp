@@ -186,26 +186,45 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 ## Commands
 
 ```bash
-python server.py                              # Run the MCP server
+python server.py                              # Run the MCP server (stdio)
+COACH_TRANSPORT=http python server.py         # Run with HTTP transport
+COACH_CODE_MODE=1 python server.py            # Run with Code Mode (search/execute)
 python -m pytest -v                           # Run all tests
 python -m pytest tests/test_rules.py -v       # Run specific module tests
 python scripts/daily_loop.py                  # Morning audit (standalone)
 python scripts/daily_loop.py --llm            # Morning audit with LLM
 ```
 
+## MCP Framework
+
+Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bundled v1 in the `mcp` SDK.
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| **Tools** | 61 tools | `@mcp.tool()` — sync and async |
+| **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
+| **Resources** | 4 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions |
+| **Context** | 4 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline`, `get_planning_context`, `get_load_status` use `ctx: Context` for progress reporting |
+| **Sampling** | `generate_smart_brief` | Uses `ctx.sample()` for LLM-powered morning briefs |
+| **Elicitation** | `interactive_check_in` | Uses `ctx.elicit()` for structured athlete check-ins |
+| **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces 61 tools with search/schema/execute meta-tools |
+| **Transport** | stdio (default) | `COACH_TRANSPORT=http|sse|streamable-http` for remote deployment |
+
 ## Architecture
 
 ```
 coach-mcp/
-├── server.py                # Entry point (imports coach package)
+├── server.py                # Entry point (imports coach package, transport/code-mode config)
 ├── coach/                   # Core package
 │   ├── __init__.py
 │   ├── config.py            # Shared configuration and constants
 │   ├── fitness.py           # CTL/ATL/TSB calculations, intensity distribution
 │   ├── garmin_client.py     # Garmin auth with token caching + retry
-│   ├── mcp_app.py           # Shared FastMCP instance
+│   ├── mcp_app.py           # Shared FastMCP instance (from fastmcp import FastMCP)
 │   ├── parsers.py           # Pure parsing functions for Garmin API responses
 │   ├── planner.py           # Context builder, plan/suggestion management
+│   ├── prompts.py           # MCP prompt templates (5 coaching workflows)
+│   ├── resources.py         # MCP resources (4 read-only data endpoints)
 │   ├── rules.py             # Compliance checker, safety rules, classify_activity
 │   ├── web_utils.py         # HTML stripping + page fetching
 │   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
@@ -221,9 +240,10 @@ coach-mcp/
 │       ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
 │       ├── race_tools.py      # research_race, list/add/remove/update_race
 │       ├── suggestion_tools.py # propose/list/approve/reject_suggestion
+│       ├── interactive_tools.py # generate_smart_brief (sampling), interactive_check_in (elicitation)
 │       └── goal_tools.py      # get_goal_progress
 ├── scripts/
-│   ├── daily_loop.py        # Morning audit automation
+│   ├── daily_loop.py        # Morning audit automation (async, --llm for Anthropic API)
 │   ├── fetch_exercises.py   # Fetch exercise DB from Garmin
 │   └── setup_wizard.py     # First-run setup wizard
 ├── data/
@@ -275,9 +295,15 @@ This data is saved under the `garmin_profile` key in `athlete_baseline.json` (se
 
 Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
 
+Optional environment variables:
+- `COACH_TRANSPORT` — MCP transport: `stdio` (default), `http`, `streamable-http`, `sse`
+- `COACH_CODE_MODE` — Set to `1` to enable Code Mode transform
+- `FASTMCP_HOST` / `FASTMCP_PORT` — HTTP bind address (default: 127.0.0.1:5000)
+
 ## Testing
 
-544 tests across 15 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
+557 tests across 16 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
+Async tools tested with `pytest-asyncio` (auto mode) and `mock_ctx` fixture from `conftest.py`.
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `coach/parsers.py`

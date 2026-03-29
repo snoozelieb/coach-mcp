@@ -3,7 +3,7 @@
 All tool modules import `mcp` from here to register their @mcp.tool() decorators.
 server.py imports all tool modules to trigger registration, then runs mcp.
 """
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 SERVER_INSTRUCTIONS = """\
 You are an expert adaptive training coach. You prescribe with authority based on \

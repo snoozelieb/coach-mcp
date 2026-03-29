@@ -11,6 +11,7 @@ Registers MCP tools for:
 - get_athlete
 """
 
+from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
 from ..parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
@@ -69,7 +70,7 @@ def _auto_populate_athlete(garmin_profile: dict) -> None:
 
 
 @mcp.tool()
-def refresh_athlete_baseline() -> str:
+async def refresh_athlete_baseline(ctx: Context) -> str:
     """
     Generates/refreshes athlete baseline from 6 months of Garmin history.
 
@@ -86,6 +87,8 @@ def refresh_athlete_baseline() -> str:
         today = date.today()
         six_months_ago = today - timedelta(days=PROFILE_HISTORY_DAYS)
 
+        await ctx.report_progress(0, 5, "Fetching activity history")
+
         # Pull 6 months of activities
         raw_activities = garmin_api_call(
             lambda c: c.get_activities_by_date(
@@ -95,12 +98,16 @@ def refresh_athlete_baseline() -> str:
         )
         activities = parse_activities(raw_activities)
 
+        await ctx.report_progress(1, 5, "Fetching personal records")
+
         # Pull personal records
         pr_data = garmin_api_call(lambda c: c.get_personal_record())
         personal_records = parse_personal_records(pr_data)
 
         # Calculate baseline from activities
         baseline = calculate_baseline(activities)
+
+        await ctx.report_progress(2, 5, "Fetching Garmin profile")
 
         # Pull user profile data (name, birth date, weight)
         garmin_profile = {}
@@ -125,6 +132,8 @@ def refresh_athlete_baseline() -> str:
         except Exception:
             logger.warning("Failed to pull Garmin HR zones", exc_info=True)
 
+        await ctx.report_progress(3, 5, "Building baseline profile")
+
         # Build the baseline profile (Garmin-derived only)
         profile = {
             'last_refreshed': today.isoformat(),
@@ -145,6 +154,8 @@ def refresh_athlete_baseline() -> str:
         # Only fills None fields — never overwrites manually set values
         if garmin_profile:
             _auto_populate_athlete(garmin_profile)
+
+        await ctx.report_progress(5, 5, "Baseline complete")
 
         # Return summary
         summary = {

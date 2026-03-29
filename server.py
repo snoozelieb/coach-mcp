@@ -1,8 +1,17 @@
 """AI Training Coach MCP Server - Orchestrator.
 
 Imports all tool modules to register @mcp.tool() decorators,
-then runs the MCP server. All tool implementations live in coach/tools/.
+prompt templates, and resources, then runs the MCP server.
+All tool implementations live in coach/tools/.
+
+Environment variables:
+    COACH_CODE_MODE=1     Enable Code Mode (search/execute meta-tools).
+                          Requires: pip install fastmcp[code-mode]
+    COACH_TRANSPORT=http  Transport: "stdio" (default), "http", "streamable-http", "sse"
+    FASTMCP_HOST=0.0.0.0 HTTP host (default: 127.0.0.1)
+    FASTMCP_PORT=8000     HTTP port (default: 5000)
 """
+import os
 from coach.mcp_app import mcp
 from coach.parsers import check_setup
 
@@ -19,11 +28,50 @@ import coach.tools.strength_tools
 import coach.tools.research_tools
 import coach.tools.decision_tools
 import coach.tools.goal_tools
+import coach.tools.interactive_tools
+
+# Import prompt templates and resources
+import coach.prompts
+import coach.resources
+
+
+def _enable_code_mode():
+    """Enable Code Mode transform for tool discovery via search + execute."""
+    try:
+        from fastmcp.experimental.transforms.code_mode import (
+            CodeMode, MontySandboxProvider, Search, GetSchemas, GetTags,
+        )
+        code_mode = CodeMode(
+            sandbox_provider=MontySandboxProvider(),
+            discovery_tools=[
+                Search(name="search_tools", default_detail="brief"),
+                GetSchemas(name="get_tool_schemas", default_detail="detailed"),
+                GetTags(name="list_tool_tags", default_detail="brief"),
+            ],
+            execute_tool_name="execute_coaching_tools",
+            execute_description=(
+                "Execute Python code that chains coaching tool calls. "
+                "Use call_tool(name, params) to invoke any coaching tool."
+            ),
+        )
+        mcp.add_transform(code_mode)
+        return True
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Code Mode requested but fastmcp[code-mode] not installed. "
+            "Install with: pip install fastmcp[code-mode]"
+        )
+        return False
 
 
 if __name__ == "__main__":
     if check_setup():
-        mcp.run()
+        if os.environ.get("COACH_CODE_MODE", "").strip() in ("1", "true", "yes"):
+            _enable_code_mode()
+
+        transport = os.environ.get("COACH_TRANSPORT", "stdio").strip().lower()
+        mcp.run(transport=transport)
     else:
         import sys
         sys.exit(1)

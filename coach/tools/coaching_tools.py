@@ -17,6 +17,7 @@ Also contains helper functions:
 """
 
 from collections import defaultdict
+from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
 from ..parsers import parse_activities
@@ -1008,7 +1009,7 @@ def get_coaching_score() -> str:
 
 
 @mcp.tool()
-def get_coaching_snapshot() -> str:
+async def get_coaching_snapshot(ctx: Context) -> str:
     """
     MANDATORY FIRST CALL before any coaching recommendation.
 
@@ -1050,6 +1051,7 @@ def get_coaching_snapshot() -> str:
                 logger.warning("Fitness history auto-refresh failed", exc_info=True)
 
         daily_loads = history.get('daily_loads', {})
+        await ctx.report_progress(1, 10, "Fitness history loaded")
 
         # 1. Current Weekly Plan
         current_plan = get_current_plan()
@@ -1077,6 +1079,7 @@ def get_coaching_snapshot() -> str:
             )
         )
         all_fetched_activities = parse_activities(raw_activities)
+        await ctx.report_progress(3, 10, "Activities fetched")
 
         # Calendar week activities — for compliance, intensity distribution, etc.
         activities_this_week = [
@@ -1230,6 +1233,8 @@ def get_coaching_snapshot() -> str:
                 weekly_activities_4wk, training_pillars
             )
 
+        await ctx.report_progress(5, 10, "Fitness metrics calculated")
+
         # 6. Recovery status (today) + Sleep tracking
         try:
             readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
@@ -1267,6 +1272,8 @@ def get_coaching_snapshot() -> str:
             history.get('sleep_history', []),
             history.get('readiness_history', []),
         )
+
+        await ctx.report_progress(7, 10, "Recovery and sleep analyzed")
 
         # 7. Sport priority breakdown (multi-sport analysis)
         training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -1495,6 +1502,8 @@ def get_coaching_snapshot() -> str:
         except Exception:
             logger.warning("Failed to load coaching memory", exc_info=True)
             snapshot['coaching_memory'] = {'status': 'unavailable'}
+
+        await ctx.report_progress(9, 10, "Building snapshot")
 
         # Snapshot flags — quick-scan summary for the LLM
         flags = _build_snapshot_flags(snapshot)

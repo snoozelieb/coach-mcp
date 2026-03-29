@@ -1,5 +1,6 @@
 """Planning tools - weekly plan management, periodization, prescriptions, Garmin push."""
 
+from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, schedule_workout
 from ..parsers import (parse_activities, parse_training_readiness,
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
-def get_planning_context() -> str:
+async def get_planning_context(ctx: Context) -> str:
     """
     Full context for building or adjusting a training plan.
 
@@ -33,6 +34,7 @@ def get_planning_context() -> str:
     """
     try:
         today = date.today()
+        await ctx.report_progress(0, 4, "Loading athlete profile")
 
         # Load configurations from new file structure
         athlete_profile = load_athlete()
@@ -48,6 +50,7 @@ def get_planning_context() -> str:
             )
         )
         recent_activities = parse_activities(raw_activities)
+        await ctx.report_progress(1, 4, "Activities fetched")
 
         # Get compliance for current week
         start_7_days = today - timedelta(days=7)
@@ -111,6 +114,8 @@ def get_planning_context() -> str:
             'recent_volume_mins': round(recent_duration_mins),
             'prior_volume_mins': round(prior_duration_mins),
         }
+
+        await ctx.report_progress(3, 4, "Recovery and load assessed")
 
         # Get pending suggestions
         pending = get_suggestions()

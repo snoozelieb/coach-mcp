@@ -5,6 +5,7 @@ The thin-wrapper tools (get_training_readiness, get_fitness_status) are
 covered by test_parsers.py and test_fitness.py respectively.
 """
 import json
+import pytest
 from unittest.mock import Mock, patch
 
 from conftest import (
@@ -35,8 +36,9 @@ def _make_garmin_mock():
 
 
 class TestRefreshAthleteBaseline:
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_creates_baseline_file_with_correct_structure(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_creates_baseline_file_with_correct_structure(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """The full pipeline: API → parse → calculate → write file."""
         import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
@@ -44,7 +46,7 @@ class TestRefreshAthleteBaseline:
         mock_client = _make_garmin_mock()
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
-        result = json.loads(fitness_mod.refresh_athlete_baseline())
+        result = json.loads(await fitness_mod.refresh_athlete_baseline(mock_ctx))
 
         assert result['status'] == 'success'
         assert result['activities_analyzed'] == 1
@@ -60,18 +62,20 @@ class TestRefreshAthleteBaseline:
         assert 'last_refreshed' in profile
         assert profile['baseline']['total_activities'] == 1
 
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_api_error_returns_error_json(self, mock_api_call):
+    async def test_api_error_returns_error_json(self, mock_api_call, mock_ctx):
         from coach.tools.fitness_tools import refresh_athlete_baseline
 
         mock_api_call.side_effect = Exception("Auth failed")
-        result = json.loads(refresh_athlete_baseline())
+        result = json.loads(await refresh_athlete_baseline(mock_ctx))
 
         assert 'error' in result
         assert 'Auth failed' in result['error']
 
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_garmin_profile_saved_to_baseline(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_garmin_profile_saved_to_baseline(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """Garmin profile (name, weight, age) saved under garmin_profile key."""
         import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
@@ -79,7 +83,7 @@ class TestRefreshAthleteBaseline:
         mock_client = _make_garmin_mock()
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
-        result = json.loads(fitness_mod.refresh_athlete_baseline())
+        result = json.loads(await fitness_mod.refresh_athlete_baseline(mock_ctx))
 
         assert result['status'] == 'success'
         assert result['garmin_profile']['full_name'] == 'John Doe'
@@ -91,8 +95,9 @@ class TestRefreshAthleteBaseline:
         assert 'garmin_profile' in profile
         assert profile['garmin_profile']['weight_kg'] == 75.0
 
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_garmin_profile_failure_non_fatal(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_garmin_profile_failure_non_fatal(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """If profile APIs fail, baseline still succeeds with empty garmin_profile."""
         import coach.tools.fitness_tools as fitness_mod
         monkeypatch.setattr(fitness_mod, 'DATA_DIR', tmp_path)
@@ -111,15 +116,16 @@ class TestRefreshAthleteBaseline:
 
         mock_api_call.side_effect = side_effect
 
-        result = json.loads(fitness_mod.refresh_athlete_baseline())
+        result = json.loads(await fitness_mod.refresh_athlete_baseline(mock_ctx))
         assert result['status'] == 'success'
         # garmin_profile should be empty dict (failure was caught)
         assert result.get('garmin_profile') == {} or result.get('garmin_profile', {}).get('full_name') is None
 
 
 class TestAutoPopulateAthlete:
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_fills_none_fields_from_garmin(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_fills_none_fields_from_garmin(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """Auto-populates None fields in athlete.json from Garmin profile."""
         import coach.tools.fitness_tools as fitness_mod
         import coach.planner as planner
@@ -135,7 +141,7 @@ class TestAutoPopulateAthlete:
         mock_client = _make_garmin_mock()
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
-        fitness_mod.refresh_athlete_baseline()
+        await fitness_mod.refresh_athlete_baseline(mock_ctx)
 
         # Verify athlete.json was updated
         updated = json.loads((tmp_path / 'athlete.json').read_text())
@@ -145,8 +151,9 @@ class TestAutoPopulateAthlete:
         # Manually set value should NOT be overwritten
         assert updated['personal']['max_hr'] == 190
 
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_does_not_overwrite_manual_values(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_does_not_overwrite_manual_values(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """Never overwrites manually set values in athlete.json."""
         import coach.tools.fitness_tools as fitness_mod
         import coach.planner as planner
@@ -162,7 +169,7 @@ class TestAutoPopulateAthlete:
         mock_client = _make_garmin_mock()
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
-        fitness_mod.refresh_athlete_baseline()
+        await fitness_mod.refresh_athlete_baseline(mock_ctx)
 
         # Verify manually set values are preserved
         updated = json.loads((tmp_path / 'athlete.json').read_text())
@@ -170,8 +177,9 @@ class TestAutoPopulateAthlete:
         assert updated['personal']['weight_kg'] == 80.0
         assert updated['personal']['age'] == 40
 
+    @pytest.mark.asyncio
     @patch('coach.tools.fitness_tools.garmin_api_call')
-    def test_fills_max_hr_from_garmin(self, mock_api_call, tmp_path, monkeypatch):
+    async def test_fills_max_hr_from_garmin(self, mock_api_call, tmp_path, monkeypatch, mock_ctx):
         """Auto-populates max_hr when None in athlete.json."""
         import coach.tools.fitness_tools as fitness_mod
         import coach.planner as planner
@@ -186,7 +194,7 @@ class TestAutoPopulateAthlete:
         mock_client = _make_garmin_mock()
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
-        fitness_mod.refresh_athlete_baseline()
+        await fitness_mod.refresh_athlete_baseline(mock_ctx)
 
         updated = json.loads((tmp_path / 'athlete.json').read_text())
         assert updated['personal']['max_hr'] == 192

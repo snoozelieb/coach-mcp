@@ -248,10 +248,12 @@ def run_setup():
     print("  Setup Complete!")
     print("=" * 50)
     print("\nNext steps:")
-    print("  1. Set up your .env file with Garmin credentials")
-    print("  2. Run 'python server.py' to start the MCP server")
-    print("  3. Add races with the add_race() tool")
-    print("  4. Use get_planning_context() to generate your first plan")
+    print("  1. Make sure your .env file has Garmin credentials")
+    print("  2. Register with Claude Code:")
+    print("       claude mcp add coach-mcp -- python server.py")
+    print("  3. Open Claude Code and say:")
+    print('       "I\'d like to set up my training plan"')
+    print("  The coach will pull your Garmin data and build your plan.")
     print()
 
 
