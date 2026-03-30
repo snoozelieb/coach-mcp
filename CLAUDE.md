@@ -193,6 +193,7 @@ python -m pytest -v                           # Run all tests
 python -m pytest tests/test_rules.py -v       # Run specific module tests
 python scripts/daily_loop.py                  # Morning audit (standalone)
 python scripts/daily_loop.py --llm            # Morning audit with LLM
+python scripts/garmin_browser_login.py        # Manual Garmin token refresh via browser
 ```
 
 ## MCP Framework
@@ -299,6 +300,18 @@ Optional environment variables:
 - `COACH_TRANSPORT` — MCP transport: `stdio` (default), `http`, `streamable-http`, `sse`
 - `COACH_CODE_MODE` — Set to `1` to enable Code Mode transform
 - `FASTMCP_HOST` / `FASTMCP_PORT` — HTTP bind address (default: 127.0.0.1:5000)
+
+### Garmin Authentication
+
+Garmin's SSO uses Cloudflare protection that blocks Python library-based logins (429 errors).
+The server handles this automatically with a Playwright browser fallback:
+
+1. **Normal flow**: Loads saved OAuth tokens from `.garth/` → works silently
+2. **Token expired**: Tries garth SSO login → if 429, opens a Chromium window for browser-based login
+3. **MFA**: If Garmin prompts for MFA, enter the code in the browser window (120s timeout)
+4. **Manual refresh**: Run `python scripts/garmin_browser_login.py` to refresh tokens without starting the server
+
+Requires: `pip install playwright && playwright install chromium`
 
 ## Testing
 

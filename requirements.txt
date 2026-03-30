@@ -2,3 +2,7 @@ garminconnect>=0.2.25
 fastmcp>=3.1.0
 python-dotenv>=1.0.0
 requests>=2.31.0
+
+# Optional: browser-based Garmin login fallback (needed when Cloudflare blocks SSO)
+# pip install playwright && playwright install chromium
+playwright>=1.40.0

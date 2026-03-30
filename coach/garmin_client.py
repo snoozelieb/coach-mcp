@@ -45,10 +45,7 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
     try:
         if os.path.exists(TOKEN_DIR):
             logger.info("Loading saved session...")
-            client.garth.load(TOKEN_DIR)
-
-            # Verify the session is valid by trying a lightweight call
-            client.get_user_summary(date.today().isoformat())
+            client.login(tokenstore=TOKEN_DIR)
             logger.info("Session loaded successfully!")
             _cached_client = client
             return client
@@ -58,17 +55,37 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
     # 2. If load failed (or no tokens), perform a full login
     try:
         client.login()
-
-        # 3. Save the new tokens for next time
-        if not os.path.exists(TOKEN_DIR):
-            os.makedirs(TOKEN_DIR)
-
-        client.garth.dump(TOKEN_DIR)
-        logger.info("New session saved.")
-
     except Exception as e:
-        logger.error(f"Login failed! Check credentials. Error: {e}")
-        raise
+        if "429" in str(e):
+            logger.warning("Garmin SSO blocked (429). Falling back to browser login...")
+            from .playwright_auth import playwright_sso_login
+            oauth1, oauth2 = playwright_sso_login(client.garth)
+            client.garth.oauth1_token = oauth1
+            client.garth.oauth2_token = oauth2
+            # Populate display_name and settings (normally done inside client.login)
+            try:
+                prof = client.garth.connectapi(
+                    "/userprofile-service/userprofile/profile"
+                )
+                client.display_name = prof.get("displayName")
+                client.full_name = prof.get("fullName")
+                settings = client.garth.connectapi(
+                    client.garmin_connect_user_settings_url
+                )
+                if settings and isinstance(settings, dict) and "userData" in settings:
+                    client.unit_system = settings["userData"].get("measurementSystem")
+            except Exception as profile_err:
+                logger.warning(f"Could not load profile after browser login: {profile_err}")
+        else:
+            logger.error(f"Login failed! Check credentials. Error: {e}")
+            raise
+
+    # 3. Save the new tokens for next time
+    if not os.path.exists(TOKEN_DIR):
+        os.makedirs(TOKEN_DIR)
+
+    client.garth.dump(TOKEN_DIR)
+    logger.info("New session saved.")
 
     _cached_client = client
     return client
