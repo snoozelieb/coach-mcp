@@ -112,23 +112,26 @@ PILATES_TYPES = {"pilates", "rehab", "rehabilitation"}
 # Session types that map to strength
 STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights", "strength_plus_rehab"}
 
-# Garmin workout API only accepts these categories (exercise DB has 47, workout API accepts 13).
-# Exercises with non-valid categories get category remapped + exerciseName cleared.
+# Garmin workout API accepts all 35 FIT SDK strength categories (verified by upload test).
+# Using native categories preserves exerciseName + watch animations.
 VALID_WORKOUT_CATEGORIES = {
-    "BENCH_PRESS", "ROW", "PULL_UP", "LATERAL_RAISE", "CURL",
-    "TRICEPS_EXTENSION", "CORE", "DEADLIFT", "SQUAT",
-    "SHOULDER_PRESS", "LUNGE", "CARDIO",
+    "BANDED_EXERCISES", "BATTLE_ROPE", "BENCH_PRESS", "CALF_RAISE", "CARDIO",
+    "CARRY", "CHOP", "CORE", "CRUNCH", "CURL", "DEADLIFT", "FLYE",
+    "HIP_RAISE", "HIP_STABILITY", "HIP_SWING", "HYPEREXTENSION",
+    "LATERAL_RAISE", "LEG_CURL", "LEG_RAISE", "LUNGE",
+    "OLYMPIC_LIFT", "PLANK", "PLYO", "PULL_UP", "PUSH_UP", "ROW",
+    "SHOULDER_PRESS", "SHOULDER_STABILITY", "SHRUG", "SIT_UP",
+    "SQUAT", "SUSPENSION", "TOTAL_BODY", "TRICEPS_EXTENSION", "WARM_UP",
 }
 
-# Map non-valid categories to their closest valid workout API category.
-# When a category is remapped, exerciseName must be cleared (the exercise
-# doesn't exist under the new category in Garmin's DB).
+# Map categories NOT accepted by Garmin's workout API to valid ones.
+# Only 4 exercise DB categories are rejected + generic LLM muscle group names.
 GARMIN_CATEGORY_MAP = {
     # --- Generic muscle group names (LLM-written plans) ---
     "GLUTE": "SQUAT",
     "HIP": "SQUAT",
-    "CALF": "SQUAT",
-    "HAMSTRING": "DEADLIFT",
+    "CALF": "CALF_RAISE",
+    "HAMSTRING": "LEG_CURL",
     "CHEST": "BENCH_PRESS",
     "BACK": "ROW",
     "BICEPS": "CURL",
@@ -136,31 +139,26 @@ GARMIN_CATEGORY_MAP = {
     "SHOULDERS": "SHOULDER_PRESS",
     "ABS": "CORE",
     "LEGS": "SQUAT",
-    # --- Exercise DB categories not valid in workout API ---
-    "SUSPENSION": "ROW",              # Face pulls, TRX rows
-    "HAMSTRING_CURL": "DEADLIFT",     # Lying/seated leg curls
-    "LEG_CURL": "DEADLIFT",           # Leg curl variations
-    "CALF_RAISE": "SQUAT",            # Calf raises
-    "HIP_RAISE": "SQUAT",             # Hip thrusts, glute bridges
-    "HIP_STABILITY": "SQUAT",         # Hip stability drills
-    "HIP_SWING": "DEADLIFT",          # Kettlebell swings
-    "HYPEREXTENSION": "DEADLIFT",     # Back extensions
-    "LEG_RAISE": "CORE",              # Hanging leg raises
-    "PLANK": "CORE",                  # Plank variations
-    "CRUNCH": "CORE",                 # Crunch variations
-    "SIT_UP": "CORE",                 # Sit-up variations
-    "CHOP": "CORE",                   # Wood chops
-    "FLYE": "BENCH_PRESS",            # Chest flies
-    "PUSH_UP": "BENCH_PRESS",         # Push-up variations
-    "SHRUG": "ROW",                   # Trap shrugs
-    "SHOULDER_STABILITY": "SHOULDER_PRESS",  # Rotator cuff work
-    "OLYMPIC_LIFT": "DEADLIFT",       # Cleans, snatches
-    "PLYO": "SQUAT",                  # Box jumps, plyometrics
-    "BANDED_EXERCISES": "SQUAT",       # Banded leg extensions, clamshells
-    "CARRY": "CORE",                  # Farmer's walks (core stability)
-    "TOTAL_BODY": "CARDIO",           # Full-body conditioning
-    "BATTLE_ROPE": "CARDIO",          # Battle rope drills
-    "WARM_UP": "CARDIO",              # Warmup movements
+    # --- 4 exercise DB categories rejected by workout API ---
+    "CUSTOM": "ROW",                    # Band pull apart (posterior chain)
+    "HAMSTRING_CURL": "LEG_CURL",       # Garmin uses LEG_CURL not HAMSTRING_CURL
+    "LAT_PULLDOWN": "PULL_UP",          # Lat pulldown variations
+    "SHOULDER_RAISE": "LATERAL_RAISE",  # Empty can, lateral raises
+    # --- Fallback ---
+    "OTHER": "CARDIO",
+    # --- Cardio equipment (not typically in strength workouts) ---
+    "BIKE_OUTDOOR": "CARDIO",
+    "INDOOR_BIKE": "CARDIO",
+    "ELLIPTICAL": "CARDIO",
+    "FLOOR_CLIMB": "CARDIO",
+    "RUN": "CARDIO",
+    "RUN_INDOOR": "CARDIO",
+    "STAIR_STEPPER": "CARDIO",
+    "SANDBAG": "DEADLIFT",
+    "SLED": "SQUAT",
+    "SLEDGE_HAMMER": "CORE",
+    "TIRE": "DEADLIFT",
+    "LADDER": "CARDIO",
 }
 
 # Session types that map to swimming
@@ -593,9 +591,9 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
     # Check if this is a structured workout (has phases defined)
     structure = session.get("structure", [])
 
-    # If structured indoor session, build from structure
-    if structure and indoor:
-        return build_structured_indoor_workout(session, workout_name, total_secs, structure)
+    # If structured session (indoor or outdoor), build from structure
+    if structure:
+        return build_structured_cycling_workout(session, workout_name, total_secs, structure, indoor)
 
     # Determine if we should skip warmup (simple outdoor rides without structure)
     skip_warmup = is_simple_outdoor_ride(session)
@@ -698,26 +696,23 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
     )
 
 
-def build_structured_indoor_workout(session: dict, workout_name: str, total_secs: int, structure: list) -> CyclingWorkout:
+def build_structured_cycling_workout(session: dict, workout_name: str, total_secs: int, structure: list, indoor: bool = True) -> CyclingWorkout:
     """
-    Build a structured indoor cycling workout with multiple phases.
+    Build a structured cycling workout with multiple phases.
 
-    Supports Wattbike technique sessions and interval workouts with:
-    - Power targets (watts or % of FTP)
-    - Cadence targets
-    - Multiple phases (warmup, intervals, recovery, cooldown)
+    Supports both indoor (power/cadence targets) and outdoor (HR targets) rides.
 
     Structure format:
     [
         {"phase": "warmup", "duration_mins": 10, "power_watts": [93, 111], "cadence": [85, 95], "notes": "..."},
-        {"phase": "interval", "duration_mins": 12, "power_pct": 90, "cadence": [85, 95], "notes": "..."},
+        {"phase": "warmup", "duration_mins": "open", "hr_target": [116, 145], "notes": "Press LAP to start"},
+        {"phase": "interval", "duration_mins": 12, "hr_target": [146, 160], "notes": "Tempo rep 1"},
         ...
     ]
 
-    Target priority:
-    1. power_watts - direct watt targets [low, high]
-    2. power_pct - percentage of FTP (calculates watts from session/athlete FTP)
-    3. cadence - cadence targets [low, high] (if no power specified)
+    Target priority (indoor): power_watts > power_pct > cadence
+    Target priority (outdoor): hr_target > intensity-based HR lookup
+    Duration: integer minutes for timed steps, "open" for lap-button steps
     """
     # Get FTP from session or athlete profile
     ftp = session.get("ftp") or session.get("power_targets", {}).get("ftp")
@@ -734,20 +729,29 @@ def build_structured_indoor_workout(session: dict, workout_name: str, total_secs
 
     for phase in structure:
         phase_name = phase.get("phase", "interval").lower()
-        duration_mins = phase.get("duration_mins", 5)
-        duration_secs = duration_mins * 60
-        calculated_total_secs += duration_secs
+        raw_duration = phase.get("duration_mins", 5)
         notes = phase.get("notes", "")
 
-        # Get targets
+        # Handle open steps (lap button to advance) vs timed steps
+        is_open = str(raw_duration).lower() == "open"
+        if is_open:
+            duration_secs = 0  # No fixed duration
+            end_condition = END_LAP_BUTTON
+            # Don't add to calculated total — open steps have no fixed time
+        else:
+            duration_secs = int(float(raw_duration)) * 60
+            calculated_total_secs += duration_secs
+            end_condition = END_TIME
+
+        # Get targets from phase
         power_watts = phase.get("power_watts")  # [low, high] direct watts
         power_pct = phase.get("power_pct")       # percentage of FTP
         cadence = phase.get("cadence")           # [low, high] RPM
+        hr_target = phase.get("hr_target")       # [low, high] bpm
 
         # Calculate power target if using percentage
         if power_pct and ftp and not power_watts:
             pct = power_pct / 100.0
-            # Create a +/- 5% range around the target percentage
             low_watts = int(ftp * (pct - 0.05))
             high_watts = int(ftp * (pct + 0.05))
             power_watts = [low_watts, high_watts]
@@ -760,29 +764,35 @@ def build_structured_indoor_workout(session: dict, workout_name: str, total_secs
         elif phase_name == "recovery":
             step_type = STEP_RECOVERY
         else:
-            # All other phases (interval, activation, cadence_build, single_leg, etc.)
             step_type = STEP_INTERVAL
 
         # Determine target type and values
-        # For cadence-focused phases (single leg, cadence drills), prioritize cadence
-        # For power-focused phases (sweet spot, intervals), prioritize power
+        # Outdoor rides: prioritize hr_target
+        # Indoor rides: prioritize power > cadence
         is_cadence_focused = any(x in phase_name for x in ['cadence', 'single_leg', 'spin'])
 
-        if is_cadence_focused and cadence and len(cadence) == 2:
-            # Cadence-focused phases: use cadence target
+        if not indoor and hr_target and len(hr_target) == 2:
+            # Outdoor: use HR target from structure
+            target_type = TARGET_HR
+            target_low = hr_target[0]
+            target_high = hr_target[1]
+        elif is_cadence_focused and cadence and len(cadence) == 2:
             target_type = TARGET_CADENCE
             target_low = cadence[0]
             target_high = cadence[1]
-        elif power_watts and len(power_watts) == 2:
-            # Power-focused phases: use power target
+        elif indoor and power_watts and len(power_watts) == 2:
             target_type = TARGET_POWER
             target_low = power_watts[0]
             target_high = power_watts[1]
         elif cadence and len(cadence) == 2:
-            # Fallback to cadence if no power specified
             target_type = TARGET_CADENCE
             target_low = cadence[0]
             target_high = cadence[1]
+        elif hr_target and len(hr_target) == 2:
+            # Fallback: HR target even for indoor if nothing else specified
+            target_type = TARGET_HR
+            target_low = hr_target[0]
+            target_high = hr_target[1]
         else:
             target_type = TARGET_NONE
             target_low = None
@@ -792,10 +802,13 @@ def build_structured_indoor_workout(session: dict, workout_name: str, total_secs
         step = ExecutableStep(
             stepOrder=step_order,
             stepType=step_type,
-            endCondition=END_TIME,
-            endConditionValue=duration_secs,
+            endCondition=end_condition,
             targetType=target_type
         )
+
+        # Only set endConditionValue for timed steps (not open/lap button)
+        if not is_open:
+            step.endConditionValue = duration_secs
 
         if target_low is not None and target_high is not None:
             step.targetValueOne = target_low
@@ -1402,72 +1415,72 @@ def build_strength_workout(session: dict, date: str) -> dict:
     steps = []
     step_order = 1
     child_step_order = 1
-    total_time = 300  # 5 min warmup
+    skip_warmup = session.get("skip_warmup", False)
+    total_time = 0 if skip_warmup else 300  # 5 min warmup unless skipped
 
-    # Add warmup step
-    steps.append({
-        "type": "ExecutableStepDTO",
-        "stepOrder": step_order,
-        "stepType": STEP_WARMUP,
-        "endCondition": END_TIME,
-        "endConditionValue": 300.0,  # 5 min warmup
-        "targetType": TARGET_NONE,
-        "category": "CARDIO",
-        "exerciseName": "",
-    })
-    step_order += 1
+    if not skip_warmup:
+        # Add warmup step
+        steps.append({
+            "type": "ExecutableStepDTO",
+            "stepOrder": step_order,
+            "stepType": STEP_WARMUP,
+            "endCondition": END_TIME,
+            "endConditionValue": 300.0,  # 5 min warmup
+            "targetType": TARGET_NONE,
+            "category": "CARDIO",
+            "exerciseName": "",
+        })
+        step_order += 1
 
-    # Add REST step after warmup (press lap when ready for first exercise)
-    steps.append({
-        "type": "ExecutableStepDTO",
-        "stepOrder": step_order,
-        "stepType": STEP_REST,
-        "endCondition": END_LAP_BUTTON,
-        "targetType": TARGET_NONE,
-    })
+        # Add REST step after warmup (press lap when ready for first exercise)
+        steps.append({
+            "type": "ExecutableStepDTO",
+            "stepOrder": step_order,
+            "stepType": STEP_REST,
+            "endCondition": END_LAP_BUTTON,
+            "targetType": TARGET_NONE,
+        })
     step_order += 1
 
     # Each exercise becomes a RepeatGroupDTO
     for exercise in exercises:
         ex_name = exercise.get("name", "UNKNOWN")
-        original_category = exercise.get("category", "OTHER")
-        # Map non-standard categories to valid Garmin workout API categories.
-        # Prefer exercise name as category key when it gives a better match
-        # (e.g. PLANK with category SUSPENSION → name "PLANK" maps to CORE).
-        if ex_name in GARMIN_CATEGORY_MAP:
+        # Look up category from exercise DB if not provided in plan
+        original_category = exercise.get("category")
+        if not original_category:
+            db_entry = exercise_db.get(ex_name, {})
+            original_category = db_entry.get("category", "OTHER")
+        # Use the exercise's native DB category when valid (preserves exerciseName).
+        # Only remap if the native category is not accepted by the workout API.
+        if original_category in VALID_WORKOUT_CATEGORIES:
+            category = original_category
+        elif original_category in GARMIN_CATEGORY_MAP:
+            category = GARMIN_CATEGORY_MAP[original_category]
+        elif ex_name in GARMIN_CATEGORY_MAP:
             category = GARMIN_CATEGORY_MAP[ex_name]
-        elif ex_name in VALID_WORKOUT_CATEGORIES:
-            category = ex_name
         else:
-            category = GARMIN_CATEGORY_MAP.get(original_category, original_category)
+            category = "CARDIO"
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
         rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
         weight = exercise.get("weight_kg")
 
-        # Validate (category, exerciseName) pair against Garmin's exercise DB.
-        # If the exercise doesn't exist under the target category, Garmin
-        # returns 400. Clear exerciseName and show in description instead.
+        # Garmin workout API only preserves exerciseName when:
+        # 1. The exercise is non-custom in Garmin's DB
+        # 2. The exercise's DB category matches the workout step's category
+        # Cross-category names and custom exercises are silently stripped.
         if category not in VALID_WORKOUT_CATEGORIES:
             garmin_exercise_name = ""
             category = "CARDIO"
-        elif category != original_category:
-            # Category was remapped — exercise won't exist under new category
-            garmin_exercise_name = ""
         else:
-            # Category matches plan — verify against exercise DB
             db_entry = exercise_db.get(ex_name, {})
-            db_category = db_entry.get("category")
-            if db_category and db_category != category:
-                # DB says this exercise is under a different category
-                # (e.g. SQUAT exercise is under SUSPENSION, not SQUAT)
-                garmin_exercise_name = ""
-            elif not db_category and ex_name not in exercise_db:
-                # Exercise not in DB at all — can't verify, be safe
-                garmin_exercise_name = ""
-            else:
+            is_custom = db_entry.get("custom", False)
+            db_cat = db_entry.get("category", "")
+            if not is_custom and db_cat == category:
                 garmin_exercise_name = ex_name
+            else:
+                garmin_exercise_name = ""
 
         # If no explicit weight, try to get from strength baseline
         if not weight:
@@ -1476,19 +1489,14 @@ def build_strength_workout(session: dict, date: str) -> dict:
         # Get form cues from library if available
         exercise_note = get_exercise_note(ex_name, exercise_library)
 
-        # Build step description: exercise name (when not in exerciseName) + form cues
-        description = ""
-        if not garmin_exercise_name:
-            # Exercise name not in Garmin field — show it in description
-            readable_name = ex_name.replace("_", " ").title()
-            description = readable_name
-            if exercise_note:
-                # Append form cues after name, truncate to fit
-                description = f"{readable_name}: {exercise_note}"
-        elif exercise_note:
-            description = exercise_note
-        if description:
-            description = description[:50]
+        # Always include readable exercise name in description.
+        # exerciseName only works for a subset of exercises — description
+        # is the reliable way to show what exercise to do on the watch.
+        readable_name = ex_name.replace("_", " ").title()
+        if exercise_note:
+            description = f"{readable_name}: {exercise_note}"[:50]
+        else:
+            description = readable_name[:50]
 
         # Build exercise step (inside repeat group)
         exercise_step = {
