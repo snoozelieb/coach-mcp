@@ -598,7 +598,7 @@ class TestBuildStrengthWorkout:
         assert exercise_step["weightValue"] == 40.0
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
-        "BARBELL_SQUAT": {"category": "SQUAT"}
+        "BARBELL_SQUAT": {"category": "SQUAT", "custom": False}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={
         "barbell squat": {"garmin_note": "Drive through heels, chest up"}
@@ -670,7 +670,7 @@ class TestBuildStrengthWorkout:
         assert "Lying Leg Curl" in leg_curl["description"]
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
-        "BARBELL_SQUAT": {"category": "SQUAT"}
+        "BARBELL_SQUAT": {"category": "SQUAT", "custom": False}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
@@ -721,6 +721,26 @@ class TestBuildStrengthWorkout:
         ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
         assert ex["category"] == "CARDIO"
         assert ex["exerciseName"] == ""
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={
+        "DUMBBELL_ROW": {"category": "ROW", "custom": True}
+    })
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
+    def test_custom_exercise_clears_name(self, mock_baseline, mock_library, mock_db):
+        """Custom exercises have exerciseName cleared even with matching native category."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "DUMBBELL_ROW", "category": "ROW", "sets": 3, "reps": 10},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        assert ex["category"] == "ROW"
+        assert ex["exerciseName"] == ""
+        assert "Dumbbell Row" in ex["description"]
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
@@ -1226,7 +1246,7 @@ class TestGarminCategoryMap:
             )
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
-        "ONE_ARM_BENCH_ROW": {"category": "ROW"}
+        "ONE_ARM_BENCH_ROW": {"category": "ROW", "custom": True}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
@@ -1242,4 +1262,6 @@ class TestGarminCategoryMap:
         result = build_strength_workout(session, "2025-01-01")
         ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
         assert ex["category"] == "ROW"
-        assert ex["exerciseName"] == "ONE_ARM_BENCH_ROW"
+        # Custom exercise — name cleared, shown in description instead
+        assert ex["exerciseName"] == ""
+        assert "One Arm Bench Row" in ex["description"]
