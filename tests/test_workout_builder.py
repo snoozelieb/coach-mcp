@@ -616,8 +616,9 @@ class TestBuildStrengthWorkout:
         repeat_group = result["workoutSegments"][0]["workoutSteps"][2]
         exercise_step = repeat_group["workoutSteps"][0]
 
-        assert "Drive through heels, chest up" in exercise_step["description"]
-        assert "Barbell Squat" in exercise_step["description"]
+        # exerciseName is set (BARBELL_SQUAT), so description is form cues only
+        assert exercise_step["description"] == "Drive through heels, chest up"
+        assert exercise_step["exerciseName"] == "BARBELL_SQUAT"
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
@@ -751,13 +752,15 @@ class TestBuildStrengthWorkout:
             "duration_mins": 45,
             "skip_warmup": True,
             "exercises": [
-                {"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
+                {"name": "BARBELL_BACK_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
         # First step should be the exercise RepeatGroupDTO, not a warmup
         assert steps[0]["type"] == "RepeatGroupDTO"
+        # First RepeatGroup should have stepOrder=1 (no phantom gap from warmup)
+        assert steps[0]["stepOrder"] == 1
         # No warmup or rest steps anywhere
         step_types = [s.get("stepType") for s in steps if s.get("type") == "ExecutableStepDTO"]
         assert STEP_WARMUP not in step_types

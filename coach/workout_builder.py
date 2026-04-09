@@ -161,6 +161,45 @@ GARMIN_CATEGORY_MAP = {
     "LADDER": "CARDIO",
 }
 
+# Name-based overrides for exercises where Garmin's DB category is clearly wrong.
+# (e.g. Garmin places CRUNCH, PUSH_UP, SQUAT under SUSPENSION category in the DB)
+# These match on exercise name substring and force the correct category.
+NAME_OVERRIDE_PATTERNS = [
+    ("CRUNCH", "CRUNCH"),
+    ("PUSH_UP", "PUSH_UP"),
+    ("PUSHUP", "PUSH_UP"),
+    ("PLANK", "PLANK"),
+    ("SIT_UP", "SIT_UP"),
+    ("SITUP", "SIT_UP"),
+    ("LEG_EXTENSION", "LEG_CURL"),  # Leg extensions — quad isolation, closest is LEG_CURL bucket
+    ("LEG_RAISE", "LEG_RAISE"),
+    ("LEG_LIFT", "LEG_RAISE"),
+    ("DEAD_BUG", "HIP_STABILITY"),
+    ("BIRD_DOG", "HIP_STABILITY"),
+]
+
+
+def _get_name_override(ex_name: str) -> str | None:
+    """Return the correct category for an exercise when Garmin's DB is wrong."""
+    for pattern, category in NAME_OVERRIDE_PATTERNS:
+        if pattern in ex_name:
+            return category
+    return None
+
+
+def _smart_truncate(text: str, max_len: int) -> str:
+    """Truncate at word boundary with ellipsis if needed."""
+    if not text or len(text) <= max_len:
+        return text
+    # Leave room for ellipsis
+    cutoff = max_len - 1
+    # Find last word boundary before cutoff
+    space_idx = text.rfind(" ", 0, cutoff)
+    if space_idx > max_len // 2:  # Only use boundary if it's not cutting too much
+        return text[:space_idx] + "…"
+    return text[:cutoff] + "…"
+
+
 # Session types that map to swimming
 SWIMMING_TYPES = {"swim", "swimming", "pool"}
 
@@ -772,7 +811,7 @@ def build_structured_cycling_workout(session: dict, workout_name: str, total_sec
         is_cadence_focused = any(x in phase_name for x in ['cadence', 'single_leg', 'spin'])
 
         if not indoor and hr_target and len(hr_target) == 2:
-            # Outdoor: use HR target from structure
+            # Outdoor: prefer HR target from structure
             target_type = TARGET_HR
             target_low = hr_target[0]
             target_high = hr_target[1]
@@ -780,7 +819,8 @@ def build_structured_cycling_workout(session: dict, workout_name: str, total_sec
             target_type = TARGET_CADENCE
             target_low = cadence[0]
             target_high = cadence[1]
-        elif indoor and power_watts and len(power_watts) == 2:
+        elif power_watts and len(power_watts) == 2:
+            # Power target works for both indoor and outdoor (outdoor power meters common)
             target_type = TARGET_POWER
             target_low = power_watts[0]
             target_high = power_watts[1]
@@ -793,6 +833,18 @@ def build_structured_cycling_workout(session: dict, workout_name: str, total_sec
             target_type = TARGET_HR
             target_low = hr_target[0]
             target_high = hr_target[1]
+        elif not indoor:
+            # Outdoor structured ride with no explicit targets — fall back to intensity-based HR
+            phase_intensity = phase.get("intensity", session.get("intensity", "easy"))
+            hr_fallback = get_hr_target_for_intensity(phase_intensity)
+            if hr_fallback:
+                target_type = TARGET_HR
+                target_low = hr_fallback[0]
+                target_high = hr_fallback[1]
+            else:
+                target_type = TARGET_NONE
+                target_low = None
+                target_high = None
         else:
             target_type = TARGET_NONE
             target_low = None
@@ -1366,6 +1418,14 @@ def build_strength_workout(session: dict, date: str) -> dict:
 
     Form cues from the exercise library are included as notes on each exercise.
     Weights are automatically pulled from strength baseline if not specified.
+
+    Session flags:
+        skip_warmup (bool): Skip the built-in 5-min CARDIO warmup + lap-button
+            rest step. Use ONLY when the athlete will warm up separately (e.g.
+            seated/lying session because of a lower-body injury, or they've
+            already warmed up on a bike trainer). WARNING: Injured tissue
+            typically needs MORE warmup, not less — this flag means "warmup
+            will happen externally", not "warmup is unnecessary".
     """
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Strength training")
@@ -1440,25 +1500,35 @@ def build_strength_workout(session: dict, date: str) -> dict:
             "endCondition": END_LAP_BUTTON,
             "targetType": TARGET_NONE,
         })
-    step_order += 1
+        step_order += 1
 
     # Each exercise becomes a RepeatGroupDTO
     for exercise in exercises:
-        ex_name = exercise.get("name", "UNKNOWN")
+        ex_name = exercise.get("name", "UNKNOWN").upper()  # Normalize to uppercase
         # Look up category from exercise DB if not provided in plan
         original_category = exercise.get("category")
-        if not original_category:
+        if original_category:
+            original_category = original_category.upper()  # Handle LLM lowercase variance
+        else:
             db_entry = exercise_db.get(ex_name, {})
             original_category = db_entry.get("category", "OTHER")
-        # Use the exercise's native DB category when valid (preserves exerciseName).
-        # Only remap if the native category is not accepted by the workout API.
-        if original_category in VALID_WORKOUT_CATEGORIES:
+        # Name-based overrides fix worst cases where Garmin's exercise DB
+        # mis-categorizes common movements (e.g. CRUNCH under SUSPENSION).
+        name_override = _get_name_override(ex_name)
+        if name_override:
+            category = name_override
+        elif original_category in VALID_WORKOUT_CATEGORIES:
             category = original_category
         elif original_category in GARMIN_CATEGORY_MAP:
             category = GARMIN_CATEGORY_MAP[original_category]
         elif ex_name in GARMIN_CATEGORY_MAP:
             category = GARMIN_CATEGORY_MAP[ex_name]
         else:
+            logger.warning(
+                "Exercise %r with category %r fell through to CARDIO fallback — "
+                "add it to GARMIN_CATEGORY_MAP or the exercise DB",
+                ex_name, original_category
+            )
             category = "CARDIO"
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
@@ -1489,14 +1559,18 @@ def build_strength_workout(session: dict, date: str) -> dict:
         # Get form cues from library if available
         exercise_note = get_exercise_note(ex_name, exercise_library)
 
-        # Always include readable exercise name in description.
-        # exerciseName only works for a subset of exercises — description
-        # is the reliable way to show what exercise to do on the watch.
+        # Description content depends on whether exerciseName is preserved:
+        # - exerciseName set: watch shows name already, description = form cues only
+        # - exerciseName empty: watch shows category only, description = name + cues
         readable_name = ex_name.replace("_", " ").title()
-        if exercise_note:
-            description = f"{readable_name}: {exercise_note}"[:50]
+        if garmin_exercise_name:
+            # Watch shows exerciseName — don't duplicate, just form cues
+            description = exercise_note or ""
+        elif exercise_note:
+            description = f"{readable_name}: {exercise_note}"
         else:
-            description = readable_name[:50]
+            description = readable_name
+        description = _smart_truncate(description, 50)
 
         # Build exercise step (inside repeat group)
         exercise_step = {
