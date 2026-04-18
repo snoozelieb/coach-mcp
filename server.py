@@ -27,7 +27,6 @@ import coach.tools.injury_tools
 import coach.tools.strength_tools
 import coach.tools.research_tools
 import coach.tools.decision_tools
-import coach.tools.goal_tools
 import coach.tools.interactive_tools
 
 # Import prompt templates and resources

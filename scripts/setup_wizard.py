@@ -161,7 +161,7 @@ def create_weekly_plan() -> dict:
     return {
         "week_start": date.today().isoformat(),
         "days": {},
-        "notes": "No plan yet - use get_planning_context() and update_weekly_plan() to create one.",
+        "notes": "No plan yet - call get_coaching_snapshot() then update_weekly_plan() to create one.",
     }
 
 

@@ -1,7 +1,6 @@
 from ..mcp_app import mcp
 from ..planner import (
     save_suggestion,
-    get_pending_suggestions as get_suggestions,
     approve_suggestion as approve_sug,
     reject_suggestion as reject_sug,
 )
@@ -48,21 +47,6 @@ def propose_suggestion(
         })
     except Exception as e:
         logger.exception("propose_suggestion failed")
-        return json.dumps({'error': str(e)})
-
-
-@mcp.tool()
-def list_pending_suggestions() -> str:
-    """
-    Lists all pending suggestions awaiting user decision.
-
-    Returns array of suggestions with id, type, description, and rationale.
-    """
-    try:
-        pending = get_suggestions()
-        return json.dumps(pending, indent=2)
-    except Exception as e:
-        logger.exception("list_pending_suggestions failed")
         return json.dumps({'error': str(e)})
 
 

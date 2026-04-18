@@ -1,197 +1,20 @@
 """Planning tools - weekly plan management, periodization, prescriptions, Garmin push."""
 
-from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, schedule_workout
-from ..parsers import (parse_activities, parse_training_readiness,
-                     parse_resting_heart_rate, parse_body_battery)
-from ..planner import (build_planning_context, get_current_plan, save_weekly_plan,
-                     create_empty_week_template, get_pending_suggestions as get_suggestions,
-                     load_athlete, load_methodology, load_coaching_log, save_coaching_log,
+from ..parsers import parse_activities, parse_training_readiness
+from ..planner import (get_current_plan, save_weekly_plan,
+                     create_empty_week_template,
+                     load_athlete, load_coaching_log, save_coaching_log,
                      get_week_constraints as _get_week_constraints)
 from ..rules import load_training_config, check_weekly_compliance
 from ..fitness import load_fitness_history, calculate_fitness_metrics
-from ..config import DATA_DIR, RECENT_ACTIVITY_DAYS, TRAINING_CONFIG_FILE
+from ..config import DATA_DIR, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
 import json
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-@mcp.tool()
-async def get_planning_context(ctx: Context) -> str:
-    """
-    Full context for building or adjusting a training plan.
-
-    Returns WHO (athlete profile, constraints, injuries), WHAT (current block,
-    upcoming events, A-race requirements), HOW (pillars, safety constraints,
-    race templates), recent activities, compliance, recovery, and coaching
-    continuity (active decisions, adaptation patterns).
-
-    Use this when creating a new weekly plan or making significant plan changes.
-    For quick coaching checks, use get_coaching_snapshot() instead.
-    """
-    try:
-        today = date.today()
-        await ctx.report_progress(0, 4, "Loading athlete profile")
-
-        # Load configurations from new file structure
-        athlete_profile = load_athlete()
-        training_config = load_training_config()
-        methodology = load_methodology()
-
-        # Get recent activities (14 days)
-        start_14_days = today - timedelta(days=RECENT_ACTIVITY_DAYS)
-        raw_activities = garmin_api_call(
-            lambda c: c.get_activities_by_date(
-                start_14_days.isoformat(),
-                today.isoformat()
-            )
-        )
-        recent_activities = parse_activities(raw_activities)
-        await ctx.report_progress(1, 4, "Activities fetched")
-
-        # Get compliance for current week
-        start_7_days = today - timedelta(days=7)
-        week_activities = [
-            a for a in recent_activities
-            if a.get('date') and date.fromisoformat(a['date']) >= start_7_days
-        ]
-        compliance = check_weekly_compliance(week_activities)
-
-        # Get today's recovery metrics
-        readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
-        today_recovery = parse_training_readiness(readiness_data)
-
-        stats = garmin_api_call(lambda c: c.get_user_summary(today.isoformat()))
-        body_battery = garmin_api_call(lambda c: c.get_body_battery(today.isoformat()))
-
-        today_recovery['rhr'] = parse_resting_heart_rate(stats)
-        today_recovery['body_battery'] = parse_body_battery(body_battery)
-        if today_recovery.get('sleep_score') is None:
-            today_recovery['sleep_score'] = 'N/A'
-
-        # Calculate load status
-        week_ago = (today - timedelta(days=7)).isoformat()
-        two_weeks_ago = (today - timedelta(days=14)).isoformat()
-
-        recent_load_activities = garmin_api_call(lambda c: c.get_activities_by_date(week_ago, today.isoformat()))
-        prior_load_activities = garmin_api_call(lambda c: c.get_activities_by_date(two_weeks_ago, week_ago))
-
-        recent_duration_mins = sum(
-            a.get('duration', 0) / 60 for a in recent_load_activities
-        ) if recent_load_activities else 0
-        prior_duration_mins = sum(
-            a.get('duration', 0) / 60 for a in prior_load_activities
-        ) if prior_load_activities else 0
-
-        if prior_duration_mins > 0:
-            load_ratio = recent_duration_mins / prior_duration_mins
-        else:
-            load_ratio = 1.0
-
-        readiness_score = today_recovery.get('score', 0)
-        readiness_level = today_recovery.get('level', 'UNKNOWN')
-
-        if readiness_level == 'PRIME' or readiness_score >= 80:
-            load_recommendation = "high"
-        elif readiness_level == 'HIGH' or readiness_score >= 60:
-            load_recommendation = "moderate_to_high"
-        elif readiness_level == 'MODERATE' or readiness_score >= 40:
-            load_recommendation = "moderate"
-        elif readiness_level == 'LOW' or readiness_score >= 20:
-            load_recommendation = "low"
-        else:
-            load_recommendation = "rest"
-
-        load_status = {
-            'readiness_score': readiness_score,
-            'readiness_level': readiness_level,
-            'acute_load': today_recovery.get('acute_load'),
-            'load_ratio': round(load_ratio, 2),
-            'load_trend': 'decreasing' if load_ratio < 0.8 else ('increasing' if load_ratio > 1.15 else 'stable'),
-            'recommended_intensity': load_recommendation,
-            'recent_volume_mins': round(recent_duration_mins),
-            'prior_volume_mins': round(prior_duration_mins),
-        }
-
-        await ctx.report_progress(3, 4, "Recovery and load assessed")
-
-        # Get pending suggestions
-        pending = get_suggestions()
-
-        # Build full context with new file structure
-        context = build_planning_context(
-            athlete_profile=athlete_profile,
-            training_config=training_config,
-            recent_activities=recent_activities,
-            compliance_status=compliance,
-            today_recovery=today_recovery,
-            pending_suggestions=pending,
-            methodology=methodology,
-        )
-
-        # Add load status to context
-        context['load_status'] = load_status
-
-        # Calculate goal balance
-        fun_types = ['padel', 'ultimate_disc', 'social_ride', 'tennis', 'squash', 'badminton']
-        strength_types = ['strength_training', 'indoor_cardio', 'functional_strength']
-
-        race_prep_mins = 0
-        fun_mins = 0
-        aesthetics_mins = 0
-        last_fun_date = None
-        strength_count = 0
-
-        for activity in recent_activities:
-            act_type = activity.get('type', '').lower()
-            duration = activity.get('duration_mins', 0)
-            act_date = activity.get('date')
-
-            if any(f in act_type for f in fun_types):
-                fun_mins += duration
-                if last_fun_date is None or (act_date and act_date > last_fun_date):
-                    last_fun_date = act_date
-            elif any(s in act_type for s in strength_types):
-                aesthetics_mins += duration
-                strength_count += 1
-            else:
-                race_prep_mins += duration
-
-        total_mins = race_prep_mins + fun_mins + aesthetics_mins
-        days_since_fun = None
-        if last_fun_date:
-            try:
-                fun_date = date.fromisoformat(last_fun_date)
-                days_since_fun = (today - fun_date).days
-            except ValueError:
-                pass
-
-        context['goal_progress'] = {
-            'race_preparation': {
-                'mins': round(race_prep_mins),
-                'pct': round(race_prep_mins / total_mins * 100) if total_mins > 0 else 0
-            },
-            'fun_activities': {
-                'mins': round(fun_mins),
-                'pct': round(fun_mins / total_mins * 100) if total_mins > 0 else 0,
-                'days_since_last': days_since_fun,
-                'needs_attention': days_since_fun is not None and days_since_fun > 14
-            },
-            'aesthetics': {
-                'mins': round(aesthetics_mins),
-                'strength_sessions': strength_count,
-                'needs_attention': strength_count < 2
-            }
-        }
-
-        return json.dumps(context, indent=2, default=str)
-
-    except Exception as e:
-        logger.exception("get_planning_context failed")
-        return json.dumps({'error': str(e)})
 
 
 @mcp.tool()

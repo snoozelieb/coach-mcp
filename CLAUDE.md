@@ -181,19 +181,61 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 | Question | Tool |
 |----------|------|
 | Any coaching recommendation | `get_coaching_snapshot()` (MANDATORY first) |
-| Plan next week from scratch | `get_planning_context()` |
-| Quick load/ACWR check | `get_load_status()` |
-| Pillar compliance | `get_compliance_report()` |
+| Plan next week from scratch | `get_coaching_snapshot()` + `get_week_constraints()` + `get_weekly_prescription()` |
+| Custom-window ACWR check | `get_fitness_status(days=N)` (snapshot already has current) |
+| Pillar compliance | `get_compliance_report()` or `snapshot.compliance` |
 | Coaching self-assessment | `get_coaching_score()` |
 | Push harder or back off? | Check `adaptation_patterns` in snapshot |
 
-### Adaptive Coaching Flow
+### Canonical Coaching Flow
 
-1. **Start of conversation**: Call `get_coaching_snapshot()` FIRST
-2. **Analyze**: Current state, what's working, what's missing, any anomalies
-3. **Plan**: Build/adjust based on snapshot + athlete conversation
-4. **Adapt**: When things change, check snapshot again
-5. **End of week**: Check compliance, update fitness, plan next week
+```
+1. START OF EVERY CONVERSATION
+   → get_coaching_snapshot()
+   → Check current_time_context (date, day, time_period)
+   → INJURY GATE: scan snapshot.injuries — any status in {active, improving}
+       with restricted_activities MUST be honoured. Hard gate: never prescribe
+       a restricted activity regardless of ACWR, readiness, or plan.
+   → Scan flags.active_injuries (quick count) + acwr_warnings
+   → Scan week_grid (rest days explicit)
+   → Scan planned_vs_actual.anomalies + plan_adherence.skipped_dates
+
+2. ATHLETE CLAIM VERIFICATION
+   → "I did X today" → check week_grid[today] BEFORE confirming
+   → If is_rest=true or types mismatch → ask, don't assume
+
+3. PLAN BUILDING
+   → get_coaching_snapshot() (already done at step 1)
+   → get_week_constraints() — guardrails (includes injury restrictions)
+   → get_weekly_prescription() — volume + intensity targets
+   → Build plan — every session must respect snapshot.injuries[*].restricted_activities
+   → update_weekly_plan() → push_plan_to_garmin()
+
+4. DRILL-DOWNS (when snapshot data isn't enough)
+   → get_fitness_status(days=N) — custom-window CTL/ACWR
+   → get_intensity_distribution(days=N) — zone analysis
+   → get_activities_range(start, end) — specific period detail
+   → get_training_readiness(for_date) — historical readiness (with HRV overlay)
+
+5. MUTATIONS
+   → Coaching memory: log_coaching_decision, record_athlete_response
+   → Approvals: propose_major_change → approve_coaching_change / reject_coaching_change
+   → Athlete profile: update_athlete, set_ftp, set_threshold_pace
+   → Plan: update_weekly_plan, push_plan_to_garmin, update_phase
+```
+
+### Removed tools
+
+The following tools were removed in the Phase 2 rationalization — their data is in
+`get_coaching_snapshot()`:
+
+- `get_planning_context` → `get_coaching_snapshot` (strict superset)
+- `get_goal_progress` → `snapshot.goal_progress`
+- `list_pending_suggestions` → `snapshot.coaching_memory.pending_approvals`
+- `get_load_status` → `snapshot.fitness_metrics.acwr_status` or `get_fitness_status(days=N)` (the standalone used different math and disagreed with the snapshot)
+
+`get_compliance_report` stays — minimal 1-API-call check when you don't need the full
+snapshot; math matches `snapshot.compliance`.
 
 ## Commands
 
@@ -214,13 +256,13 @@ Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bund
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **Tools** | 61 tools | `@mcp.tool()` — sync and async |
+| **Tools** | 57 tools | `@mcp.tool()` — sync and async |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
 | **Resources** | 5 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now |
-| **Context** | 4 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline`, `get_planning_context`, `get_load_status` use `ctx: Context` for progress reporting |
+| **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
 | **Sampling** | `generate_smart_brief` | Uses `ctx.sample()` for LLM-powered morning briefs |
 | **Elicitation** | `interactive_check_in` | Uses `ctx.elicit()` for structured athlete check-ins |
-| **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces 61 tools with search/schema/execute meta-tools |
+| **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces tools with search/schema/execute meta-tools |
 | **Transport** | stdio (default) | `COACH_TRANSPORT=http|sse|streamable-http` for remote deployment |
 
 ## Architecture
@@ -245,16 +287,15 @@ coach-mcp/
 │       ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
 │       ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
 │       ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
-│       ├── planning_tools.py  # get_planning_context, get_weekly_plan, push_plan_to_garmin, get_week_constraints, etc.
+│       ├── planning_tools.py  # get_weekly_plan, update_weekly_plan, push_plan_to_garmin, get_week_constraints, get_weekly_prescription, get_periodization_status, update_phase
 │       ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score (+ 11 helpers)
 │       ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
 │       ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
 │       ├── research_tools.py  # research_exercise, list_exercises, research_sport
 │       ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
 │       ├── race_tools.py      # research_race, list/add/remove/update_race
-│       ├── suggestion_tools.py # propose/list/approve/reject_suggestion
-│       ├── interactive_tools.py # generate_smart_brief (sampling), interactive_check_in (elicitation)
-│       └── goal_tools.py      # get_goal_progress
+│       ├── suggestion_tools.py # propose/approve/reject_suggestion
+│       └── interactive_tools.py # generate_smart_brief (sampling), interactive_check_in (elicitation)
 ├── scripts/
 │   ├── daily_loop.py        # Morning audit automation (async, --llm for Anthropic API)
 │   ├── fetch_exercises.py   # Fetch exercise DB from Garmin

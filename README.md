@@ -108,14 +108,14 @@ The coach uses a three-level safety hierarchy before prescribing any training:
 
 ## MCP Server Capabilities
 
-### 61 Tools
+### Tools
 
 | Category | Examples |
 |----------|---------|
-| **Coaching** | `get_coaching_snapshot`, `get_compliance_report`, `get_coaching_score` |
-| **Planning** | `get_planning_context`, `update_weekly_plan`, `push_plan_to_garmin` |
+| **Coaching** | `get_coaching_snapshot` (canonical context), `get_compliance_report`, `get_coaching_score` |
+| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status` |
 | **Garmin Data** | `get_daily_metrics`, `get_activities_range`, `get_personal_records` |
-| **Fitness** | `refresh_athlete_baseline`, `get_training_readiness`, `get_load_status` |
+| **Fitness** | `refresh_athlete_baseline`, `get_training_readiness` (HRV overlay), `get_fitness_status`, `get_intensity_distribution` |
 | **Athlete** | `update_athlete`, `set_ftp`, `set_threshold_pace` |
 | **Races** | `add_race`, `list_races`, `research_race` |
 | **Strength** | `sync_strength_session`, `generate_strength_workout` |

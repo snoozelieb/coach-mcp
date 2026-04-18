@@ -40,8 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import tool functions directly from their modules
-from coach.tools.planning_tools import get_planning_context
-from coach.tools.coaching_tools import get_compliance_report
+from coach.tools.coaching_tools import get_compliance_report, get_coaching_snapshot
 from coach.tools.data_tools import get_daily_metrics, get_activities_range
 from coach.planner import (
     get_current_plan,
@@ -119,9 +118,9 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
         results['steps']['compliance'] = compliance
         logger.info(f"Compliance: {json.dumps(compliance, indent=2)}")
 
-        # Step 4: Build context for LLM
-        logger.info("Step 4: Building planning context")
-        context_json = await get_planning_context(ctx)
+        # Step 4: Build context for LLM (canonical snapshot)
+        logger.info("Step 4: Building coaching snapshot")
+        context_json = await get_coaching_snapshot(ctx)
         context = json.loads(context_json)
         results['steps']['context'] = {'status': 'built', 'keys': list(context.keys())}
 

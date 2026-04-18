@@ -40,7 +40,6 @@ from coach.tools.coaching_tools import (
     get_coaching_score,
     get_compliance_report,
 )
-from coach.tools.fitness_tools import get_load_status
 from coach.rules import check_weekly_compliance
 
 
@@ -240,13 +239,6 @@ class TestGarminDependentToolsNoCredentials:
     def test_compliance_report_no_garmin(self, empty_install):
         """get_compliance_report should return structured error, not crash."""
         result = json.loads(get_compliance_report())
-
-        assert 'error' in result
-        assert isinstance(result['error'], str)
-
-    def test_load_status_no_garmin(self, empty_install):
-        """get_load_status should return structured error, not crash."""
-        result = json.loads(get_load_status())
 
         assert 'error' in result
         assert isinstance(result['error'], str)
