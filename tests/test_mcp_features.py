@@ -22,6 +22,7 @@ from coach.resources import (
     weekly_plan_resource,
     training_config_resource,
     coaching_decisions_resource,
+    current_time_context_resource,
 )
 from coach.tools.interactive_tools import (
     generate_smart_brief,
@@ -123,6 +124,18 @@ class TestResources:
     def test_coaching_decisions_resource(self):
         result = json.loads(coaching_decisions_resource())
         assert isinstance(result, dict)
+
+    def test_current_time_context_resource(self):
+        result = json.loads(current_time_context_resource())
+        assert isinstance(result, dict)
+        expected_keys = {
+            'timestamp', 'date', 'day_of_week', 'hour', 'minute',
+            'time_period', 'is_weekend', 'timezone_note',
+        }
+        assert set(result.keys()) == expected_keys
+        assert result['time_period'] in (
+            'early_morning', 'morning', 'afternoon', 'evening', 'night'
+        )
 
 
 # ---------------------------------------------------------------------------

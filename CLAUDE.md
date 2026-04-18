@@ -85,7 +85,19 @@ DAY                       <- What should today look like?
 
 **CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
-This returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries, data quality flags.
+**The first key of the snapshot is `current_time_context`** — date, day_of_week, hour, minute, time_period (early_morning/morning/afternoon/evening/night), is_weekend. Verify it BEFORE any advice: morning fueling differs from evening recovery; "do today's session" is wrong if today is already done. The lightweight `coach://context/now` resource exposes the same data if you only need a time check. Server local time is assumed to equal athlete local time (stdio transport on the athlete's machine).
+
+**`week_grid` is the rest-day-visible 7-day view.** Rolling 7-day window ending today, each day keyed by ISO date with `day_of_week`, `activity_count`, `types_summary` (`"cycling+strength"` or `"REST"`), `total_duration_mins`, `total_load`, `is_rest`, `is_today`. Scan this before any weekly-pattern comment; aggregate metrics hide zero-activity days.
+
+**VERIFY BEFORE CONFIRMING athlete claims.** If the athlete says "I did X today", check `week_grid[today]` before responding. If `is_rest: true` or types don't match, ask, don't assume.
+
+**`plan_adherence`** is per-pillar: `{strength, mobility, long_effort}` each with `planned`, `completed`, `skipped_dates`, `pending_dates`, `deficit`. This gives "planned 5 strength, completed 3, skipped Monday + Wednesday" at a glance without a separate tool call.
+
+**`recovery.hrv_*`** is populated from the dedicated `/hrv-service/hrv` endpoint (Garmin's training_readiness often returns null for hrv_status). Fields: `hrv_status`, `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_baseline_low`, `hrv_baseline_high`, `hrv_feedback`.
+
+**`sleep.nights`** is the last 7 nights with full per-night detail: `bedtime`, `wake_time`, `duration_hrs`, `score`, `deep_mins`/`deep_pct`, `rem_mins`/`rem_pct`, `light_mins`/`light_pct`, `awake_mins`, `avg_hr`, `respiration`, `sleep_stress`. `sleep.bedtime_drift` (over 14-day window) flags "later"/"earlier"/"stable" direction + `drift_mins_per_wk` — a meaningful overtraining signal when bedtime drifts >15 min/wk later.
+
+The snapshot also returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries, data quality flags.
 
 Check `data_quality` in the snapshot — it flags missing critical data (weight, age, name), unavailable recovery/sleep, and stale fitness history. The LLM should surface these to the athlete and recommend running `refresh_athlete_baseline()` to auto-populate from Garmin.
 
@@ -204,7 +216,7 @@ Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bund
 |---------|--------|---------|
 | **Tools** | 61 tools | `@mcp.tool()` — sync and async |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
-| **Resources** | 4 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions |
+| **Resources** | 5 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now |
 | **Context** | 4 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline`, `get_planning_context`, `get_load_status` use `ctx: Context` for progress reporting |
 | **Sampling** | `generate_smart_brief` | Uses `ctx.sample()` for LLM-powered morning briefs |
 | **Elicitation** | `interactive_check_in` | Uses `ctx.elicit()` for structured athlete check-ins |
@@ -225,7 +237,7 @@ coach-mcp/
 │   ├── parsers.py           # Pure parsing functions for Garmin API responses
 │   ├── planner.py           # Context builder, plan/suggestion management
 │   ├── prompts.py           # MCP prompt templates (5 coaching workflows)
-│   ├── resources.py         # MCP resources (4 read-only data endpoints)
+│   ├── resources.py         # MCP resources (5 read-only data endpoints)
 │   ├── rules.py             # Compliance checker, safety rules, classify_activity
 │   ├── web_utils.py         # HTML stripping + page fetching
 │   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
@@ -359,3 +371,39 @@ Tool design: single responsibility, return JSON, fail gracefully with `{'error':
 ### ~~4. Coach doesn't flag missed sessions~~ FIXED
 - `_compare_planned_actual()` now surfaces anomalies (missing, type_mismatch, duration_delta, unplanned)
 - Curiosity Protocol in CLAUDE.md guides the coach to ASK about anomalies rather than auto-resolve
+
+### ~~5. Sleep score always N/A on `get_daily_metrics`~~ FIXED
+- `get_user_summary()` does NOT contain `sleepScore`; the real value lives in `get_training_readiness()`
+- `get_daily_metrics()` now calls `get_training_readiness()` and extracts sleep_score via `parse_training_readiness()` (falls back to `'N/A'` only if readiness is empty)
+- Same fix applied to `get_planning_context()` (it already fetched readiness — dropped the buggy overwrite)
+
+### ~~7. HRV always null in recovery data~~ FIXED
+- Garmin's `get_training_readiness()` often returns `hrv_status: null` even on devices that track HRV
+- The dedicated `/hrv-service/hrv/{date}` endpoint (via `c.get_hrv_data()`) carries the real data
+- `parse_training_readiness()` and `_parse_readiness_for_snapshot()` now accept an `hrv_data` kwarg and overlay its fields; snapshot + `get_training_readiness` tool both call `get_hrv_data()` as a fallback
+- New fields: `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_baseline_low/high`, `hrv_feedback`
+
+### ~~8. No bedtime/wake time or full sleep breakdown~~ FIXED
+- `get_sleep_summary()` now extracts `bedtime`/`wake_time` (ISO8601 local), `light_mins`/`light_pct`, `deep_mins`, `rem_mins` per night
+- Snapshot's `sleep.nights` carries last 7 full-detail nights; `persist_sleep_data()` stores them to fitness_history
+- `detect_bedtime_drift()` in fitness.py flags "bedtime drifting later >15min/wk" via `sleep.bedtime_drift`
+
+### ~~9. Rest days invisible in aggregate metrics~~ FIXED
+- Aggregates (CTL, ACWR, compliance totals) hide zero-activity days
+- `week_grid` top-level snapshot key: 7-day rolling window with explicit `REST` marker per day
+- Each day: `day_of_week`, `activity_count`, `types`, `types_summary`, `total_duration_mins`, `total_load`, `is_rest`, `is_today`
+
+### ~~10. No at-a-glance plan adherence by pillar~~ FIXED
+- `_summarize_plan_adherence_by_pillar()` joins plan days with actual activities, returns per-pillar `{planned, completed, skipped_dates, pending_dates, deficit}`
+- Surfaced as top-level `plan_adherence` in the snapshot
+
+### ~~11. Coach accepted "I did X today" without verifying against Garmin~~ FIXED
+- `SERVER_INSTRUCTIONS` now mandates checking `week_grid[today]` before confirming activity claims
+- If `is_rest: true` or types don't match, the coach asks before assuming
+
+### ~~6. Coach gives advice without grounding it in current time/day~~ FIXED
+- `build_current_time_context()` helper in `coach/parsers.py` returns date, day_of_week, hour, minute, time_period, is_weekend
+- `get_coaching_snapshot()` now places `current_time_context` as the FIRST key in the returned JSON
+- `SERVER_INSTRUCTIONS` mandates verifying `current_time_context` before any recommendation
+- New `coach://context/now` resource exposes the same data for lightweight checks
+- Prompts and interactive tools (`generate_smart_brief`, `interactive_check_in`) also thread time_period through to the LLM

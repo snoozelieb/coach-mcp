@@ -35,6 +35,7 @@ from coach.fitness import (
     persist_readiness_data,
     calculate_readiness_baselines,
     derive_adaptation_thresholds,
+    detect_bedtime_drift,
 )
 
 
@@ -844,3 +845,96 @@ class TestDeriveAdaptationThresholds:
         assert result['status'] == 'quantified'
         assert 'conservative' in result['volume_tolerance']
         assert 'standard' in result['volume_tolerance']
+
+
+# ── Bedtime Drift Detection ──────────────────────────────────────
+
+class TestDetectBedtimeDrift:
+    def _nights(self, bedtimes_with_dates):
+        """Helper: build sleep_history records with given bedtimes."""
+        return [
+            {'date': d, 'bedtime': bt, 'duration_hrs': 7.5, 'score': 80}
+            for d, bt in bedtimes_with_dates
+        ]
+
+    def test_insufficient_data_returns_unknown(self):
+        nights = self._nights([
+            ('2026-04-10', '2026-04-10T22:00:00'),
+            ('2026-04-11', '2026-04-11T22:15:00'),
+        ])
+        result = detect_bedtime_drift(nights)
+        assert result['status'] == 'insufficient_data'
+        assert result['direction'] == 'unknown'
+
+    def test_empty_list_returns_unknown(self):
+        assert detect_bedtime_drift([])['status'] == 'insufficient_data'
+
+    def test_stable_bedtime(self):
+        nights = self._nights([
+            (f'2026-04-{d:02d}', f'2026-04-{d:02d}T22:00:00')
+            for d in range(1, 15)
+        ])
+        result = detect_bedtime_drift(nights)
+        assert result['status'] == 'ok'
+        assert result['direction'] == 'stable'
+        assert abs(result['drift_mins_per_wk']) < 5
+
+    def test_drifting_later(self):
+        # Bedtime goes from 22:00 to 23:30 over 14 nights → strong drift later
+        nights = []
+        for i, d in enumerate(range(1, 15)):
+            hr = 22 + (i * 6) // 60  # gradually later
+            mn = (i * 6) % 60
+            nights.append({
+                'date': f'2026-04-{d:02d}',
+                'bedtime': f'2026-04-{d:02d}T{hr:02d}:{mn:02d}:00',
+                'duration_hrs': 7.0, 'score': 75,
+            })
+        result = detect_bedtime_drift(nights)
+        assert result['status'] == 'ok'
+        assert result['direction'] == 'later'
+        assert result['drift_mins_per_wk'] > 15
+
+    def test_drifting_earlier(self):
+        # Bedtime goes from 23:30 to 22:00 over 14 nights → drifting earlier
+        nights = []
+        for i, d in enumerate(range(1, 15)):
+            total_mins = (23 * 60 + 30) - i * 6  # start at 23:30, 6 min earlier/night
+            hr = total_mins // 60
+            mn = total_mins % 60
+            nights.append({
+                'date': f'2026-04-{d:02d}',
+                'bedtime': f'2026-04-{d:02d}T{hr:02d}:{mn:02d}:00',
+                'duration_hrs': 8.0, 'score': 85,
+            })
+        result = detect_bedtime_drift(nights)
+        assert result['status'] == 'ok'
+        assert result['direction'] == 'earlier'
+        assert result['drift_mins_per_wk'] < -15
+
+    def test_handles_midnight_crossing(self):
+        # Bedtimes: 23:30 → 00:30 should register drift later (not -23h earlier)
+        nights = self._nights([
+            ('2026-04-01', '2026-04-01T23:30:00'),
+            ('2026-04-02', '2026-04-02T23:35:00'),
+            ('2026-04-03', '2026-04-03T23:40:00'),
+            ('2026-04-04', '2026-04-04T23:45:00'),
+            ('2026-04-05', '2026-04-05T23:55:00'),
+            ('2026-04-06', '2026-04-07T00:05:00'),  # past midnight
+            ('2026-04-07', '2026-04-08T00:15:00'),
+            ('2026-04-08', '2026-04-09T00:25:00'),
+        ])
+        result = detect_bedtime_drift(nights)
+        assert result['status'] == 'ok'
+        # Drifting later, not earlier by ~23 hours
+        assert result['drift_mins_per_wk'] > 0
+        assert result['drift_mins_per_wk'] < 200  # sanity
+
+    def test_returns_current_avg_bedtime_string(self):
+        nights = self._nights([
+            (f'2026-04-{d:02d}', f'2026-04-{d:02d}T22:00:00')
+            for d in range(1, 15)
+        ])
+        result = detect_bedtime_drift(nights)
+        assert result['current_avg_bedtime'].startswith('22:')
+        assert ':' in result['current_avg_bedtime']

@@ -5,6 +5,7 @@ without calling tools. Useful for IDE integrations and dashboards.
 """
 
 from .mcp_app import mcp
+from .parsers import build_current_time_context
 from .planner import load_athlete, get_current_plan, load_coaching_log
 from .rules import load_training_config
 from .config import DATA_DIR, ATHLETE_FILE, WEEKLY_PLAN_FILE, TRAINING_CONFIG_FILE
@@ -62,6 +63,21 @@ def training_config_resource() -> str:
         return json.dumps(config, indent=2)
     except Exception as e:
         logger.exception("Failed to load training config resource")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.resource(
+    "coach://context/now",
+    name="current_time_context",
+    description="Current date, day of week, hour, and time_period — mandatory time grounding before any coaching advice",
+    mime_type="application/json",
+)
+def current_time_context_resource() -> str:
+    """Current time/day context the coach must verify before recommending."""
+    try:
+        return json.dumps(build_current_time_context(), indent=2)
+    except Exception as e:
+        logger.exception("Failed to build current time context resource")
         return json.dumps({"error": str(e)})
 
 

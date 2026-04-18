@@ -20,7 +20,7 @@ from collections import defaultdict
 from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
-from ..parsers import parse_activities
+from ..parsers import parse_activities, build_current_time_context
 from ..planner import (
     get_current_plan,
     load_athlete,
@@ -45,6 +45,7 @@ from ..fitness import (
     calculate_sport_fitness_metrics,
     get_fitness_trend,
     get_sleep_trend,
+    detect_bedtime_drift,
     persist_sleep_data,
     persist_readiness_data,
     calculate_readiness_baselines,
@@ -62,7 +63,7 @@ from ..config import (
     RACE_TYPE_SPORT_MAP,
     get_sport_group,
 )
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 import logging
 
@@ -308,18 +309,43 @@ def _get_strength_sync_summary(activities: list) -> dict:
         return {'status': 'error', 'message': str(e)}
 
 
-def _parse_readiness_for_snapshot(readiness_data: dict) -> dict:
-    """Parse readiness data for snapshot. Returns structured data, no prescriptions."""
-    if not readiness_data:
+def _parse_readiness_for_snapshot(readiness_data: dict,
+                                  hrv_data: dict | None = None) -> dict:
+    """Parse readiness data for snapshot. Returns structured data, no prescriptions.
+
+    When hrv_data is provided (from c.get_hrv_data()), its fields override
+    null/missing values from readiness. Garmin's training readiness often
+    returns null for hrv_status even when the athlete's device tracks HRV —
+    the dedicated /hrv-service/hrv endpoint has the real data.
+    """
+    if not readiness_data and not hrv_data:
         return {'status': 'unavailable'}
 
-    return {
+    if isinstance(readiness_data, list):
+        readiness_data = readiness_data[0] if readiness_data else {}
+    readiness_data = readiness_data or {}
+
+    from ..parsers import parse_hrv_data
+    hrv_parsed = parse_hrv_data(hrv_data) if hrv_data else None
+
+    result = {
         'score': readiness_data.get('score'),
         'level': readiness_data.get('level'),
         'hrv_status': readiness_data.get('hrvStatus'),
         'sleep_score': readiness_data.get('sleepScore'),
         'recovery_time_mins': readiness_data.get('recoveryTime'),
+        'recovery_time_hrs': readiness_data.get('recoveryTimeInHours'),
     }
+
+    if hrv_parsed:
+        if result.get('hrv_status') is None:
+            result['hrv_status'] = hrv_parsed.get('status')
+        result['hrv_last_night_avg'] = hrv_parsed.get('last_night_avg')
+        result['hrv_weekly_avg'] = hrv_parsed.get('weekly_avg')
+        result['hrv_baseline_low'] = hrv_parsed.get('baseline_low')
+        result['hrv_baseline_high'] = hrv_parsed.get('baseline_high')
+        result['hrv_feedback'] = hrv_parsed.get('feedback')
+    return result
 
 
 def _build_adaptation_patterns() -> dict:
@@ -473,6 +499,118 @@ def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: di
         'per_pillar': per_pillar,
         'lowest_compliance_pillar': lowest,
     }
+
+
+def _summarize_plan_adherence_by_pillar(plan: dict, activities: list,
+                                        today: date) -> dict:
+    """Per-pillar plan adherence summary for the current week.
+
+    For each pillar (strength, mobility, long_effort) returns:
+      - planned: count of planned sessions matching the pillar
+      - completed: count of planned-then-matched sessions
+      - skipped_dates: list of ISO dates where a pillar session was planned but
+          no matching activity happened (only dates <= today)
+      - deficit: planned - completed (skipped + still-pending count)
+
+    This closes the "planned 5 strength, completed 3, skipped Monday + Wednesday"
+    gap that aggregate compliance metrics hide.
+    """
+    from ..rules import classify_activity
+
+    pillars = ('strength', 'mobility', 'long_effort')
+    result = {p: {'planned': 0, 'completed': 0,
+                  'skipped_dates': [], 'pending_dates': []}
+              for p in pillars}
+
+    if not plan or not plan.get('days'):
+        return {p: dict(data, deficit=0) for p, data in result.items()}
+
+    def _session_pillars(session: dict) -> set:
+        if not session:
+            return set()
+        if 'rest' in str(session.get('type', '')).lower():
+            return set()
+        flags = classify_activity(session)
+        found = set()
+        if flags.get('is_strength'):
+            found.add('strength')
+        if flags.get('is_mobility'):
+            found.add('mobility')
+        if flags.get('is_long_effort'):
+            found.add('long_effort')
+        return found
+
+    for day_str, day_data in plan.get('days', {}).items():
+        try:
+            day_date = date.fromisoformat(day_str)
+        except ValueError:
+            continue
+
+        planned = day_data.get('planned') or {}
+        sessions = planned if isinstance(planned, list) else [planned]
+
+        planned_pillars = set()
+        for s in sessions:
+            planned_pillars |= _session_pillars(s)
+        if not planned_pillars:
+            continue
+
+        # Was this pillar actually done on this day?
+        day_acts = [a for a in activities if a.get('date') == day_str]
+        actual_pillars = set()
+        for a in day_acts:
+            actual_pillars |= _session_pillars(a)
+
+        for pillar in planned_pillars:
+            result[pillar]['planned'] += 1
+            if pillar in actual_pillars:
+                result[pillar]['completed'] += 1
+            elif day_date > today:
+                result[pillar]['pending_dates'].append(day_str)
+            else:
+                result[pillar]['skipped_dates'].append(day_str)
+
+    for p, data in result.items():
+        data['skipped_dates'].sort()
+        data['pending_dates'].sort()
+        data['deficit'] = data['planned'] - data['completed']
+    return result
+
+
+def _build_week_grid(activities: list, today: date,
+                     daily_loads: dict | None = None) -> dict:
+    """7-day rolling activity grid ending today.
+
+    Rest days are explicit ('types_summary' = 'REST'). Aggregate metrics (CTL,
+    ACWR, compliance totals) hide zero-activity days — the grid surfaces them
+    so the coach can see the full week at a glance.
+    """
+    grid = {}
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        day_str = day.isoformat()
+        day_acts = [a for a in activities if a.get('date') == day_str]
+        types = sorted({a.get('type', 'unknown') for a in day_acts})
+        total_mins = sum(a.get('duration_mins', 0) or 0 for a in day_acts)
+
+        total_load = None
+        entry = (daily_loads or {}).get(day_str)
+        if isinstance(entry, dict):
+            total_load = entry.get('total')
+        elif isinstance(entry, (int, float)):
+            total_load = entry
+
+        grid[day_str] = {
+            'day_of_week': day.strftime('%A'),
+            'activity_count': len(day_acts),
+            'types': types,
+            'types_summary': '+'.join(types) if types else 'REST',
+            'total_duration_mins': round(total_mins, 1),
+            'total_load': round(total_load, 1) if total_load is not None else None,
+            'is_rest': len(day_acts) == 0,
+            'is_today': day == today,
+        }
+    return grid
 
 
 def _build_snapshot_flags(snapshot: dict) -> dict:
@@ -1031,7 +1169,9 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         JSON with complete coaching context. Always check this first.
     """
     try:
-        today = date.today()
+        now = datetime.now()
+        today = now.date()
+        current_time_context = build_current_time_context(now)
 
         # 0. Auto-refresh fitness history if stale
         history = load_fitness_history()
@@ -1238,7 +1378,13 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         # 6. Recovery status (today) + Sleep tracking
         try:
             readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
-            recovery = _parse_readiness_for_snapshot(readiness_data)
+            # Fetch dedicated HRV endpoint — readiness often returns null for hrv_status
+            try:
+                hrv_data = garmin_api_call(lambda c: c.get_hrv_data(today.isoformat()))
+            except Exception:
+                logger.info("HRV data unavailable", exc_info=True)
+                hrv_data = None
+            recovery = _parse_readiness_for_snapshot(readiness_data, hrv_data=hrv_data)
             # Persist readiness for baseline tracking
             if recovery and recovery.get('status') != 'unavailable':
                 readiness_rec = {
@@ -1246,6 +1392,7 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                     'score': recovery.get('score'),
                     'level': recovery.get('level'),
                     'hrv_status': recovery.get('hrv_status'),
+                    'hrv_last_night_avg': recovery.get('hrv_last_night_avg'),
                     'body_battery': recovery.get('body_battery'),
                 }
                 history = persist_readiness_data(readiness_rec, history)
@@ -1264,8 +1411,9 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         # Save history once (covers both readiness + sleep persistence)
         save_fitness_history(history)
 
-        # 6c. Sleep trend (30-day from persisted data)
+        # 6c. Sleep trend (30-day from persisted data) + bedtime drift (14-day window)
         sleep_trend_30d = get_sleep_trend(history, days=30)
+        bedtime_drift = detect_bedtime_drift(history.get('sleep_history', []))
 
         # 6d. Readiness baselines (personal norms)
         readiness_baselines = calculate_readiness_baselines(
@@ -1417,6 +1565,7 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                 }
 
         snapshot = {
+            'current_time_context': current_time_context,
             'snapshot_date': today.isoformat(),
             'day_of_week': today.strftime('%A'),
 
@@ -1432,6 +1581,11 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                 'activities': activities_this_week,
                 'total_duration_mins': sum(a.get('duration_mins', 0) or 0 for a in activities_this_week),
             },
+
+            'week_grid': _build_week_grid(all_fetched_activities, today, daily_loads),
+
+            'plan_adherence': _summarize_plan_adherence_by_pillar(
+                current_plan, all_fetched_activities, today),
 
             'planned_vs_actual': planned_vs_actual,
 
@@ -1449,6 +1603,7 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                 **(sleep_data if isinstance(sleep_data, dict) else {}),
                 'trend_30d': sleep_trend_30d if sleep_trend_30d.get('status') != 'no_data' else None,
                 'trend_direction': _derive_sleep_trend_direction(sleep_data),
+                'bedtime_drift': bedtime_drift if bedtime_drift.get('status') == 'ok' else None,
             } if sleep_data else {'status': 'no_data'},
 
             'adaptation_patterns': adaptation_patterns,

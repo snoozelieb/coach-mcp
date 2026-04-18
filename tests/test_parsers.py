@@ -5,6 +5,7 @@ These tests have zero MCP dependency and test pure data transformations.
 """
 import json
 import pytest
+from datetime import datetime
 from coach.parsers import (
     check_setup,
     parse_resting_heart_rate,
@@ -18,6 +19,8 @@ from coach.parsers import (
     parse_user_profile,
     parse_hr_zones,
     parse_hr_time_in_zones,
+    build_current_time_context,
+    parse_hrv_data,
 )
 from conftest import (
     SAMPLE_RUNNING_ACTIVITY,
@@ -44,6 +47,129 @@ class TestParseSleepScoreWithRealData:
         stats_with_sleep = {**garmin_fixtures["user_summary"], 'sleepScore': 85}
         assert parse_sleep_score(stats_with_sleep) == 85
 
+
+
+class TestBuildCurrentTimeContext:
+    @pytest.mark.parametrize("hour,expected_period", [
+        (3, 'night'),
+        (4, 'early_morning'),
+        (7, 'early_morning'),
+        (8, 'morning'),
+        (11, 'morning'),
+        (12, 'afternoon'),
+        (16, 'afternoon'),
+        (17, 'evening'),
+        (20, 'evening'),
+        (21, 'night'),
+        (23, 'night'),
+        (0, 'night'),
+    ])
+    def test_time_period_boundaries(self, hour, expected_period):
+        now = datetime(2026, 4, 15, hour, 30)
+        result = build_current_time_context(now)
+        assert result['time_period'] == expected_period
+        assert result['hour'] == hour
+
+    def test_returns_all_expected_keys(self):
+        result = build_current_time_context(datetime(2026, 4, 15, 10, 30))
+        expected_keys = {
+            'timestamp', 'date', 'day_of_week', 'hour', 'minute',
+            'time_period', 'is_weekend', 'timezone_note',
+        }
+        assert set(result.keys()) == expected_keys
+
+    def test_weekend_detection(self):
+        saturday = build_current_time_context(datetime(2026, 4, 18, 10, 0))
+        sunday = build_current_time_context(datetime(2026, 4, 19, 10, 0))
+        monday = build_current_time_context(datetime(2026, 4, 20, 10, 0))
+        friday = build_current_time_context(datetime(2026, 4, 17, 10, 0))
+        assert saturday['is_weekend'] is True
+        assert sunday['is_weekend'] is True
+        assert monday['is_weekend'] is False
+        assert friday['is_weekend'] is False
+
+    def test_day_of_week_string(self):
+        wednesday = build_current_time_context(datetime(2026, 4, 15, 10, 0))
+        assert wednesday['day_of_week'] == 'Wednesday'
+        assert wednesday['date'] == '2026-04-15'
+
+    def test_timestamp_format(self):
+        result = build_current_time_context(datetime(2026, 4, 15, 10, 30, 45))
+        assert result['timestamp'] == '2026-04-15T10:30:45'
+
+    def test_default_uses_now(self):
+        # Should not raise, returns populated dict
+        result = build_current_time_context()
+        assert result['hour'] is not None
+        assert result['time_period'] in ('early_morning', 'morning', 'afternoon', 'evening', 'night')
+
+
+class TestParseHRVData:
+    SAMPLE_HRV = {
+        'hrvSummary': {
+            'calendarDate': '2026-04-18',
+            'status': 'BALANCED',
+            'lastNightAvg': 58,
+            'lastNight5MinHigh': 72,
+            'weeklyAvg': 55,
+            'baseline': {
+                'lowUpper': 45,
+                'balancedLow': 50,
+                'balancedUpper': 70,
+                'markerValue': 58,
+            },
+            'feedbackPhrase': 'Your HRV is within baseline — good recovery.',
+        }
+    }
+
+    def test_parses_summary(self):
+        result = parse_hrv_data(self.SAMPLE_HRV)
+        assert result['status'] == 'BALANCED'
+        assert result['last_night_avg'] == 58
+        assert result['weekly_avg'] == 55
+        assert result['baseline_low'] == 45
+        assert result['feedback'].startswith('Your HRV')
+
+    def test_none_returns_none(self):
+        assert parse_hrv_data(None) is None
+
+    def test_empty_dict_returns_none(self):
+        assert parse_hrv_data({}) is None
+
+    def test_missing_summary_returns_none(self):
+        assert parse_hrv_data({'some_other_key': 'value'}) is None
+
+
+class TestTrainingReadinessHRVOverlay:
+    def test_overlay_fills_null_hrv_status(self):
+        readiness = {'score': 72, 'level': 'HIGH', 'hrvStatus': None,
+                     'sleepScore': 85}
+        hrv = {'hrvSummary': {'status': 'BALANCED', 'lastNightAvg': 58,
+                               'weeklyAvg': 55, 'baseline': {'lowUpper': 45}}}
+        result = parse_training_readiness(readiness, hrv_data=hrv)
+        assert result['hrv_status'] == 'BALANCED'
+        assert result['hrv_last_night_avg'] == 58
+
+    def test_readiness_hrv_status_preserved_when_present(self):
+        readiness = {'score': 72, 'hrvStatus': 'UNBALANCED'}
+        hrv = {'hrvSummary': {'status': 'BALANCED', 'lastNightAvg': 50}}
+        result = parse_training_readiness(readiness, hrv_data=hrv)
+        # readiness hrv_status wins when not null
+        assert result['hrv_status'] == 'UNBALANCED'
+        # HRV detail still overlaid
+        assert result['hrv_last_night_avg'] == 50
+
+    def test_no_hrv_data_still_parses_readiness(self):
+        readiness = {'score': 72, 'level': 'HIGH'}
+        result = parse_training_readiness(readiness)
+        assert result['score'] == 72
+        assert 'hrv_last_night_avg' not in result
+
+    def test_empty_readiness_with_hrv_returns_overlay(self):
+        hrv = {'hrvSummary': {'status': 'LOW', 'lastNightAvg': 30}}
+        result = parse_training_readiness({}, hrv_data=hrv)
+        assert result['hrv_status'] == 'LOW'
+        assert result['hrv_last_night_avg'] == 30
 
 
 class TestParseBodyBatteryWithRealData:

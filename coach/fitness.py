@@ -707,11 +707,89 @@ def get_sleep_trend(history: dict[str, Any] = None, days: int = 30) -> dict[str,
     }
 
 
+def detect_bedtime_drift(sleep_nights: list[dict], min_nights: int = 8) -> dict[str, Any]:
+    """Detect whether bedtime is drifting later, earlier, or stable.
+
+    Compares the average bedtime of the first half of the window against the
+    second half. A drift of >15 min/wk is a meaningful overtraining/stress
+    signal. Bedtimes crossing midnight are normalised onto a 24h circle to
+    avoid the 23:30 → 00:15 "drifting earlier" false positive.
+
+    Args:
+        sleep_nights: list of sleep records (any order). Needs `bedtime` ISO
+            strings and `date` to work.
+        min_nights: minimum nights required to compute drift.
+
+    Returns:
+        Dict with direction ('later'/'earlier'/'stable'),
+        drift_mins_per_wk (signed float), avg_bedtime (HH:MM string),
+        sample_size, status ('ok' or 'insufficient_data').
+    """
+    from datetime import datetime as _dt
+
+    if not sleep_nights or len(sleep_nights) < min_nights:
+        return {'status': 'insufficient_data', 'direction': 'unknown'}
+
+    nights = sorted(
+        [n for n in sleep_nights if n.get('bedtime') and n.get('date')],
+        key=lambda n: n['date'],
+    )
+    if len(nights) < min_nights:
+        return {'status': 'insufficient_data', 'direction': 'unknown'}
+
+    # Convert bedtime to minutes-after-noon (so 20:00 → 480, 01:00 → 780)
+    # Anything between 12:00 and 23:59 gets its real hour*60+min.
+    # Anything between 00:00 and 11:59 gets +1440 (so 01:00 lands after 23:00).
+    def _bedtime_mins(iso: str) -> float | None:
+        try:
+            dt = _dt.fromisoformat(iso.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            return None
+        mins = dt.hour * 60 + dt.minute
+        if dt.hour < 12:
+            mins += 24 * 60
+        return mins
+
+    values = [(n['date'], _bedtime_mins(n['bedtime'])) for n in nights]
+    values = [(d, v) for d, v in values if v is not None]
+    if len(values) < min_nights:
+        return {'status': 'insufficient_data', 'direction': 'unknown'}
+
+    half = len(values) // 2
+    first_half_avg = sum(v for _, v in values[:half]) / half
+    second_half_avg = sum(v for _, v in values[half:]) / (len(values) - half)
+
+    delta_mins = second_half_avg - first_half_avg
+    span_days = max(1, len(values) - 1)
+    drift_mins_per_wk = round((delta_mins / span_days) * 7, 1)
+
+    if drift_mins_per_wk > 15:
+        direction = 'later'
+    elif drift_mins_per_wk < -15:
+        direction = 'earlier'
+    else:
+        direction = 'stable'
+
+    # Format average bedtime as HH:MM (using second-half mean as "current")
+    hh = int(second_half_avg // 60) % 24
+    mm = int(second_half_avg % 60)
+    avg_bedtime = f"{hh:02d}:{mm:02d}"
+
+    return {
+        'status': 'ok',
+        'direction': direction,
+        'drift_mins_per_wk': drift_mins_per_wk,
+        'current_avg_bedtime': avg_bedtime,
+        'sample_size': len(values),
+    }
+
+
 def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None) -> dict[str, Any]:
     """
     Save nightly sleep records to fitness_history.json → sleep_history.
 
-    Stores: date, duration_hrs, score, deep_pct, rem_pct, avg_hr.
+    Stores: date, bedtime, wake_time, duration_hrs, score, deep_pct, rem_pct,
+    light_pct, awake_mins, avg_hr, respiration, sleep_stress.
     Maintains a rolling 30-day window (auto-prunes older entries).
 
     Args:
@@ -733,11 +811,17 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
             continue
         existing.append({
             'date': rec_date,
+            'bedtime': rec.get('bedtime'),
+            'wake_time': rec.get('wake_time'),
             'duration_hrs': rec.get('duration_hrs'),
             'score': rec.get('score'),
             'deep_pct': rec.get('deep_pct'),
             'rem_pct': rec.get('rem_pct'),
+            'light_pct': rec.get('light_pct'),
+            'awake_mins': rec.get('awake_mins'),
             'avg_hr': rec.get('avg_hr'),
+            'respiration': rec.get('respiration'),
+            'sleep_stress': rec.get('sleep_stress'),
         })
         existing_dates.add(rec_date)
 
@@ -1206,16 +1290,32 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
                 nap_dtos = dto.get('dailyNapDTOS', []) or []
                 nap_count = len(nap_dtos)
 
+                # Extract bedtime / wake time — Garmin stores as local ISO8601
+                bedtime = (
+                    dto.get('sleepStartTimestampLocal')
+                    or dto.get('startTimestampLocal')
+                )
+                wake_time = (
+                    dto.get('sleepEndTimestampLocal')
+                    or dto.get('endTimestampLocal')
+                )
+
                 record = {
                     'date': d.isoformat(),
+                    'bedtime': bedtime,
+                    'wake_time': wake_time,
                     'duration_hrs': round(duration_secs / 3600, 1),
                     'score': scores.get('overall', {}).get('value'),
                     'quality': scores.get('overall', {}).get('qualifierKey'),
                     # Quality breakdown
+                    'deep_mins': round(deep_secs / 60, 0),
                     'deep_pct': round(deep_secs / duration_secs * 100, 0) if duration_secs else 0,
                     'deep_quality': scores.get('deepPercentage', {}).get('qualifierKey'),
+                    'rem_mins': round(rem_secs / 60, 0),
                     'rem_pct': round(rem_secs / duration_secs * 100, 0) if duration_secs else 0,
                     'rem_quality': scores.get('remPercentage', {}).get('qualifierKey'),
+                    'light_mins': round(light_secs / 60, 0),
+                    'light_pct': round(light_secs / duration_secs * 100, 0) if duration_secs else 0,
                     'awake_mins': round(awake_secs / 60, 0),
                     'awake_count': dto.get('awakeCount', 0),
                     # Stress and restlessness
@@ -1468,6 +1568,8 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
 
         # Recent nights (detailed)
         'recent': sleep_records[:3],
+        # Full 7-night detail for pattern detection (bedtime drift, deep-sleep drops)
+        'nights': sleep_records[:7],
 
         # Coaching output
         'recommendation': recommendation,

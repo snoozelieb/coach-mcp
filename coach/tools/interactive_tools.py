@@ -10,11 +10,12 @@ sampling or elicitation, the tools will fall back gracefully.
 
 from fastmcp import Context
 from ..mcp_app import mcp
+from ..parsers import build_current_time_context
 from ..planner import get_current_plan, load_athlete, load_coaching_log
 from ..rules import load_training_config, get_upcoming_events
 from ..fitness import load_fitness_history, calculate_fitness_metrics, _extract_total_loads
 from ..config import DATA_DIR, ATHLETE_FILE
-from datetime import date
+from datetime import date, datetime
 import json
 import logging
 
@@ -36,8 +37,11 @@ async def generate_smart_brief(ctx: Context) -> str:
         recovery assessment, and coaching recommendations.
     """
     try:
-        today = date.today()
+        now = datetime.now()
+        today = now.date()
         day_name = today.strftime('%A')
+        time_ctx = build_current_time_context(now)
+        time_period = time_ctx['time_period']
         await ctx.report_progress(0, 3, "Gathering coaching data")
 
         # Gather data for the brief
@@ -78,8 +82,10 @@ async def generate_smart_brief(ctx: Context) -> str:
         ][:3]
 
         data_summary = {
+            'current_time_context': time_ctx,
             'date': today_str,
             'day': day_name,
+            'time_period': time_period,
             'athlete_name': name,
             'today_plan': today_plan,
             'fitness': {
@@ -109,9 +115,13 @@ async def generate_smart_brief(ctx: Context) -> str:
         try:
             result = await ctx.sample(
                 messages=(
-                    f"Generate a concise morning coaching brief for {name} "
-                    f"on {day_name}, {today_str}.\n\n"
+                    f"Generate a concise coaching brief for {name} on "
+                    f"{day_name}, {today_str} ({time_period}, {time_ctx['hour']:02d}:{time_ctx['minute']:02d}).\n\n"
                     f"Data:\n```json\n{json.dumps(data_summary, indent=2)}\n```\n\n"
+                    f"Ground every recommendation in the current time_period "
+                    f"({time_period}). If it's evening, focus on today's "
+                    f"completion and tomorrow's prep rather than starting today's "
+                    f"session.\n\n"
                     f"Format: Markdown, under 200 words. "
                     f"Sections: Yesterday, Today's Session, Recovery/Fitness Check, Key Focus. "
                     f"Be direct and prescriptive — you are the coach."
@@ -119,7 +129,8 @@ async def generate_smart_brief(ctx: Context) -> str:
                 system_prompt=(
                     "You are an expert adaptive training coach. Be direct: "
                     "'You need rest' not 'Maybe consider taking it easy.' "
-                    "Base recommendations on the data provided."
+                    "Base recommendations on the data provided, grounded in "
+                    "the current time_period."
                 ),
                 max_tokens=500,
             )
@@ -195,13 +206,15 @@ async def interactive_check_in(ctx: Context) -> str:
             # Build coaching response based on subjective + objective data
             athlete = load_athlete()
             plan = get_current_plan()
-            today_str = date.today().isoformat()
+            time_ctx = build_current_time_context()
+            today_str = time_ctx['date']
             today_plan = None
             if plan and 'days' in plan and today_str in plan['days']:
                 today_plan = plan['days'][today_str].get('planned')
 
             return json.dumps({
                 'status': 'complete',
+                'current_time_context': time_ctx,
                 'responses': {
                     'feeling': feeling.data,
                     'sleep': sleep_response,
@@ -211,7 +224,8 @@ async def interactive_check_in(ctx: Context) -> str:
                 'coaching_note': (
                     'Use these subjective responses together with '
                     'get_coaching_snapshot() objective data to decide '
-                    'whether today\'s plan should be adjusted.'
+                    'whether today\'s plan should be adjusted. Time context '
+                    f'is {time_ctx["time_period"]} — factor this into advice.'
                 ),
             }, indent=2)
 

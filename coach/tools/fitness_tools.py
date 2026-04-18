@@ -181,19 +181,30 @@ def get_training_readiness(for_date: str = None) -> str:
     """
     Fetches training readiness score and recovery metrics from Garmin.
 
+    Always fetches the dedicated HRV endpoint too — Garmin's training readiness
+    often returns null for hrv_status even when the device tracks HRV. The HRV
+    endpoint fills in last_night_avg, weekly_avg, baseline range, and feedback.
+
     Args:
         for_date: Date in YYYY-MM-DD format (defaults to today)
 
     Returns:
         JSON with: score (0-100), level (PRIME/HIGH/MODERATE/LOW),
-        sleep_score, recovery_time_hrs, hrv_status, acute_load, feedback.
+        sleep_score, recovery_time_hrs, hrv_status, hrv_last_night_avg,
+        hrv_weekly_avg, hrv_baseline_low/high, acute_load, feedback.
     """
     try:
         if for_date is None:
             for_date = date.today().isoformat()
 
         readiness_data = garmin_api_call(lambda c: c.get_training_readiness(for_date))
-        parsed = parse_training_readiness(readiness_data)
+        try:
+            hrv_data = garmin_api_call(lambda c: c.get_hrv_data(for_date))
+        except Exception:
+            logger.info("HRV data unavailable for %s", for_date, exc_info=True)
+            hrv_data = None
+
+        parsed = parse_training_readiness(readiness_data, hrv_data=hrv_data)
 
         return json.dumps(parsed, indent=2)
 

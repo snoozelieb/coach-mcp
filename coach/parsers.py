@@ -5,7 +5,7 @@ These functions have zero MCP dependency and transform raw Garmin data
 into structured formats used by the coaching tools.
 """
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Union
 
 from .config import DATA_DIR
@@ -51,8 +51,44 @@ def parse_resting_heart_rate(stats: dict[str, Any]) -> Union[int, str]:
 
 
 def parse_sleep_score(stats: dict[str, Any]) -> Union[int, str]:
-    """Extract sleep score from Garmin stats response."""
+    """Extract sleep score from Garmin stats response.
+
+    Note: Garmin's get_user_summary() response does NOT include sleepScore
+    in the current API — the primary source is get_training_readiness().
+    This function remains as a defensive fallback.
+    """
     return stats.get('sleepScore', 'N/A')
+
+
+def build_current_time_context(now: datetime | None = None) -> dict:
+    """Build the current-time context that the coach must verify before advising.
+
+    Time-of-day materially changes what advice is possible: morning fueling
+    differs from evening recovery; today's session differs if today is already
+    done. This helper is pure — inject `now` in tests for deterministic output.
+    """
+    now = now or datetime.now()
+    hour = now.hour
+    if 4 <= hour < 8:
+        period = 'early_morning'
+    elif 8 <= hour < 12:
+        period = 'morning'
+    elif 12 <= hour < 17:
+        period = 'afternoon'
+    elif 17 <= hour < 21:
+        period = 'evening'
+    else:
+        period = 'night'
+    return {
+        'timestamp': now.isoformat(timespec='seconds'),
+        'date': now.date().isoformat(),
+        'day_of_week': now.strftime('%A'),
+        'hour': hour,
+        'minute': now.minute,
+        'time_period': period,
+        'is_weekend': now.weekday() >= 5,
+        'timezone_note': 'server local time',
+    }
 
 
 def parse_body_battery(body_battery: list[dict[str, Any]]) -> Union[int, str]:
@@ -152,20 +188,28 @@ def parse_activities(activities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [parse_activity(a) for a in activities]
 
 
-def parse_training_readiness(readiness_data: dict[str, Any]) -> dict[str, Any]:
+def parse_training_readiness(readiness_data: dict[str, Any],
+                             hrv_data: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Parse training readiness from Garmin response.
 
     Returns: score, level, recovery metrics, and feedback.
+
+    When `hrv_data` is provided (from c.get_hrv_data()), its fields override
+    null/missing values from the readiness response. Garmin's training
+    readiness response often returns null for hrv_status on devices that
+    do track HRV — the dedicated /hrv-service/hrv endpoint has the data.
     """
     if not readiness_data:
-        return {'error': 'No readiness data available'}
+        readiness_data = {}
 
     # Handle both single-day and list responses
     if isinstance(readiness_data, list):
         readiness_data = readiness_data[0] if readiness_data else {}
 
-    return {
+    hrv_parsed = parse_hrv_data(hrv_data) if hrv_data else None
+
+    result = {
         'date': readiness_data.get('calendarDate'),
         'score': readiness_data.get('score'),
         'level': readiness_data.get('level'),  # e.g., "PRIME", "HIGH", "MODERATE", "LOW"
@@ -174,6 +218,49 @@ def parse_training_readiness(readiness_data: dict[str, Any]) -> dict[str, Any]:
         'hrv_status': readiness_data.get('hrvStatus'),
         'acute_load': readiness_data.get('acuteLoad'),
         'feedback': readiness_data.get('feedbackPhrase'),
+    }
+
+    if not readiness_data and not hrv_parsed:
+        return {'error': 'No readiness data available'}
+
+    # Overlay HRV data when readiness lacks it (common case — Garmin bug)
+    if hrv_parsed:
+        if result.get('hrv_status') is None:
+            result['hrv_status'] = hrv_parsed.get('status')
+        result['hrv_last_night_avg'] = hrv_parsed.get('last_night_avg')
+        result['hrv_weekly_avg'] = hrv_parsed.get('weekly_avg')
+        result['hrv_baseline_low'] = hrv_parsed.get('baseline_low')
+        result['hrv_baseline_high'] = hrv_parsed.get('baseline_high')
+        result['hrv_feedback'] = hrv_parsed.get('feedback')
+
+    return result
+
+
+def parse_hrv_data(hrv_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Parse Garmin /hrv-service/hrv/{date} response.
+
+    Garmin's HRV endpoint returns nested hrvSummary with status, averages, and
+    baseline range. Returns None if the payload is empty/malformed so callers
+    can flag data_quality.hrv = 'unavailable'.
+    """
+    if not hrv_data or not isinstance(hrv_data, dict):
+        return None
+
+    summary = hrv_data.get('hrvSummary') or {}
+    if not summary:
+        return None
+
+    baseline = summary.get('baseline') or {}
+
+    return {
+        'status': summary.get('status'),  # BALANCED / UNBALANCED / LOW / NONE / POOR
+        'last_night_avg': summary.get('lastNightAvg'),
+        'last_night_5min_high': summary.get('lastNight5MinHigh'),
+        'weekly_avg': summary.get('weeklyAvg'),
+        'baseline_low': baseline.get('lowUpper') or baseline.get('balancedLow'),
+        'baseline_high': baseline.get('balancedUpper') or baseline.get('lowLower'),
+        'baseline_marker': baseline.get('markerValue'),
+        'feedback': summary.get('feedbackPhrase'),
     }
 
 

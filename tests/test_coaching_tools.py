@@ -13,6 +13,8 @@ from coach.tools.coaching_tools import (
     _derive_hrv_trend,
     _derive_compliance_rate_pct,
     _analyze_sport_priorities,
+    _build_week_grid,
+    _summarize_plan_adherence_by_pillar,
 )
 
 
@@ -1007,3 +1009,152 @@ class TestBuildComplianceDiagnostics:
         result = _build_compliance_diagnostics(weekly_4wk, self.PILLARS)
         assert result['per_pillar']['strength']['met_weeks'] == 0
         assert result['per_pillar']['strength']['chronic_miss'] is True
+
+
+# ---------------------------------------------------------------------------
+# _build_week_grid
+# ---------------------------------------------------------------------------
+
+class TestBuildWeekGrid:
+    TODAY = date(2026, 4, 18)  # Saturday
+
+    def test_returns_7_days_ending_today(self):
+        result = _build_week_grid([], self.TODAY)
+        keys = list(result.keys())
+        assert len(keys) == 7
+        assert keys[0] == '2026-04-12'  # today - 6
+        assert keys[-1] == '2026-04-18'  # today
+
+    def test_empty_activities_all_rest_days(self):
+        result = _build_week_grid([], self.TODAY)
+        for day_data in result.values():
+            assert day_data['is_rest'] is True
+            assert day_data['activity_count'] == 0
+            assert day_data['types_summary'] == 'REST'
+            assert day_data['types'] == []
+
+    def test_day_of_week_accurate(self):
+        result = _build_week_grid([], self.TODAY)
+        assert result['2026-04-18']['day_of_week'] == 'Saturday'
+        assert result['2026-04-12']['day_of_week'] == 'Sunday'
+
+    def test_single_activity_recorded(self):
+        acts = [{'date': '2026-04-18', 'type': 'cycling', 'duration_mins': 60.0}]
+        result = _build_week_grid(acts, self.TODAY)
+        assert result['2026-04-18']['is_rest'] is False
+        assert result['2026-04-18']['activity_count'] == 1
+        assert result['2026-04-18']['types_summary'] == 'cycling'
+        assert result['2026-04-18']['total_duration_mins'] == 60.0
+
+    def test_multiple_activities_grouped(self):
+        acts = [
+            {'date': '2026-04-18', 'type': 'cycling', 'duration_mins': 60.0},
+            {'date': '2026-04-18', 'type': 'strength_training', 'duration_mins': 45.0},
+            {'date': '2026-04-18', 'type': 'cycling', 'duration_mins': 15.0},
+        ]
+        result = _build_week_grid(acts, self.TODAY)
+        assert result['2026-04-18']['activity_count'] == 3
+        assert result['2026-04-18']['types_summary'] == 'cycling+strength_training'
+        assert result['2026-04-18']['total_duration_mins'] == 120.0
+
+    def test_is_today_only_for_today(self):
+        result = _build_week_grid([], self.TODAY)
+        is_today_days = [d for d, v in result.items() if v['is_today']]
+        assert is_today_days == ['2026-04-18']
+
+    def test_total_load_from_dict_schema(self):
+        daily_loads = {'2026-04-18': {'total': 85.5, 'activities': []}}
+        result = _build_week_grid([], self.TODAY, daily_loads=daily_loads)
+        assert result['2026-04-18']['total_load'] == 85.5
+
+    def test_total_load_from_scalar_legacy(self):
+        daily_loads = {'2026-04-18': 42.7}
+        result = _build_week_grid([], self.TODAY, daily_loads=daily_loads)
+        assert result['2026-04-18']['total_load'] == 42.7
+
+    def test_total_load_none_when_missing(self):
+        result = _build_week_grid([], self.TODAY, daily_loads={})
+        assert result['2026-04-18']['total_load'] is None
+
+    def test_activities_outside_window_ignored(self):
+        # Activity 10 days ago should not appear in 7-day window
+        acts = [{'date': '2026-04-07', 'type': 'running', 'duration_mins': 30.0}]
+        result = _build_week_grid(acts, self.TODAY)
+        # No day in the window should have activities
+        for v in result.values():
+            assert v['activity_count'] == 0
+
+
+# ---------------------------------------------------------------------------
+# _summarize_plan_adherence_by_pillar
+# ---------------------------------------------------------------------------
+
+class TestPlanAdherenceByPillar:
+    TODAY = date(2026, 4, 18)  # Saturday
+
+    def _plan(self, days_dict):
+        return {'days': days_dict}
+
+    def test_no_plan_returns_zeros(self):
+        result = _summarize_plan_adherence_by_pillar({}, [], self.TODAY)
+        assert result['strength']['planned'] == 0
+        assert result['strength']['skipped_dates'] == []
+        assert result['strength']['deficit'] == 0
+
+    def test_planned_and_completed_strength(self):
+        plan = self._plan({
+            '2026-04-13': {'planned': {'type': 'strength_training', 'duration_mins': 45}},
+            '2026-04-15': {'planned': {'type': 'strength_training', 'duration_mins': 45}},
+        })
+        acts = [
+            {'date': '2026-04-13', 'type': 'strength_training', 'duration_mins': 50},
+            {'date': '2026-04-15', 'type': 'strength_training', 'duration_mins': 42},
+        ]
+        result = _summarize_plan_adherence_by_pillar(plan, acts, self.TODAY)
+        assert result['strength']['planned'] == 2
+        assert result['strength']['completed'] == 2
+        assert result['strength']['skipped_dates'] == []
+
+    def test_skipped_days_reported(self):
+        plan = self._plan({
+            '2026-04-13': {'planned': {'type': 'strength_training', 'duration_mins': 45}},  # Mon
+            '2026-04-15': {'planned': {'type': 'strength_training', 'duration_mins': 45}},  # Wed
+            '2026-04-17': {'planned': {'type': 'strength_training', 'duration_mins': 45}},  # Fri
+        })
+        acts = [
+            {'date': '2026-04-17', 'type': 'strength_training', 'duration_mins': 45},
+        ]
+        result = _summarize_plan_adherence_by_pillar(plan, acts, self.TODAY)
+        assert result['strength']['planned'] == 3
+        assert result['strength']['completed'] == 1
+        assert result['strength']['skipped_dates'] == ['2026-04-13', '2026-04-15']
+        assert result['strength']['deficit'] == 2
+
+    def test_future_sessions_are_pending_not_skipped(self):
+        plan = self._plan({
+            '2026-04-20': {'planned': {'type': 'strength_training', 'duration_mins': 45}},  # future
+        })
+        result = _summarize_plan_adherence_by_pillar(plan, [], self.TODAY)
+        assert result['strength']['planned'] == 1
+        assert result['strength']['skipped_dates'] == []
+        assert result['strength']['pending_dates'] == ['2026-04-20']
+
+    def test_rest_day_not_counted(self):
+        plan = self._plan({
+            '2026-04-13': {'planned': {'type': 'rest', 'duration_mins': 0}},
+            '2026-04-14': {'planned': {'type': 'rest_day'}},
+        })
+        result = _summarize_plan_adherence_by_pillar(plan, [], self.TODAY)
+        assert result['strength']['planned'] == 0
+        assert result['mobility']['planned'] == 0
+
+    def test_mobility_and_long_effort_tracked(self):
+        plan = self._plan({
+            '2026-04-13': {'planned': {'type': 'yoga', 'duration_mins': 45}},  # mobility
+            '2026-04-15': {'planned': {'type': 'cycling', 'duration_mins': 150}},  # long_effort
+        })
+        result = _summarize_plan_adherence_by_pillar(plan, [], self.TODAY)
+        assert result['mobility']['planned'] == 1
+        assert result['mobility']['skipped_dates'] == ['2026-04-13']
+        assert result['long_effort']['planned'] == 1
+        assert result['long_effort']['skipped_dates'] == ['2026-04-15']

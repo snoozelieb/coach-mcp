@@ -62,7 +62,9 @@ def weekly_planning_prompt(notes: str = "") -> PromptResult:
                 f"## Context\n"
                 f"```json\n{json.dumps(context, indent=2)}\n```\n\n"
                 f"## Instructions\n"
-                f"1. Call get_coaching_snapshot() FIRST to get current state\n"
+                f"1. Call get_coaching_snapshot() FIRST. Check `current_time_context` "
+                f"at the top — ground every planning decision in the current date, "
+                f"day of week, and time_period.\n"
                 f"2. Call get_week_constraints() for structured planning constraints\n"
                 f"3. Check the load hierarchy (overall ACWR > sport ACWR > sport CTL)\n"
                 f"4. Build the plan respecting blocked days and injury restrictions\n"
@@ -82,28 +84,31 @@ def weekly_planning_prompt(notes: str = "") -> PromptResult:
 )
 def morning_brief_prompt() -> PromptResult:
     """Generate a morning coaching brief for today."""
-    today = date.today()
-    day_name = today.strftime('%A')
-
     return PromptResult(
         messages=[
             Message(
-                f"Good morning! It's {day_name}, {today.isoformat()}.\n\n"
+                f"Generate a coaching brief grounded in the current time.\n\n"
                 f"## Your task\n"
-                f"1. Call get_coaching_snapshot() to see the full picture\n"
+                f"1. Call get_coaching_snapshot() — the first key is "
+                f"`current_time_context`. Greet the athlete appropriate to "
+                f"the time_period ('Good morning' only if morning; otherwise "
+                f"match the period honestly).\n"
                 f"2. Check yesterday's planned vs actual — investigate any anomalies\n"
-                f"3. Review today's planned session and readiness/recovery\n"
+                f"3. Review today's planned session and readiness/recovery. If "
+                f"time_period is evening or night and today's session is "
+                f"already done, shift the brief toward recovery and tomorrow.\n"
                 f"4. Check sleep data — is the athlete recovered enough for today's plan?\n"
                 f"5. Adapt today's session if needed (readiness gate)\n\n"
                 f"## Output format\n"
+                f"- **Time-appropriate greeting** referencing day and time_period\n"
                 f"- **Yesterday**: What happened vs what was planned (flag anomalies)\n"
-                f"- **Today's session**: What's planned and why\n"
+                f"- **Today's session**: What's planned and why (note if already completed)\n"
                 f"- **Readiness check**: Score, sleep, recovery — is today's plan appropriate?\n"
                 f"- **Adjustments**: Any modifications needed based on current state\n"
-                f"- **One thing to focus on**: The single most important thing for today"
+                f"- **One thing to focus on**: The single most important thing for the rest of today"
             )
         ],
-        description="Morning coaching brief",
+        description="Coaching brief grounded in current time",
     )
 
 
@@ -120,6 +125,9 @@ def injury_assessment_prompt(body_region: str, description: str = "") -> PromptR
                 f"The athlete is reporting an issue with their {body_region}.\n"
                 f"{'Description: ' + description if description else ''}\n\n"
                 f"## Assessment workflow\n"
+                f"0. Call get_coaching_snapshot() first and check "
+                f"`current_time_context` — a niggle reported at 5am is different "
+                f"from one reported mid-training.\n"
                 f"1. Ask clarifying questions about:\n"
                 f"   - When it started (acute vs chronic)\n"
                 f"   - Pain level (1-10) and type (sharp, dull, burning)\n"
@@ -152,7 +160,9 @@ def week_review_prompt() -> PromptResult:
         messages=[
             Message(
                 f"## End-of-week coaching review\n\n"
-                f"1. Call get_coaching_snapshot() for current state\n"
+                f"1. Call get_coaching_snapshot() for current state. Verify "
+                f"`current_time_context` — confirm it's actually end-of-week "
+                f"(day_of_week Sunday/Monday, or the athlete's review day).\n"
                 f"2. Call get_compliance_report() for detailed pillar analysis\n"
                 f"3. Call get_intensity_distribution() for zone analysis\n\n"
                 f"## Review checklist\n"
@@ -189,6 +199,11 @@ def onboarding_prompt() -> PromptResult:
                 f"## New athlete onboarding\n\n"
                 f"You are onboarding a new athlete. Your job is to UNDERSTAND them "
                 f"deeply, then PRESCRIBE their training approach with authority.\n\n"
+                f"### Phase 0: Ground the conversation\n"
+                f"Read the `coach://context/now` resource (or call "
+                f"get_coaching_snapshot() and check `current_time_context`) so "
+                f"your greeting, scheduling suggestions, and first-session "
+                f"timing match the current day and time_period.\n\n"
                 f"### Phase 1: Understand\n"
                 f"Ask about (one area at a time, conversationally):\n"
                 f"- Sports and training background\n"

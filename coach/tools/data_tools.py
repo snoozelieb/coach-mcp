@@ -2,8 +2,9 @@
 
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call
-from ..parsers import (parse_resting_heart_rate, parse_sleep_score, parse_body_battery,
-                     parse_activities, parse_personal_records)
+from ..parsers import (parse_resting_heart_rate, parse_body_battery,
+                     parse_activities, parse_personal_records,
+                     parse_training_readiness)
 from datetime import date
 import json
 import logging
@@ -77,17 +78,22 @@ def get_daily_metrics() -> str:
         - date: Today's date
         - rhr: Resting heart rate in bpm
         - body_battery: Current body battery (0-100)
-        - sleep_score: Sleep quality score
+        - sleep_score: Sleep quality score (from training readiness)
     """
     try:
         today = date.today().isoformat()
 
         stats = garmin_api_call(lambda c: c.get_user_summary(today))
         body_battery = garmin_api_call(lambda c: c.get_body_battery(today))
+        readiness = garmin_api_call(lambda c: c.get_training_readiness(today))
 
         rhr = parse_resting_heart_rate(stats)
-        sleep_score = parse_sleep_score(stats)
         current_bb = parse_body_battery(body_battery)
+
+        readiness_parsed = parse_training_readiness(readiness)
+        sleep_score = readiness_parsed.get('sleep_score')
+        if sleep_score is None:
+            sleep_score = 'N/A'
 
         return json.dumps({
             "date": today,

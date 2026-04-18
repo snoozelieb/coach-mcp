@@ -4,7 +4,7 @@ from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, schedule_workout
 from ..parsers import (parse_activities, parse_training_readiness,
-                     parse_resting_heart_rate, parse_sleep_score, parse_body_battery)
+                     parse_resting_heart_rate, parse_body_battery)
 from ..planner import (build_planning_context, get_current_plan, save_weekly_plan,
                      create_empty_week_template, get_pending_suggestions as get_suggestions,
                      load_athlete, load_methodology, load_coaching_log, save_coaching_log,
@@ -69,7 +69,8 @@ async def get_planning_context(ctx: Context) -> str:
 
         today_recovery['rhr'] = parse_resting_heart_rate(stats)
         today_recovery['body_battery'] = parse_body_battery(body_battery)
-        today_recovery['sleep_score'] = parse_sleep_score(stats)
+        if today_recovery.get('sleep_score') is None:
+            today_recovery['sleep_score'] = 'N/A'
 
         # Calculate load status
         week_ago = (today - timedelta(days=7)).isoformat()

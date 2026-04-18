@@ -1,6 +1,6 @@
 """Tests for tools/data_tools.py — integration tests for the daily metrics composition.
 
-Only tests get_daily_metrics (composes 2 API calls + 3 parsers). The other
+Only tests get_daily_metrics (composes 3 API calls + 3 parsers). The other
 tools (get_activities_range, get_personal_records) are thin wrappers around
 parsers already tested in test_parsers.py.
 """
@@ -8,21 +8,34 @@ import json
 from unittest.mock import Mock, patch
 
 
+SAMPLE_READINESS = [{
+    'calendarDate': '2026-01-15',
+    'score': 72,
+    'level': 'HIGH',
+    'sleepScore': 85,
+    'recoveryTimeInHours': 12,
+    'hrvStatus': 'BALANCED',
+    'acuteLoad': 450.5,
+    'feedbackPhrase': 'Ready to push.',
+}]
+
+
 class TestGetDailyMetrics:
     @patch('coach.tools.data_tools.garmin_api_call')
-    def test_composes_two_api_calls_into_one_result(self, mock_api_call, garmin_fixtures):
+    def test_composes_three_api_calls_into_one_result(self, mock_api_call, garmin_fixtures):
         from coach.tools.data_tools import get_daily_metrics
 
         mock_client = Mock()
         mock_client.get_user_summary.return_value = garmin_fixtures["user_summary"]
         mock_client.get_body_battery.return_value = garmin_fixtures["body_battery"]
+        mock_client.get_training_readiness.return_value = SAMPLE_READINESS
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = json.loads(get_daily_metrics())
 
         assert result['rhr'] == 40
         assert result['body_battery'] == 33
-        assert result['sleep_score'] == 'N/A'
+        assert result['sleep_score'] == 85
         assert 'date' in result
 
     @patch('coach.tools.data_tools.garmin_api_call')
@@ -32,6 +45,7 @@ class TestGetDailyMetrics:
         mock_client = Mock()
         mock_client.get_user_summary.return_value = {}
         mock_client.get_body_battery.return_value = []
+        mock_client.get_training_readiness.return_value = []
         mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         result = json.loads(get_daily_metrics())
@@ -39,6 +53,25 @@ class TestGetDailyMetrics:
         assert result['rhr'] == 'N/A'
         assert result['body_battery'] == 'N/A'
         assert result['sleep_score'] == 'N/A'
+
+    @patch('coach.tools.data_tools.garmin_api_call')
+    def test_sleep_score_falls_back_when_readiness_missing_field(self, mock_api_call, garmin_fixtures):
+        from coach.tools.data_tools import get_daily_metrics
+
+        mock_client = Mock()
+        mock_client.get_user_summary.return_value = garmin_fixtures["user_summary"]
+        mock_client.get_body_battery.return_value = garmin_fixtures["body_battery"]
+        mock_client.get_training_readiness.return_value = [{
+            'calendarDate': '2026-01-15',
+            'score': 72,
+            'level': 'HIGH',
+        }]
+        mock_api_call.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
+
+        result = json.loads(get_daily_metrics())
+
+        assert result['sleep_score'] == 'N/A'
+        assert result['rhr'] == 40
 
     @patch('coach.tools.data_tools.garmin_api_call')
     def test_api_error_returns_error_json(self, mock_api_call):
