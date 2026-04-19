@@ -468,9 +468,12 @@ class TestAnalyzeSportPriorities:
         assert result['has_multi_sport'] is False
 
     def test_multi_sport_volume_sums_to_100(self):
+        # Relative dates so the test isn't date-dependent
+        cycling_date = (date.today() + timedelta(days=60)).isoformat()
+        running_date = (date.today() + timedelta(days=30)).isoformat()
         events = [
-            {'name': 'sani2c', 'date': '2026-06-01', 'priority': 'A', 'type': 'multi_day_mtb'},
-            {'name': '10k trail', 'date': '2026-04-01', 'priority': 'B', 'type': 'trail_ultra'},
+            {'name': 'sani2c', 'date': cycling_date, 'priority': 'A', 'type': 'multi_day_mtb'},
+            {'name': '10k trail', 'date': running_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
         result = _analyze_sport_priorities(events, {}, {})
 
