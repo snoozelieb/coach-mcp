@@ -121,7 +121,7 @@ The coach uses a three-level safety hierarchy before prescribing any training:
 | **Strength** | `sync_strength_session`, `generate_strength_workout` |
 | **Injuries** | `diagnose_injury`, `research_injury`, `update_injury_status` |
 | **Research** | `research_exercise`, `research_sport` |
-| **Decisions** | `log_coaching_decision`, `record_athlete_response`, `propose_major_change` |
+| **Decisions** | `log_coaching_decision`, `record_athlete_response`, `propose_coaching_action`, `approve_proposal`, `reject_proposal` |
 | **Interactive** | `generate_smart_brief` (sampling), `interactive_check_in` (elicitation) |
 
 You don't call these directly — the coach uses them during conversation.

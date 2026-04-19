@@ -163,28 +163,39 @@ def update_decision_status(
 
 
 @mcp.tool()
-def propose_major_change(
-    change_type: str,
+def propose_coaching_action(
+    action_type: str,
     proposal: str,
     rationale: str,
-    impact: str = "high"
+    impact: str = "minor",
+    expires_days: int = 7,
+    proposed_change: str = None,
 ) -> str:
     """
-    Propose a major coaching change that requires user approval.
+    Propose a coaching change that requires the athlete's approval.
 
-    Use this for significant changes like phase transitions, large volume
-    adjustments, or goal rebalancing. The user must approve before these
-    become active.
+    Single canonical proposal workflow — replaces the former
+    propose_major_change / propose_suggestion split. Use this any time the
+    coach wants to change training state in a way the athlete should sign off on
+    (phase transition, volume swing, pillar adjustment, rule change, etc.).
+    For tactical tweaks that do NOT need approval, use log_coaching_decision
+    directly.
 
     Args:
-        change_type: Type of change (phase_transition, volume_change_major,
-                     goal_rebalance, skip_session, add_race)
-        proposal: What change is being proposed
-        rationale: Why this change is recommended (cite data)
-        impact: Impact level (high, medium)
+        action_type: Category key (e.g. 'phase_transition', 'volume_change',
+                     'pillar_adjustment', 'goal_rebalance', 'add_constraint',
+                     'skip_session', 'add_race')
+        proposal: Short statement of what's being proposed
+        rationale: Why — cite data/evidence
+        impact: 'minor' (default) or 'major' — major flags phase changes, large
+                volume swings, goal rebalancing. Surfaces to the athlete with
+                extra emphasis.
+        expires_days: Days until the proposal auto-expires (default 7)
+        proposed_change: Optional specific config change
+                         (e.g. 'strength_sessions: 2 -> 3')
 
     Returns:
-        Proposal ID for user to approve/reject.
+        Proposal ID for the athlete to approve or reject.
     """
     try:
         log = load_coaching_log()
@@ -194,19 +205,20 @@ def propose_major_change(
         if 'metadata' not in log:
             log['metadata'] = {'created': date.today().isoformat()}
 
-        # Generate ID
         proposal_count = len(log['pending_approvals'])
         proposal_id = f"p_{date.today().strftime('%Y%m%d')}_{proposal_count + 1:03d}"
 
         new_proposal = {
             'id': proposal_id,
             'proposed_date': date.today().isoformat(),
-            'type': change_type,
+            'action_type': action_type,
             'proposal': proposal,
             'rationale': rationale,
             'impact': impact,
-            'expires': (date.today() + timedelta(days=3)).isoformat()
+            'expires': (date.today() + timedelta(days=expires_days)).isoformat(),
         }
+        if proposed_change:
+            new_proposal['proposed_change'] = proposed_change
 
         log['pending_approvals'].append(new_proposal)
         save_coaching_log(log)
@@ -216,11 +228,11 @@ def propose_major_change(
             'proposal_id': proposal_id,
             'message': f'Proposal awaiting approval: {proposal}',
             'expires': new_proposal['expires'],
-            'action_required': 'User must approve or reject this change'
+            'action_required': 'Athlete must approve_proposal or reject_proposal',
         }, indent=2)
 
     except Exception as e:
-        logger.exception("propose_major_change failed")
+        logger.exception("propose_coaching_action failed")
         return json.dumps({'error': str(e)})
 
 
@@ -256,7 +268,7 @@ def list_pending_approvals() -> str:
             'pending_approvals': active_pending,
             'count': len(active_pending),
             'expired': expired,
-            'instructions': 'Use approve_coaching_change(id) or reject_coaching_change(id, reason) to act on proposals'
+            'instructions': 'Use approve_proposal(id) or reject_proposal(id, reason) to act on proposals',
         }, indent=2)
 
     except Exception as e:
@@ -265,11 +277,9 @@ def list_pending_approvals() -> str:
 
 
 @mcp.tool()
-def approve_coaching_change(proposal_id: str) -> str:
+def approve_proposal(proposal_id: str) -> str:
     """
-    Approve a pending coaching change proposal.
-
-    The approved change becomes an active decision.
+    Approve a pending coaching proposal — the change becomes an active decision.
 
     Args:
         proposal_id: ID of the proposal to approve
@@ -282,7 +292,6 @@ def approve_coaching_change(proposal_id: str) -> str:
         pending = log.get('pending_approvals', [])
         decisions = log.get('decisions', [])
 
-        # Find the proposal
         found = None
         for i, p in enumerate(pending):
             if p.get('id') == proposal_id:
@@ -292,21 +301,22 @@ def approve_coaching_change(proposal_id: str) -> str:
         if not found:
             return json.dumps({'error': f'Proposal {proposal_id} not found'})
 
-        # Convert to active decision
-        decision_count = len([d for d in decisions if d['date'] == date.today().isoformat()])
+        decision_count = len([d for d in decisions if d.get('date') == date.today().isoformat()])
         decision_id = f"d_{date.today().strftime('%Y%m%d')}_{decision_count + 1:03d}"
 
         new_decision = {
             'id': decision_id,
             'date': date.today().isoformat(),
-            'type': found['type'],
+            'type': found.get('action_type') or found.get('type'),
             'decision': found['proposal'],
             'rationale': found['rationale'],
             'status': 'active',
             'outcome': None,
             'review_date': (date.today() + timedelta(days=14)).isoformat(),
-            'approved_from': proposal_id
+            'approved_from': proposal_id,
         }
+        if found.get('proposed_change'):
+            new_decision['proposed_change'] = found['proposed_change']
 
         decisions.append(new_decision)
         log['pending_approvals'] = pending
@@ -318,22 +328,22 @@ def approve_coaching_change(proposal_id: str) -> str:
             'proposal_id': proposal_id,
             'decision_id': decision_id,
             'message': f'Approved: {found["proposal"]}',
-            'now_active': True
+            'now_active': True,
         }, indent=2)
 
     except Exception as e:
-        logger.exception("approve_coaching_change failed")
+        logger.exception("approve_proposal failed")
         return json.dumps({'error': str(e)})
 
 
 @mcp.tool()
-def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
+def reject_proposal(proposal_id: str, reason: str = None) -> str:
     """
-    Reject a pending coaching change proposal.
+    Reject a pending coaching proposal.
 
     Args:
         proposal_id: ID of the proposal to reject
-        reason: Optional reason for rejection (helps LLM learn)
+        reason: Optional reason for rejection (helps the coach learn)
 
     Returns:
         Confirmation of rejection.
@@ -345,7 +355,6 @@ def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
         if 'rejected_proposals' not in log:
             log['rejected_proposals'] = []
 
-        # Find and remove the proposal
         found = None
         for i, p in enumerate(pending):
             if p.get('id') == proposal_id:
@@ -355,7 +364,6 @@ def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
         if not found:
             return json.dumps({'error': f'Proposal {proposal_id} not found'})
 
-        # Archive to rejected
         found['rejected_date'] = date.today().isoformat()
         found['rejection_reason'] = reason
         log['rejected_proposals'].append(found)
@@ -366,11 +374,11 @@ def reject_coaching_change(proposal_id: str, reason: str = None) -> str:
             'status': 'rejected',
             'proposal_id': proposal_id,
             'reason': reason,
-            'message': f'Rejected: {found["proposal"]}'
+            'message': f'Rejected: {found["proposal"]}',
         }, indent=2)
 
     except Exception as e:
-        logger.exception("reject_coaching_change failed")
+        logger.exception("reject_proposal failed")
         return json.dumps({'error': str(e)})
 
 

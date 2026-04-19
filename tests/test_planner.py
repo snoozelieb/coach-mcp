@@ -7,10 +7,6 @@ from pathlib import Path
 from datetime import date, timedelta
 from coach.planner import (
     build_planning_context,
-    save_suggestion,
-    get_pending_suggestions,
-    approve_suggestion,
-    reject_suggestion,
     create_empty_week_template,
     save_json_file,
     load_json_file,
@@ -115,69 +111,6 @@ class TestBuildPlanningContext:
 
         assert len(context['pending_suggestions']) == 1
         assert context['pending_suggestions'][0]['id'] == 'sug_1'
-
-
-class TestSuggestionManagement:
-    @pytest.fixture
-    def temp_data_dir(self, tmp_path):
-        """Temporarily redirect DATA_DIR to tmp_path."""
-        original = planner.DATA_DIR
-        planner.DATA_DIR = tmp_path
-        yield tmp_path
-        planner.DATA_DIR = original
-
-    def test_save_and_retrieve_suggestion(self, temp_data_dir):
-        suggestion_id = save_suggestion({
-            'type': 'pillar_adjustment',
-            'description': 'Increase strength to 3x/week',
-            'rationale': 'Consistent overachievement',
-        })
-
-        assert suggestion_id.startswith('sug_')
-
-        pending = get_pending_suggestions()
-        assert len(pending) == 1
-        assert pending[0]['description'] == 'Increase strength to 3x/week'
-        assert pending[0]['status'] == 'pending'
-
-    def test_approve_suggestion_moves_to_history(self, temp_data_dir):
-        suggestion_id = save_suggestion({
-            'type': 'test',
-            'description': 'Test suggestion',
-        })
-
-        result = approve_suggestion(suggestion_id)
-
-        assert result is not None
-        assert result['status'] == 'approved'
-
-        pending = get_pending_suggestions()
-        assert len(pending) == 0
-
-        # Check history
-        data = load_json_file('suggestions.json')
-        assert len(data['history']) == 1
-        assert data['history'][0]['status'] == 'approved'
-
-    def test_reject_suggestion_with_reason(self, temp_data_dir):
-        suggestion_id = save_suggestion({
-            'type': 'test',
-            'description': 'Test suggestion',
-        })
-
-        result = reject_suggestion(suggestion_id, reason='Not applicable')
-
-        assert result is not None
-        assert result['status'] == 'rejected'
-        assert result['rejection_reason'] == 'Not applicable'
-
-    def test_approve_nonexistent_returns_none(self, temp_data_dir):
-        result = approve_suggestion('nonexistent_id')
-        assert result is None
-
-    def test_reject_nonexistent_returns_none(self, temp_data_dir):
-        result = reject_suggestion('nonexistent_id')
-        assert result is None
 
 
 class TestCreateEmptyWeekTemplate:

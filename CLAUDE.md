@@ -173,7 +173,7 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 1. **Session start**: Call `get_active_decisions()` to load previous decisions
 2. **During planning**: Previous decisions should influence recommendations
 3. **Significant choices**: Call `log_coaching_decision()` to persist rationale
-4. **Major changes** (phase transition, >15% volume change): Use `propose_major_change()` for user approval
+4. **Changes needing approval** (phase transition, >15% volume change, pillar tweak): Use `propose_coaching_action(action_type, proposal, rationale, impact='major')` — athlete must `approve_proposal` or `reject_proposal`
 5. **After completed sessions**: Call `record_athlete_response()` to track patterns
 
 ### Tool Selection Quick Reference
@@ -219,7 +219,7 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 
 5. MUTATIONS
    → Coaching memory: log_coaching_decision, record_athlete_response
-   → Approvals: propose_major_change → approve_coaching_change / reject_coaching_change
+   → Approvals: propose_coaching_action → approve_proposal / reject_proposal
    → Athlete profile: update_athlete, set_ftp, set_threshold_pace
    → Plan: update_weekly_plan, push_plan_to_garmin, update_phase
 ```
@@ -294,7 +294,6 @@ coach-mcp/
 │       ├── research_tools.py  # research_exercise, list_exercises, research_sport
 │       ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
 │       ├── race_tools.py      # research_race, list/add/remove/update_race
-│       ├── suggestion_tools.py # propose/approve/reject_suggestion
 │       └── interactive_tools.py # generate_smart_brief (sampling), interactive_check_in (elicitation)
 ├── scripts/
 │   ├── daily_loop.py        # Morning audit automation (async, --llm for Anthropic API)
@@ -309,7 +308,6 @@ coach-mcp/
 │   ├── fitness_history.json   # FITNESS - daily loads, CTL/ATL snapshots, sleep history
 │   ├── coaching_log.json      # MEMORY - decisions, patterns, approvals
 │   ├── exercise_library.json  # FORM - cached exercise form cues for Garmin notes
-│   └── suggestions.json       # Pending LLM suggestions
 └── tests/                     # pytest suite (see pyproject.toml for config)
 ```
 
@@ -385,7 +383,7 @@ Key testing patterns:
 
 ## When to Suggest New Tools
 
-The coach should proactively identify gaps. Use `propose_suggestion(type='new_tool', ...)` when:
+The coach should proactively identify gaps. Use `propose_coaching_action(action_type='new_tool', ...)` when:
 - Repeated manual data gathering that could be automated
 - Missing context preventing good coaching decisions
 - Same type of request comes up multiple times

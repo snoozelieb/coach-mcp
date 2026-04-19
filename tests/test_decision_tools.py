@@ -8,10 +8,10 @@ from coach.tools.decision_tools import (
     log_coaching_decision,
     get_active_decisions,
     update_decision_status,
-    propose_major_change,
+    propose_coaching_action,
     list_pending_approvals,
-    approve_coaching_change,
-    reject_coaching_change,
+    approve_proposal,
+    reject_proposal,
     record_athlete_response,
     get_response_patterns,
 )
@@ -129,13 +129,13 @@ class TestUpdateDecisionStatus:
 
 
 # ---------------------------------------------------------------------------
-# propose_major_change
+# propose_coaching_action
 # ---------------------------------------------------------------------------
 
-class TestProposeMajorChange:
+class TestProposeCoachingAction:
     def test_creates_proposal(self, decision_dir):
-        result = json.loads(propose_major_change(
-            change_type='phase_transition',
+        result = json.loads(propose_coaching_action(
+            action_type='phase_transition',
             proposal='Move to build phase',
             rationale='Base phase complete, CTL at target',
         ))
@@ -144,10 +144,38 @@ class TestProposeMajorChange:
         assert result['proposal_id'].startswith('p_')
         assert 'expires' in result
 
-    def test_expiry_date(self, decision_dir):
-        result = json.loads(propose_major_change('phase_transition', 'p1', 'r1'))
-        expected = (date.today() + timedelta(days=3)).isoformat()
+    def test_default_expiry_is_7_days(self, decision_dir):
+        result = json.loads(propose_coaching_action('phase_transition', 'p1', 'r1'))
+        expected = (date.today() + timedelta(days=7)).isoformat()
         assert result['expires'] == expected
+
+    def test_custom_expiry(self, decision_dir):
+        result = json.loads(propose_coaching_action(
+            'phase_transition', 'p1', 'r1', expires_days=14))
+        expected = (date.today() + timedelta(days=14)).isoformat()
+        assert result['expires'] == expected
+
+    def test_impact_defaults_to_minor(self, decision_dir):
+        result = json.loads(propose_coaching_action(
+            'pillar_adjustment', 'Add 3rd strength session', 'CTL plateau'))
+        proposal_id = result['proposal_id']
+        log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        saved = next(p for p in log['pending_approvals'] if p['id'] == proposal_id)
+        assert saved['impact'] == 'minor'
+        assert saved['action_type'] == 'pillar_adjustment'
+
+    def test_major_impact_and_proposed_change_saved(self, decision_dir):
+        json.loads(propose_coaching_action(
+            action_type='volume_change',
+            proposal='Raise weekly hours',
+            rationale='Compliance > 90% for 4 weeks',
+            impact='major',
+            proposed_change='weekly_hours: 8 -> 10',
+        ))
+        log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        saved = log['pending_approvals'][-1]
+        assert saved['impact'] == 'major'
+        assert saved['proposed_change'] == 'weekly_hours: 8 -> 10'
 
 
 # ---------------------------------------------------------------------------
@@ -173,15 +201,16 @@ class TestListPendingApprovals:
 
 
 # ---------------------------------------------------------------------------
-# approve_coaching_change
+# approve_proposal
 # ---------------------------------------------------------------------------
 
-class TestApproveCoachingChange:
+class TestApproveProposal:
     def test_approve_moves_to_decisions(self, decision_dir):
-        proposal = json.loads(propose_major_change('phase_transition', 'Move to build', 'CTL ready'))
+        proposal = json.loads(propose_coaching_action(
+            'phase_transition', 'Move to build', 'CTL ready'))
         proposal_id = proposal['proposal_id']
 
-        result = json.loads(approve_coaching_change(proposal_id))
+        result = json.loads(approve_proposal(proposal_id))
 
         assert result['status'] == 'approved'
         assert result['now_active'] is True
@@ -191,26 +220,35 @@ class TestApproveCoachingChange:
         active = [d for d in log['decisions'] if d['status'] == 'active']
         assert len(active) == 1
         assert active[0]['approved_from'] == proposal_id
-        # Content must be carried from proposal to decision
         assert active[0]['decision'] == 'Move to build'
         assert active[0]['rationale'] == 'CTL ready'
         assert active[0]['type'] == 'phase_transition'
 
+    def test_approved_decision_carries_proposed_change(self, decision_dir):
+        proposal = json.loads(propose_coaching_action(
+            'pillar_adjustment', 'Add 3rd strength session', 'Plateau',
+            proposed_change='strength_sessions: 2 -> 3'))
+        approve_proposal(proposal['proposal_id'])
+        log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        active = [d for d in log['decisions'] if d['status'] == 'active']
+        assert active[0]['proposed_change'] == 'strength_sessions: 2 -> 3'
+
     def test_not_found(self, decision_dir):
-        result = json.loads(approve_coaching_change('nonexistent'))
+        result = json.loads(approve_proposal('nonexistent'))
         assert 'error' in result
 
 
 # ---------------------------------------------------------------------------
-# reject_coaching_change
+# reject_proposal
 # ---------------------------------------------------------------------------
 
-class TestRejectCoachingChange:
+class TestRejectProposal:
     def test_reject_archives_proposal(self, decision_dir):
-        proposal = json.loads(propose_major_change('phase_transition', 'Bad idea', 'rationale'))
+        proposal = json.loads(propose_coaching_action(
+            'phase_transition', 'Bad idea', 'rationale'))
         proposal_id = proposal['proposal_id']
 
-        result = json.loads(reject_coaching_change(proposal_id, reason='Not ready yet'))
+        result = json.loads(reject_proposal(proposal_id, reason='Not ready yet'))
 
         assert result['status'] == 'rejected'
         assert result['reason'] == 'Not ready yet'
@@ -220,7 +258,7 @@ class TestRejectCoachingChange:
         assert len(log['rejected_proposals']) == 1
 
     def test_not_found(self, decision_dir):
-        result = json.loads(reject_coaching_change('nonexistent'))
+        result = json.loads(reject_proposal('nonexistent'))
         assert 'error' in result
 
 

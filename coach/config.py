@@ -16,7 +16,6 @@ ATHLETE_BASELINE_FILE = "athlete_baseline.json"
 TRAINING_CONFIG_FILE = "training_config.json"
 METHODOLOGY_FILE = "methodology.json"
 WEEKLY_PLAN_FILE = "weekly_plan.json"
-SUGGESTIONS_FILE = "suggestions.json"
 COACHING_LOG_FILE = "coaching_log.json"
 FITNESS_HISTORY_FILE = "fitness_history.json"
 EXERCISE_LIBRARY_FILE = "exercise_library.json"  # Cached exercise form cues

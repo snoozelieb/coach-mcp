@@ -20,7 +20,6 @@ import coach.tools.data_tools
 import coach.tools.fitness_tools
 import coach.tools.athlete_tools
 import coach.tools.planning_tools
-import coach.tools.suggestion_tools
 import coach.tools.race_tools
 import coach.tools.coaching_tools
 import coach.tools.injury_tools

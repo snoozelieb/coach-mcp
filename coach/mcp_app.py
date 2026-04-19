@@ -58,8 +58,8 @@ CANONICAL COACHING FLOW
 4. Drill-downs when snapshot isn't enough → get_fitness_status(days=N), \
    get_intensity_distribution(days=N), get_activities_range(start, end), \
    get_training_readiness(for_date).
-5. Mutations → log_coaching_decision, record_athlete_response, propose_major_change \
-   → approve_coaching_change / reject_coaching_change, update_athlete, set_ftp, \
+5. Mutations → log_coaching_decision, record_athlete_response, propose_coaching_action \
+   → approve_proposal / reject_proposal, update_athlete, set_ftp, \
    update_weekly_plan, update_injury_status.
 
 INJURY SAFETY — NON-NEGOTIABLE
