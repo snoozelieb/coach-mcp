@@ -15,6 +15,7 @@ from coach.tools.coaching_tools import (
     _analyze_sport_priorities,
     _build_week_grid,
     _summarize_plan_adherence_by_pillar,
+    _compute_coaching_score,
 )
 
 
@@ -1158,3 +1159,99 @@ class TestPlanAdherenceByPillar:
         assert result['mobility']['skipped_dates'] == ['2026-04-13']
         assert result['long_effort']['planned'] == 1
         assert result['long_effort']['skipped_dates'] == ['2026-04-15']
+
+
+# ---------------------------------------------------------------------------
+# _compute_coaching_score
+# ---------------------------------------------------------------------------
+
+class TestComputeCoachingScore:
+    TODAY = date(2026, 4, 19)
+
+    def _empty_history(self):
+        return {'daily_loads': {}, 'snapshots': []}
+
+    def test_returns_expected_shape_on_empty_data(self):
+        result = _compute_coaching_score(
+            fitness_history=self._empty_history(),
+            athlete={'injury_history': []},
+            training_config={},
+            coaching_log={},
+            today=self.TODAY,
+        )
+        assert 'overall_score' in result
+        assert result['trend'] == 'stable'
+        assert set(result['components'].keys()) == {
+            'progress', 'health', 'achievability', 'adaptation'
+        }
+        for comp in result['components'].values():
+            assert 'score' in comp and 'weight' in comp and 'data' in comp
+
+    def test_active_injury_penalises_health(self):
+        result = _compute_coaching_score(
+            fitness_history=self._empty_history(),
+            athlete={
+                'injury_history': [
+                    {'status': 'active', 'type': 'knee strain',
+                     'restricted_activities': ['running']},
+                ],
+            },
+            training_config={},
+            coaching_log={},
+            today=self.TODAY,
+        )
+        assert result['components']['health']['data']['injuries_active'] == 1
+        assert result['components']['health']['data']['restricted_activities'] == ['running']
+        assert result['components']['health']['score'] <= 70  # 90 - 20
+
+    def test_adaptation_score_from_log_richness(self):
+        responses_5 = [{'response': 'positive', 'pattern': f'p{i}'} for i in range(5)]
+        result = _compute_coaching_score(
+            fitness_history=self._empty_history(),
+            athlete={'injury_history': []},
+            training_config={},
+            coaching_log={'athlete_responses': responses_5},
+            today=self.TODAY,
+        )
+        assert result['components']['adaptation']['score'] == 65
+        assert result['components']['adaptation']['data']['patterns_identified'] == 5
+        assert result['components']['adaptation']['data']['positive_responses'] == 5
+
+    def test_achievability_from_daily_loads_activities(self):
+        # Seed one strength session per week for the last 4 weeks
+        daily_loads = {}
+        for week in range(4):
+            d = (self.TODAY - timedelta(days=week * 7 + 1)).isoformat()
+            daily_loads[d] = {
+                'total': 40.0,
+                'by_sport': {'strength': 40.0},
+                'activities': [
+                    {'date': d, 'type': 'strength_training', 'duration_mins': 45},
+                ],
+            }
+        result = _compute_coaching_score(
+            fitness_history={'daily_loads': daily_loads, 'snapshots': []},
+            athlete={'injury_history': []},
+            training_config={},
+            coaching_log={},
+            today=self.TODAY,
+        )
+        # Compliance reconstructed from daily_loads — compliance_rate is set
+        assert result['components']['achievability']['data']['compliance_rate'] is not None
+
+    def test_pure_no_garmin_no_disk(self, monkeypatch):
+        """Guard against regression: no garmin_api_call invocation inside the helper."""
+        from coach.tools import coaching_tools
+        called = []
+        monkeypatch.setattr(
+            coaching_tools, 'garmin_api_call',
+            lambda *a, **kw: called.append((a, kw)) or [],
+        )
+        _compute_coaching_score(
+            fitness_history=self._empty_history(),
+            athlete={'injury_history': []},
+            training_config={},
+            coaching_log={},
+            today=self.TODAY,
+        )
+        assert called == []

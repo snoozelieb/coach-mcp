@@ -934,6 +934,237 @@ def get_compliance_report(days: int = 7) -> str:
         return json.dumps({'error': str(e)})
 
 
+def _compute_coaching_score(
+    fitness_history: dict,
+    athlete: dict,
+    training_config: dict,
+    coaching_log: dict,
+    today: date,
+) -> dict:
+    """Compute the 4-component coaching score from persisted data only.
+
+    Pure function — no Garmin calls, no disk I/O. Same output shape as
+    get_coaching_score. Callers can pre-load the 4 inputs (e.g. after a
+    snapshot has already refreshed fitness_history) to avoid redundant work.
+
+    Components:
+    - Progress (40%): CTL trajectory toward A-race
+    - Health (30%): Active injuries + ACWR safety
+    - Achievability (20%): Pillar compliance rate over the last 4 weeks,
+      reconstructed from fitness_history.daily_loads[*].activities
+    - Adaptation (10%): Athlete-response log richness
+    """
+    daily_loads = fitness_history.get('daily_loads', {}) or {}
+    total_loads = _extract_total_loads(daily_loads) if daily_loads else {}
+    fitness_data = calculate_fitness_metrics(total_loads) if total_loads else {}
+    current_ctl = fitness_data.get('ctl', 0) if fitness_data else 0
+
+    # 4-week CTL gain from persisted snapshots (v1 + v2)
+    snapshots = fitness_history.get('snapshots', [])
+    ctl_4wk_ago = None
+    for snap in snapshots:
+        try:
+            snap_date = date.fromisoformat(snap['date'])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if (today - snap_date).days >= 28:
+            if 'total' in snap:
+                ctl_4wk_ago = snap['total'].get('ctl', 0)
+            else:
+                ctl_4wk_ago = snap.get('ctl', 0)
+            break
+    ctl_gain_4wk = current_ctl - (ctl_4wk_ago or current_ctl)
+
+    # Progress (40%)
+    events = training_config.get('events', [])
+    a_race = next((e for e in events if e.get('priority') == 'A'), None)
+    progress_score = 50
+    progress_data = {
+        'current_ctl': round(current_ctl, 1),
+        'ctl_gain_4wk': round(ctl_gain_4wk, 1),
+        'target_ctl': None,
+        'days_remaining': None,
+        'trajectory': 'unknown',
+    }
+    if a_race:
+        race_type = a_race.get('type', 'default')
+        target_ctl = CTL_TARGETS.get(race_type, CTL_TARGETS['default'])['ideal']
+        progress_data['target_ctl'] = target_ctl
+
+        race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
+        if race_sport and daily_loads:
+            sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
+            if sport_m.get('days_with_data', 0) > 0:
+                current_ctl = sport_m['ctl']
+                progress_data['current_ctl'] = round(current_ctl, 1)
+                progress_data['ctl_source'] = f'{race_sport}_specific'
+
+        try:
+            race_dt = date.fromisoformat(a_race.get('date'))
+            days_remaining = (race_dt - today).days
+            progress_data['days_remaining'] = days_remaining
+            if days_remaining > 0:
+                required_gain = target_ctl - current_ctl
+                weeks_remaining = days_remaining / 7
+                if required_gain <= 0:
+                    progress_score = 100
+                    progress_data['trajectory'] = 'ahead'
+                elif weeks_remaining > 0:
+                    required_weekly_gain = required_gain / weeks_remaining
+                    actual_weekly_gain = ctl_gain_4wk / 4
+                    if actual_weekly_gain >= required_weekly_gain:
+                        progress_score = 90
+                        progress_data['trajectory'] = 'on_track'
+                    elif actual_weekly_gain >= required_weekly_gain * 0.7:
+                        progress_score = 70
+                        progress_data['trajectory'] = 'slightly_behind'
+                    else:
+                        progress_score = 50
+                        progress_data['trajectory'] = 'behind'
+        except (ValueError, TypeError):
+            pass
+
+    # Health (30%)
+    health_score = 90
+    health_data = {
+        'injuries_active': 0,
+        'acwr_status': 'unknown',
+        'acwr': None,
+        'overtraining_risk': 'low',
+    }
+    relevant_injuries = [
+        i for i in athlete.get('injury_history', [])
+        if i.get('status') in ['active', 'improving']
+    ]
+    active_injuries = [i for i in relevant_injuries if i.get('status') == 'active']
+    improving_injuries = [i for i in relevant_injuries if i.get('status') == 'improving']
+    health_data['injuries_active'] = len(active_injuries)
+    health_data['injuries_improving'] = len(improving_injuries)
+    restricted = []
+    for inj in relevant_injuries:
+        restricted.extend(inj.get('restricted_activities', []))
+    health_data['restricted_activities'] = sorted(set(restricted))
+    health_score -= 20 * len(active_injuries)
+    health_score -= 10 * len(improving_injuries)
+
+    if fitness_data:
+        acwr = fitness_data.get('acwr', 1.0)
+        acwr_status = fitness_data.get('acwr_status', 'optimal')
+        health_data['acwr'] = round(acwr, 2)
+        health_data['acwr_status'] = acwr_status
+        if acwr_status == 'danger':
+            health_score -= 30
+            health_data['overtraining_risk'] = 'high'
+        elif acwr_status == 'elevated':
+            health_score -= 15
+            health_data['overtraining_risk'] = 'moderate'
+    health_score = max(0, health_score)
+
+    # Achievability (20%) — reconstruct last-28d activities from daily_loads
+    start_iso = (today - timedelta(days=28)).isoformat()
+    recent_activities = []
+    for day_str, day_data in daily_loads.items():
+        if day_str < start_iso:
+            continue
+        if isinstance(day_data, dict):
+            recent_activities.extend(day_data.get('activities', []) or [])
+    compliance = check_weekly_compliance(recent_activities)
+
+    achievability_score = 70
+    achievability_data = {
+        'compliance_rate': None,
+        'strength_compliant': compliance.get('strength', {}).get('compliant', True),
+        'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
+    }
+    pillars_total = 0
+    pillars_met = 0
+    for pillar in ['strength', 'mobility', 'long_effort']:
+        if pillar in compliance:
+            pillars_total += 1
+            if compliance[pillar].get('compliant', False):
+                pillars_met += 1
+    if pillars_total > 0:
+        compliance_rate = pillars_met / pillars_total * 100
+        achievability_data['compliance_rate'] = round(compliance_rate, 0)
+        if compliance_rate >= 90:
+            achievability_score = 95
+        elif compliance_rate >= 75:
+            achievability_score = 80
+        elif compliance_rate >= 60:
+            achievability_score = 65
+        else:
+            achievability_score = 50
+
+    # Adaptation (10%)
+    adaptation_score = 30
+    adaptation_data = {
+        'responses_logged': 0,
+        'patterns_identified': 0,
+        'positive_responses': 0,
+        'negative_responses': 0,
+    }
+    responses = coaching_log.get('athlete_responses', [])
+    adaptation_data['responses_logged'] = len(responses)
+    patterns = set()
+    positive_count = 0
+    negative_count = 0
+    for r in responses:
+        if r.get('pattern'):
+            patterns.add(r['pattern'])
+        response_type = (r.get('response') or '').lower()
+        if 'positive' in response_type or 'good' in response_type:
+            positive_count += 1
+        elif 'negative' in response_type or 'poor' in response_type:
+            negative_count += 1
+    adaptation_data['patterns_identified'] = len(patterns)
+    adaptation_data['positive_responses'] = positive_count
+    adaptation_data['negative_responses'] = negative_count
+    if len(responses) >= 10:
+        adaptation_score = 80
+    elif len(responses) >= 5:
+        adaptation_score = 65
+    elif len(responses) >= 1:
+        adaptation_score = 50
+
+    overall_score = (
+        progress_score * 0.4 +
+        health_score * 0.3 +
+        achievability_score * 0.2 +
+        adaptation_score * 0.1
+    )
+
+    feedback = []
+    if progress_data['trajectory'] == 'behind':
+        feedback.append(f"CTL trajectory behind target (gained {ctl_gain_4wk:.1f} in 4 weeks)")
+    elif progress_data['trajectory'] == 'on_track':
+        feedback.append(f"CTL building well (+{ctl_gain_4wk:.1f} in 4 weeks)")
+    elif progress_data['trajectory'] == 'ahead':
+        feedback.append("Already at or above target CTL")
+    if health_data['injuries_active'] > 0:
+        feedback.append(f"{health_data['injuries_active']} active injury/injuries")
+    if health_data['overtraining_risk'] == 'high':
+        feedback.append("High overtraining risk (ACWR elevated)")
+    if achievability_data['compliance_rate'] is not None:
+        if achievability_data['compliance_rate'] >= 80:
+            feedback.append("High compliance suggests realistic plan")
+        elif achievability_data['compliance_rate'] < 60:
+            feedback.append("Low compliance - plan may be too ambitious")
+    if adaptation_data['responses_logged'] < 5:
+        feedback.append("Limited athlete response data - log more patterns")
+
+    return {
+        'overall_score': round(overall_score, 0),
+        'trend': 'improving' if ctl_gain_4wk > 0 else 'declining' if ctl_gain_4wk < 0 else 'stable',
+        'components': {
+            'progress': {'score': progress_score, 'weight': '40%', 'data': progress_data},
+            'health': {'score': health_score, 'weight': '30%', 'data': health_data},
+            'achievability': {'score': achievability_score, 'weight': '20%', 'data': achievability_data},
+            'adaptation': {'score': adaptation_score, 'weight': '10%', 'data': adaptation_data},
+        },
+        'feedback': feedback,
+    }
+
+
 @mcp.tool()
 def get_coaching_score() -> str:
     """
@@ -945,298 +1176,22 @@ def get_coaching_score() -> str:
     - Achievability (20%): Compliance rate — is the plan realistic?
     - Adaptation (10%): Are athlete response patterns being logged?
 
-    Use periodically (weekly or after plan changes) to catch problems early.
-    A declining score means something needs to change — investigate the weakest
-    component.
+    Reads from persisted files only (fitness_history.json, athlete.json,
+    training_config.json, coaching_log.json) — no Garmin calls. Run the
+    snapshot first if you want fresh activity data feeding the compliance
+    calculation (snapshot auto-refreshes fitness_history).
 
     Returns:
         JSON with overall score, component breakdown, trend, and feedback.
     """
     try:
-        today = date.today()
-
-        # Get fitness data for progress calculation
-        history = load_fitness_history()
-        daily_loads = history.get('daily_loads', {})
-        total_loads = _extract_total_loads(daily_loads) if daily_loads else {}
-        fitness_data = calculate_fitness_metrics(total_loads) if total_loads else {}
-        current_ctl = fitness_data.get('ctl', 0) if fitness_data else 0
-
-        # Get 4-week CTL trend from snapshots (handle v1 and v2 formats)
-        snapshots = history.get('snapshots', [])
-        ctl_4wk_ago = None
-        for snapshot in snapshots:
-            snapshot_date = date.fromisoformat(snapshot['date'])
-            if (today - snapshot_date).days >= 28:
-                if 'total' in snapshot:
-                    ctl_4wk_ago = snapshot['total'].get('ctl', 0)
-                else:
-                    ctl_4wk_ago = snapshot.get('ctl', 0)
-                break
-        ctl_gain_4wk = current_ctl - (ctl_4wk_ago or current_ctl)
-
-        # Get A-race target
-        training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
-        if training_config_path.exists():
-            with open(training_config_path) as f:
-                training_config = json.load(f)
-        else:
-            training_config = {}
-
-        events = training_config.get('events', [])
-        a_race = next((e for e in events if e.get('priority') == 'A'), None)
-
-        # Calculate progress score (40% weight)
-        progress_score = 50  # Default
-        progress_data = {
-            'current_ctl': round(current_ctl, 1),
-            'ctl_gain_4wk': round(ctl_gain_4wk, 1),
-            'target_ctl': None,
-            'days_remaining': None,
-            'trajectory': 'unknown',
-        }
-
-        if a_race:
-            race_type = a_race.get('type', 'default')
-            target_config = CTL_TARGETS.get(race_type, CTL_TARGETS['default'])
-            target_ctl = target_config['ideal']
-            progress_data['target_ctl'] = target_ctl
-
-            # Use sport-specific CTL for the A-race sport
-            race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
-            if race_sport and daily_loads:
-                sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
-                if sport_m.get('days_with_data', 0) > 0:
-                    current_ctl = sport_m['ctl']
-                    progress_data['current_ctl'] = round(current_ctl, 1)
-                    progress_data['ctl_source'] = f'{race_sport}_specific'
-
-            try:
-                race_dt = date.fromisoformat(a_race.get('date'))
-                days_remaining = (race_dt - today).days
-                progress_data['days_remaining'] = days_remaining
-
-                if days_remaining > 0:
-                    # Calculate required CTL gain rate
-                    required_gain = target_ctl - current_ctl
-                    weeks_remaining = days_remaining / 7
-
-                    if required_gain <= 0:
-                        progress_score = 100
-                        progress_data['trajectory'] = 'ahead'
-                    elif weeks_remaining > 0:
-                        # Check if current gain rate is sufficient
-                        required_weekly_gain = required_gain / weeks_remaining
-                        actual_weekly_gain = ctl_gain_4wk / 4
-                        if actual_weekly_gain >= required_weekly_gain:
-                            progress_score = 90
-                            progress_data['trajectory'] = 'on_track'
-                        elif actual_weekly_gain >= required_weekly_gain * 0.7:
-                            progress_score = 70
-                            progress_data['trajectory'] = 'slightly_behind'
-                        else:
-                            progress_score = 50
-                            progress_data['trajectory'] = 'behind'
-            except (ValueError, TypeError):
-                pass
-
-        # Calculate health score (30% weight)
-        health_score = 90  # Default - assume healthy
-        health_data = {
-            'injuries_active': 0,
-            'acwr_status': 'unknown',
-            'acwr': None,
-            'overtraining_risk': 'low',
-        }
-
-        # Check injuries (active OR improving with restrictions)
-        athlete_path = DATA_DIR / ATHLETE_FILE
-        if athlete_path.exists():
-            with open(athlete_path) as f:
-                athlete = json.load(f)
-            # Count injuries that are active OR improving but still have restrictions
-            relevant_injuries = [
-                i for i in athlete.get('injury_history', [])
-                if i.get('status') in ['active', 'improving']
-            ]
-            active_injuries = [i for i in relevant_injuries if i.get('status') == 'active']
-            improving_injuries = [i for i in relevant_injuries if i.get('status') == 'improving']
-
-            health_data['injuries_active'] = len(active_injuries)
-            health_data['injuries_improving'] = len(improving_injuries)
-            health_data['restricted_activities'] = []
-
-            # Collect all restricted activities
-            for inj in relevant_injuries:
-                restrictions = inj.get('restricted_activities', [])
-                health_data['restricted_activities'].extend(restrictions)
-            health_data['restricted_activities'] = list(set(health_data['restricted_activities']))
-
-            # Score impact: active = -20, improving = -10
-            if len(active_injuries) > 0:
-                health_score -= 20 * len(active_injuries)
-            if len(improving_injuries) > 0:
-                health_score -= 10 * len(improving_injuries)  # Less impact but still counts
-
-        # Check ACWR
-        if fitness_data:
-            acwr = fitness_data.get('acwr', 1.0)
-            acwr_status = fitness_data.get('acwr_status', 'optimal')
-            health_data['acwr'] = round(acwr, 2)
-            health_data['acwr_status'] = acwr_status
-
-            if acwr_status == 'danger':
-                health_score -= 30
-                health_data['overtraining_risk'] = 'high'
-            elif acwr_status == 'elevated':
-                health_score -= 15
-                health_data['overtraining_risk'] = 'moderate'
-            elif acwr_status == 'low':
-                health_data['overtraining_risk'] = 'low'  # Undertrained, not dangerous
-
-        health_score = max(0, health_score)
-
-        # Calculate achievability score (20% weight)
-        # Based on compliance rate over last 4 weeks
-        start_date = today - timedelta(days=28)
-        raw_activities = garmin_api_call(
-            lambda c: c.get_activities_by_date(
-                start_date.isoformat(),
-                today.isoformat()
-            )
-        )
-        activities = parse_activities(raw_activities)
-        compliance = check_weekly_compliance(activities)
-
-        achievability_score = 70  # Default
-        achievability_data = {
-            'compliance_rate': None,
-            'strength_compliant': compliance.get('strength', {}).get('compliant', True),
-            'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
-        }
-
-        # Simplified compliance rate calculation
-        pillars_total = 0
-        pillars_met = 0
-        for pillar in ['strength', 'mobility', 'long_effort']:
-            if pillar in compliance:
-                pillars_total += 1
-                if compliance[pillar].get('compliant', False):
-                    pillars_met += 1
-
-        if pillars_total > 0:
-            compliance_rate = pillars_met / pillars_total * 100
-            achievability_data['compliance_rate'] = round(compliance_rate, 0)
-            if compliance_rate >= 90:
-                achievability_score = 95
-            elif compliance_rate >= 75:
-                achievability_score = 80
-            elif compliance_rate >= 60:
-                achievability_score = 65
-            else:
-                achievability_score = 50
-
-        # Calculate adaptation score (10% weight)
-        adaptation_score = 50  # Default - no data
-        adaptation_data = {
-            'responses_logged': 0,
-            'patterns_identified': 0,
-            'positive_responses': 0,
-            'negative_responses': 0,
-        }
-
-        try:
-            log = load_coaching_log()
-            responses = log.get('athlete_responses', [])
-            adaptation_data['responses_logged'] = len(responses)
-
-            # Count patterns
-            patterns = set()
-            positive_count = 0
-            negative_count = 0
-            for r in responses:
-                if r.get('pattern'):
-                    patterns.add(r['pattern'])
-                response_type = r.get('response', '')
-                if 'positive' in response_type.lower() or 'good' in response_type.lower():
-                    positive_count += 1
-                elif 'negative' in response_type.lower() or 'poor' in response_type.lower():
-                    negative_count += 1
-
-            adaptation_data['patterns_identified'] = len(patterns)
-            adaptation_data['positive_responses'] = positive_count
-            adaptation_data['negative_responses'] = negative_count
-
-            # Score based on data richness
-            if len(responses) >= 10:
-                adaptation_score = 80
-            elif len(responses) >= 5:
-                adaptation_score = 65
-            elif len(responses) >= 1:
-                adaptation_score = 50
-            else:
-                adaptation_score = 30  # No data is a problem
-        except Exception:
-            pass
-
-        # Calculate overall score (weighted average)
-        overall_score = (
-            progress_score * 0.4 +
-            health_score * 0.3 +
-            achievability_score * 0.2 +
-            adaptation_score * 0.1
-        )
-
-        # Generate coaching feedback (DATA not prescriptions)
-        feedback = []
-        if progress_data['trajectory'] == 'behind':
-            feedback.append(f"CTL trajectory behind target (gained {ctl_gain_4wk:.1f} in 4 weeks)")
-        elif progress_data['trajectory'] == 'on_track':
-            feedback.append(f"CTL building well (+{ctl_gain_4wk:.1f} in 4 weeks)")
-        elif progress_data['trajectory'] == 'ahead':
-            feedback.append("Already at or above target CTL")
-
-        if health_data['injuries_active'] > 0:
-            feedback.append(f"{health_data['injuries_active']} active injury/injuries")
-        if health_data['overtraining_risk'] == 'high':
-            feedback.append("High overtraining risk (ACWR elevated)")
-
-        if achievability_data['compliance_rate'] and achievability_data['compliance_rate'] >= 80:
-            feedback.append("High compliance suggests realistic plan")
-        elif achievability_data['compliance_rate'] and achievability_data['compliance_rate'] < 60:
-            feedback.append("Low compliance - plan may be too ambitious")
-
-        if adaptation_data['responses_logged'] < 5:
-            feedback.append("Limited athlete response data - log more patterns")
-
-        return json.dumps({
-            'overall_score': round(overall_score, 0),
-            'trend': 'improving' if ctl_gain_4wk > 0 else 'declining' if ctl_gain_4wk < 0 else 'stable',
-            'components': {
-                'progress': {
-                    'score': progress_score,
-                    'weight': '40%',
-                    'data': progress_data,
-                },
-                'health': {
-                    'score': health_score,
-                    'weight': '30%',
-                    'data': health_data,
-                },
-                'achievability': {
-                    'score': achievability_score,
-                    'weight': '20%',
-                    'data': achievability_data,
-                },
-                'adaptation': {
-                    'score': adaptation_score,
-                    'weight': '10%',
-                    'data': adaptation_data,
-                },
-            },
-            'feedback': feedback,
-        }, indent=2)
-
+        return json.dumps(_compute_coaching_score(
+            fitness_history=load_fitness_history(),
+            athlete=load_athlete(),
+            training_config=load_training_config(),
+            coaching_log=load_coaching_log(),
+            today=date.today(),
+        ), indent=2)
     except Exception as e:
         logger.exception("get_coaching_score failed")
         return json.dumps({'error': str(e)})
