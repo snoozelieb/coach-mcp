@@ -256,7 +256,7 @@ Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bund
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **Tools** | 57 tools | `@mcp.tool()` — sync and async |
+| **Tools** | 54 tools | `@mcp.tool()` — sync and async |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
 | **Resources** | 5 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now |
 | **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
@@ -283,18 +283,18 @@ coach-mcp/
 │   ├── rules.py             # Compliance checker, safety rules, classify_activity
 │   ├── web_utils.py         # HTML stripping + page fetching
 │   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
-│   └── tools/               # MCP tool modules
-│       ├── data_tools.py      # get_daily_metrics, get_activities_range, get_personal_records
-│       ├── fitness_tools.py   # refresh_athlete_baseline (+ Garmin profile pull), get_training_readiness, etc.
-│       ├── athlete_tools.py   # update_athlete, set_threshold_pace, set_ftp, etc.
-│       ├── planning_tools.py  # get_weekly_plan, update_weekly_plan, push_plan_to_garmin, get_week_constraints, get_weekly_prescription, get_periodization_status, update_phase
-│       ├── coaching_tools.py  # get_coaching_snapshot, get_compliance_report, get_coaching_score (+ 11 helpers)
-│       ├── strength_tools.py  # sync_strength_session, generate_strength_workout, etc.
-│       ├── injury_tools.py    # diagnose_injury, research_injury, update_injury_status
-│       ├── research_tools.py  # research_exercise, list_exercises, research_sport
-│       ├── decision_tools.py  # log_coaching_decision, record_athlete_response, etc.
-│       ├── race_tools.py      # research_race, list/add/remove/update_race
-│       └── interactive_tools.py # generate_smart_brief (sampling), interactive_check_in (elicitation)
+│   └── tools/               # 54 MCP tools across 11 modules
+│       ├── data_tools.py      (3) # get_daily_metrics, get_activities_range, get_personal_records
+│       ├── fitness_tools.py   (7) # refresh_athlete_baseline, get_training_readiness (HRV overlay), get_fitness_status, refresh_fitness_history, get_intensity_distribution, get_onboarding_guide, get_athlete
+│       ├── athlete_tools.py   (6) # update_athlete, set_threshold_pace, set_ftp, analyze_ftp_test, get_methodology, update_methodology
+│       ├── planning_tools.py  (7) # get_periodization_status, get_weekly_prescription, update_phase, get_weekly_plan, update_weekly_plan, push_plan_to_garmin, get_week_constraints
+│       ├── coaching_tools.py  (3) # get_coaching_snapshot (canonical), get_compliance_report, get_coaching_score  (+ 13 pure helpers)
+│       ├── strength_tools.py  (6) # sync_strength_session, get_strength_baseline, approve_progression, set_exercise_preference, generate_strength_workout, add_exercise
+│       ├── injury_tools.py    (3) # diagnose_injury, research_injury, update_injury_status
+│       ├── research_tools.py  (3) # research_exercise, list_exercises, research_sport
+│       ├── decision_tools.py  (9) # log_coaching_decision, get_active_decisions, update_decision_status, propose_coaching_action, list_pending_approvals, approve_proposal, reject_proposal, record_athlete_response, get_response_patterns
+│       ├── race_tools.py      (5) # research_race, list/add/remove/update_race
+│       └── interactive_tools.py (2) # generate_smart_brief (data shape for brief), interactive_check_in (question set)
 ├── scripts/
 │   ├── daily_loop.py        # Morning audit automation (async, --llm for Anthropic API)
 │   ├── fetch_exercises.py   # Fetch exercise DB from Garmin
@@ -414,7 +414,7 @@ Tool design: single responsibility, return JSON, fail gracefully with `{'error':
 ### ~~5. Sleep score always N/A on `get_daily_metrics`~~ FIXED
 - `get_user_summary()` does NOT contain `sleepScore`; the real value lives in `get_training_readiness()`
 - `get_daily_metrics()` now calls `get_training_readiness()` and extracts sleep_score via `parse_training_readiness()` (falls back to `'N/A'` only if readiness is empty)
-- Same fix applied to `get_planning_context()` (it already fetched readiness — dropped the buggy overwrite)
+- Same fix was applied to the former `get_planning_context()` (removed in Phase 2) — that tool had the same buggy overwrite
 
 ### ~~7. HRV always null in recovery data~~ FIXED
 - Garmin's `get_training_readiness()` often returns `hrv_status: null` even on devices that track HRV

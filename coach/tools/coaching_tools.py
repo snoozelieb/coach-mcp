@@ -506,8 +506,8 @@ def _summarize_goal_progress(activities: list, training_config: dict,
                              today: date, period_days: int = 14) -> dict:
     """Distribute activity time across race_preparation / fun / aesthetics goals.
 
-    Mirrors get_goal_progress() so the snapshot carries the same shape and the
-    standalone tool can be deprecated. Pure function — no I/O.
+    Surfaced as snapshot.goal_progress — the standalone get_goal_progress tool
+    was removed in Phase 2 of the tool rationalization. Pure function, no I/O.
     """
     fun_types = ['padel', 'ultimate_disc', 'social_ride', 'tennis', 'squash', 'badminton']
     strength_types = ['strength_training', 'indoor_cardio', 'functional_strength']

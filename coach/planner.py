@@ -8,7 +8,7 @@ The LLM is the brain that generates plans. This module provides:
 """
 import json
 from datetime import date, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from .config import (
     DATA_DIR,
@@ -209,15 +209,12 @@ def build_planning_context(
     methodology: dict[str, Any] = None,
 ) -> dict[str, Any]:
     """
-    Assemble full context for LLM planning decisions.
+    Assemble a context dict from already-loaded inputs.
 
-    This context gives the LLM everything it needs to:
-    - Understand WHO the athlete is (personal, life constraints, preferences)
-    - Know WHAT they're training for (events, current phase)
-    - Understand HOW to train (pillars, safety rules, race templates)
-    - See what's been done vs what's required
-    - Factor in recovery status for today's decisions
-    - Consider any pending suggestions
+    Used by tests to validate the shape of planning context. Production
+    callers should use get_coaching_snapshot() instead — the standalone
+    get_planning_context tool that wrapped this helper was removed in
+    the Phase 2 rationalization.
 
     Args:
         athlete_profile: Athlete data from athlete.json + athlete_baseline.json
@@ -225,11 +222,12 @@ def build_planning_context(
         recent_activities: Last 14 days of parsed activities
         compliance_status: Current week's pillar compliance from rules.py
         today_recovery: Today's body battery, HRV, readiness
-        pending_suggestions: Optional list of LLM's prior suggestions
+        pending_suggestions: Legacy kwarg, pass-through only (the suggestion
+            workflow was consolidated into the unified proposal API)
         methodology: Pillars, constraints, race_templates from methodology.json
 
     Returns:
-        Complete context dict ready for LLM consumption
+        Complete context dict (same shape tests assert against)
     """
     today = date.today()
 
