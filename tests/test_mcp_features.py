@@ -139,25 +139,24 @@ class TestResources:
 
 
 # ---------------------------------------------------------------------------
-# Interactive tools — fallback path tests
+# Interactive tools — data-gathering (sampling/elicitation paths removed)
 # ---------------------------------------------------------------------------
 
 class TestInteractiveTools:
-    @pytest.mark.asyncio
-    async def test_smart_brief_fallback_when_sampling_unavailable(self, mock_ctx):
-        """When ctx.sample() raises, should return structured data."""
-        mock_ctx.sample = AsyncMock(side_effect=Exception("Sampling not supported"))
-
-        result = json.loads(await generate_smart_brief(mock_ctx))
+    def test_smart_brief_returns_structured_data(self):
+        result = json.loads(generate_smart_brief())
         assert isinstance(result, dict)
-        # Should contain the fallback note
-        assert 'note' in result or 'athlete_name' in result
+        assert 'framing' in result
+        assert 'current_time_context' in result
+        assert 'athlete_name' in result
+        assert 'today_plan' in result
+        assert 'active_injuries' in result
 
-    @pytest.mark.asyncio
-    async def test_check_in_fallback_when_elicitation_unavailable(self, mock_ctx):
-        """When ctx.elicit() raises, should return question list."""
-        mock_ctx.elicit = AsyncMock(side_effect=Exception("Elicitation not supported"))
-
-        result = json.loads(await interactive_check_in(mock_ctx))
+    def test_check_in_returns_question_set(self):
+        result = json.loads(interactive_check_in())
         assert isinstance(result, dict)
-        assert 'questions' in result or 'note' in result
+        assert 'questions' in result
+        question_ids = [q['id'] for q in result['questions']]
+        assert question_ids == ['feeling', 'sleep', 'niggles']
+        assert 'current_time_context' in result
+        assert 'coaching_note' in result

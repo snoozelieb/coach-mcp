@@ -260,8 +260,8 @@ Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bund
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
 | **Resources** | 5 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now |
 | **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
-| **Sampling** | `generate_smart_brief` | Uses `ctx.sample()` for LLM-powered morning briefs |
-| **Elicitation** | `interactive_check_in` | Uses `ctx.elicit()` for structured athlete check-ins |
+| **Sampling** | (removed) | `ctx.sample()` unsupported by Claude Code — `generate_smart_brief` now returns structured data for the coach to render |
+| **Elicitation** | (removed) | `ctx.elicit()` unsupported by Claude Code — `interactive_check_in` returns a question set for the coach to ask conversationally |
 | **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces tools with search/schema/execute meta-tools |
 | **Transport** | stdio (default) | `COACH_TRANSPORT=http|sse|streamable-http` for remote deployment |
 
