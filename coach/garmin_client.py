@@ -59,17 +59,17 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
         if "429" in str(e):
             logger.warning("Garmin SSO blocked (429). Falling back to browser login...")
             from .playwright_auth import playwright_sso_login
-            oauth1, oauth2 = playwright_sso_login(client.garth)
-            client.garth.oauth1_token = oauth1
-            client.garth.oauth2_token = oauth2
+            oauth1, oauth2 = playwright_sso_login(client.client)
+            client.client.oauth1_token = oauth1
+            client.client.oauth2_token = oauth2
             # Populate display_name and settings (normally done inside client.login)
             try:
-                prof = client.garth.connectapi(
+                prof = client.client.connectapi(
                     "/userprofile-service/userprofile/profile"
                 )
                 client.display_name = prof.get("displayName")
                 client.full_name = prof.get("fullName")
-                settings = client.garth.connectapi(
+                settings = client.client.connectapi(
                     client.garmin_connect_user_settings_url
                 )
                 if settings and isinstance(settings, dict) and "userData" in settings:
@@ -84,7 +84,7 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
     if not os.path.exists(TOKEN_DIR):
         os.makedirs(TOKEN_DIR)
 
-    client.garth.dump(TOKEN_DIR)
+    client.client.dump(TOKEN_DIR)
     logger.info("New session saved.")
 
     _cached_client = client
@@ -172,6 +172,6 @@ def schedule_workout(workout_id: int, schedule_date: str) -> dict:
     """
     def _schedule(client):
         url = f"{client.garmin_workouts_schedule_url}/{workout_id}"
-        return client.garth.post("connectapi", url, json={"date": schedule_date})
+        return client.client.post("connectapi", url, json={"date": schedule_date})
 
     return garmin_api_call(_schedule)

@@ -111,8 +111,13 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
         except ValueError:
             continue
 
-        planned = day_data.get('planned', {})
-        is_rest_day = not planned or 'rest' in planned.get('type', '').lower()
+        raw_planned = day_data.get('planned', {})
+        sessions_for_day = raw_planned if isinstance(raw_planned, list) else [raw_planned]
+        non_rest_sessions = [
+            s for s in sessions_for_day
+            if s and 'rest' not in str(s.get('type', '')).lower()
+        ]
+        is_rest_day = not non_rest_sessions
 
         if is_rest_day:
             # Check for unplanned activity on rest day
@@ -134,110 +139,116 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
             continue
 
         planned_dates.add(day_str)
-        comparison['sessions_planned'] += 1
-
-        # Check if this day has passed
-        if day_date > today:
-            comparison['sessions_pending'] += 1
-            comparison['details'].append({
-                'date': day_str,
-                'status': 'pending',
-                'planned': planned.get('type'),
-            })
-            continue
-
-        # Find matching activities (all activities for this day)
         day_activities = [a for a in activities if a.get('date') == day_str]
+        unmatched_activities = list(day_activities)
+        day_details = []
 
-        if day_activities:
-            comparison['sessions_completed'] += 1
+        for planned in non_rest_sessions:
+            comparison['sessions_planned'] += 1
             planned_type = planned.get('type', '')
             planned_duration = planned.get('duration_mins', 0)
 
-            # Find best-matching activity (prefer type match, then first)
-            best_match = day_activities[0]
-            for act in day_activities:
-                if act.get('type', '').lower() == planned_type.lower():
-                    best_match = act
-                    break
-
-            actual_type = best_match.get('type', 'unknown')
-            actual_duration = best_match.get('duration_mins', 0)
-
-            # Determine status and detect anomalies for best match
-            detail = {
-                'date': day_str,
-                'planned_type': planned_type,
-                'actual_type': actual_type,
-                'duration_planned': planned_duration,
-                'duration_actual': actual_duration,
-            }
-
-            # Type mismatch detection (e.g., planned=race, actual=cycling)
-            if planned_type and actual_type and planned_type.lower() != actual_type.lower():
-                detail['status'] = 'type_mismatch'
-                comparison['anomalies'].append({
+            if day_date > today:
+                comparison['sessions_pending'] += 1
+                day_details.append({
                     'date': day_str,
-                    'flag': 'type_mismatch',
+                    'status': 'pending',
+                    'planned': planned_type,
+                })
+                continue
+
+            match_idx = None
+            for i, act in enumerate(unmatched_activities):
+                if act.get('type', '').lower() == planned_type.lower():
+                    match_idx = i
+                    break
+            if match_idx is None and unmatched_activities:
+                match_idx = 0
+
+            if match_idx is not None:
+                best_match = unmatched_activities.pop(match_idx)
+                comparison['sessions_completed'] += 1
+                actual_type = best_match.get('type', 'unknown')
+                actual_duration = best_match.get('duration_mins', 0)
+
+                detail = {
+                    'date': day_str,
                     'planned_type': planned_type,
                     'actual_type': actual_type,
-                })
+                    'duration_planned': planned_duration,
+                    'duration_actual': actual_duration,
+                }
+
+                if planned_type and actual_type and planned_type.lower() != actual_type.lower():
+                    detail['status'] = 'type_mismatch'
+                    comparison['anomalies'].append({
+                        'date': day_str,
+                        'flag': 'type_mismatch',
+                        'planned_type': planned_type,
+                        'actual_type': actual_type,
+                    })
+                else:
+                    detail['status'] = 'matched'
+
+                if planned_duration and actual_duration:
+                    delta_pct = round(
+                        (actual_duration - planned_duration) / planned_duration * 100, 1
+                    )
+                    detail['duration_delta_pct'] = delta_pct
+
+                    if delta_pct < -30:
+                        detail['status'] = 'partial' if detail['status'] == 'matched' else detail['status']
+                        comparison['anomalies'].append({
+                            'date': day_str,
+                            'flag': 'duration_delta',
+                            'planned_mins': planned_duration,
+                            'actual_mins': actual_duration,
+                            'delta_pct': delta_pct,
+                        })
+                    elif delta_pct > 30:
+                        comparison['anomalies'].append({
+                            'date': day_str,
+                            'flag': 'duration_delta',
+                            'planned_mins': planned_duration,
+                            'actual_mins': actual_duration,
+                            'delta_pct': delta_pct,
+                        })
+
+                day_details.append(detail)
             else:
-                detail['status'] = 'matched'
+                comparison['sessions_missed'] += 1
+                comparison['anomalies'].append({
+                    'date': day_str,
+                    'flag': 'missing',
+                    'planned_type': planned_type,
+                    'planned_mins': planned_duration,
+                })
+                day_details.append({
+                    'date': day_str,
+                    'status': 'missing',
+                    'planned_type': planned_type,
+                })
 
-            # Duration delta (always include when both values present)
-            if planned_duration and actual_duration:
-                delta_pct = round(
-                    (actual_duration - planned_duration) / planned_duration * 100, 1
-                )
-                detail['duration_delta_pct'] = delta_pct
+        # If the day had more activities than planned sessions, attach
+        # all_activities to the first detail for context. Preserves the
+        # single-session-day-with-multiple-activities behavior.
+        has_extra_activities = len(day_activities) > len(non_rest_sessions)
 
-                if delta_pct < -30:
-                    detail['status'] = 'partial' if detail['status'] == 'matched' else detail['status']
-                    comparison['anomalies'].append({
-                        'date': day_str,
-                        'flag': 'duration_delta',
-                        'planned_mins': planned_duration,
-                        'actual_mins': actual_duration,
-                        'delta_pct': delta_pct,
-                    })
-                elif delta_pct > 30:
-                    comparison['anomalies'].append({
-                        'date': day_str,
-                        'flag': 'duration_delta',
-                        'planned_mins': planned_duration,
-                        'actual_mins': actual_duration,
-                        'delta_pct': delta_pct,
-                    })
-
-            # Include all activities for the day (not just best match)
-            if len(day_activities) > 1:
+        for i, detail in enumerate(day_details):
+            promote = has_extra_activities and i == 0
+            if promote:
                 detail['all_activities'] = [
                     {'type': a.get('type', 'unknown'), 'duration_mins': a.get('duration_mins', 0)}
                     for a in day_activities
                 ]
-
-            # Trim matched entries to minimal form
-            if detail['status'] == 'matched' and not detail.get('all_activities'):
+                comparison['details'].append(detail)
+            elif detail.get('status') == 'matched' and 'all_activities' not in detail:
                 comparison['details'].append({
                     'date': day_str,
                     'status': 'matched',
                 })
             else:
                 comparison['details'].append(detail)
-        else:
-            comparison['sessions_missed'] += 1
-            comparison['anomalies'].append({
-                'date': day_str,
-                'flag': 'missing',
-                'planned_type': planned.get('type'),
-                'planned_mins': planned.get('duration_mins', 0),
-            })
-            comparison['details'].append({
-                'date': day_str,
-                'status': 'missing',
-                'planned_type': planned.get('type'),
-            })
 
     comparison['completion_rate'] = (
         round(comparison['sessions_completed'] / comparison['sessions_planned'] * 100, 1)

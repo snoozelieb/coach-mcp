@@ -7,7 +7,7 @@ for cycling, running, strength, yoga, swimming, and padel sessions.
 import pytest
 from unittest.mock import patch
 
-from garminconnect.workout import CyclingWorkout, RunningWorkout, ExecutableStep
+from garminconnect.workout import CyclingWorkout, RunningWorkout, ExecutableStep, RepeatGroup
 
 from coach.workout_builder import (
     is_indoor_cycling,
@@ -16,6 +16,7 @@ from coach.workout_builder import (
     build_workout,
     build_cycling_workout,
     build_running_workout,
+    build_structured_running_workout,
     build_strength_workout,
     build_yoga_workout,
     build_pilates_workout,
@@ -38,6 +39,7 @@ from coach.workout_builder import (
     TARGET_NONE,
     TARGET_CADENCE,
     END_TIME,
+    END_DISTANCE,
     END_REPS,
     END_LAP_BUTTON,
     CYCLING_SPORT,
@@ -448,6 +450,223 @@ class TestBuildRunningWorkout:
         }
         result = build_running_workout(session, "2025-01-01")
         assert result.workoutName == "Morning easy run"
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_structure_delegates_to_structured_builder(self, mock_hr, mock_pace):
+        """When session has structure, build_running_workout returns a workout
+        whose top-level steps come from the structure, not the 3-step fallback."""
+        session = {
+            "type": "running",
+            "duration_mins": 30,
+            "intensity": "easy",
+            "description": "L2 R4/W2 x 4",
+            "structure": [
+                {"phase": "warmup", "duration_secs": 180, "intensity": "recovery"},
+                {"phase": "repeat", "iterations": 4, "steps": [
+                    {"phase": "interval", "duration_secs": 240, "intensity": "easy"},
+                    {"phase": "recovery", "duration_secs": 120, "intensity": "recovery"},
+                ]},
+                {"phase": "cooldown", "duration_secs": 180, "intensity": "recovery"},
+            ],
+        }
+        result = build_running_workout(session, "2025-01-01")
+        steps = result.workoutSegments[0].workoutSteps
+        # 3 top-level entries: warmup, repeat group, cooldown
+        assert len(steps) == 3
+        assert isinstance(steps[1], RepeatGroup)
+
+
+# ─── build_structured_running_workout ──────────────────────────────
+
+class TestBuildStructuredRunningWorkout:
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_run_walk_repeat_protocol(self, mock_hr, mock_pace):
+        """The L2 R4/W2 x 4 shape: warmup, repeat(4, [run, walk]), cooldown."""
+        session = {
+            "type": "running",
+            "duration_mins": 30,
+            "description": "L2 R4/W2 x 4",
+            "structure": [
+                {"phase": "warmup", "duration_secs": 180, "intensity": "recovery",
+                 "notes": "300m walk + 4 heel + 4 toe steps"},
+                {"phase": "repeat", "iterations": 4, "steps": [
+                    {"phase": "interval", "duration_secs": 240, "intensity": "easy",
+                     "notes": "Run 4 min"},
+                    {"phase": "recovery", "duration_secs": 120, "intensity": "recovery",
+                     "notes": "Walk 2 min"},
+                ]},
+                {"phase": "cooldown", "duration_secs": 180, "intensity": "recovery",
+                 "notes": "200-300m walk"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        steps = result.workoutSegments[0].workoutSteps
+
+        assert isinstance(result, RunningWorkout)
+        assert len(steps) == 3
+
+        warmup, repeat_group, cooldown = steps
+        assert isinstance(warmup, ExecutableStep)
+        assert isinstance(repeat_group, RepeatGroup)
+        assert isinstance(cooldown, ExecutableStep)
+
+        assert warmup.stepType == STEP_WARMUP
+        assert warmup.endCondition == END_TIME
+        assert warmup.endConditionValue == 180
+        assert warmup.description == "300m walk + 4 heel + 4 toe steps"
+
+        assert repeat_group.numberOfIterations == 4
+        assert len(repeat_group.workoutSteps) == 2
+        run_step, walk_step = repeat_group.workoutSteps
+        assert run_step.stepType == STEP_INTERVAL
+        assert run_step.endConditionValue == 240
+        assert run_step.childStepId == 1
+        assert walk_step.stepType == STEP_RECOVERY
+        assert walk_step.endConditionValue == 120
+        assert walk_step.childStepId == 1
+
+        assert cooldown.stepType == STEP_COOLDOWN
+        assert cooldown.endConditionValue == 180
+
+        # Estimated total = 180 + 4*(240+120) + 180 = 1800 secs (30 min)
+        assert result.estimatedDurationInSecs == 1800
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_distance_based_step(self, mock_hr, mock_pace):
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "warmup", "distance_m": 300, "intensity": "recovery"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.endCondition == END_DISTANCE
+        assert step.endConditionValue == 300
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_open_lap_button_step(self, mock_hr, mock_pace):
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "warmup", "duration_secs": "open", "intensity": "recovery"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.endCondition == END_LAP_BUTTON
+        assert step.endConditionValue is None
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_explicit_pace_target(self, mock_hr, mock_pace):
+        """Explicit pace target wins over intensity-based resolution."""
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "interval", "duration_secs": 600, "pace": [3.0, 3.5],
+                 "intensity": "easy"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_PACE
+        assert step.targetValueOne == 3.0
+        assert step.targetValueTwo == 3.5
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_intensity_falls_back_to_hr_when_no_pace(self, mock_hr, mock_pace):
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "interval", "duration_secs": 600, "intensity": "easy"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_HR
+        assert step.targetValueOne == 120
+        assert step.targetValueTwo == 140
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=None)
+    def test_no_target_when_no_zones_and_no_explicit_target(self, mock_hr, mock_pace):
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "interval", "duration_secs": 600, "intensity": "easy"},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_NONE
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_explicit_cadence_target(self, mock_hr, mock_pace):
+        session = {
+            "type": "running",
+            "duration_mins": 10,
+            "structure": [
+                {"phase": "interval", "duration_secs": 600, "cadence": [170, 180]},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_CADENCE
+        assert step.targetValueOne == 170
+        assert step.targetValueTwo == 180
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=(2.5, 3.0))
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_nested_repeat_groups(self, mock_hr, mock_pace):
+        """Repeat inside a repeat — should produce a RepeatGroup with a child RepeatGroup."""
+        session = {
+            "type": "running",
+            "duration_mins": 30,
+            "structure": [
+                {"phase": "repeat", "iterations": 2, "steps": [
+                    {"phase": "repeat", "iterations": 3, "steps": [
+                        {"phase": "interval", "duration_secs": 60, "intensity": "easy"},
+                        {"phase": "recovery", "duration_secs": 30, "intensity": "recovery"},
+                    ]},
+                ]},
+            ],
+        }
+        result = build_structured_running_workout(session, "2025-01-01")
+        outer = result.workoutSegments[0].workoutSteps[0]
+        assert isinstance(outer, RepeatGroup)
+        assert outer.numberOfIterations == 2
+        inner = outer.workoutSteps[0]
+        assert isinstance(inner, RepeatGroup)
+        assert inner.numberOfIterations == 3
+        assert inner.childStepId == 1
+        # Estimated total = 2 * 3 * (60 + 30) = 540
+        assert result.estimatedDurationInSecs == 540
+
+    @patch("coach.workout_builder.get_pace_target_for_intensity", return_value=None)
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
+    def test_no_structure_uses_three_step_fallback(self, mock_hr, mock_pace):
+        """Regression: a session without structure still produces warmup/main/cooldown."""
+        session = {"type": "easy_run", "duration_mins": 45, "intensity": "easy"}
+        result = build_running_workout(session, "2025-01-01")
+        steps = result.workoutSegments[0].workoutSteps
+        assert len(steps) == 3
+        assert steps[0].stepType == STEP_WARMUP
+        assert steps[1].stepType == STEP_INTERVAL
+        assert steps[2].stepType == STEP_COOLDOWN
+        # No repeat groups
+        assert not any(isinstance(s, RepeatGroup) for s in steps)
 
 
 # ─── build_strength_workout ─────────────────────────────────────────

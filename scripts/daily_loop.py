@@ -235,14 +235,16 @@ def audit_yesterday(today: date) -> dict[str, Any]:
         return {'status': 'not_in_plan', 'date': yesterday_str}
 
     yesterday_plan = plan['days'][yesterday_str]
-    planned = yesterday_plan.get('planned')
+    raw_planned = yesterday_plan.get('planned')
+    planned_sessions = raw_planned if isinstance(raw_planned, list) else ([raw_planned] if raw_planned else [])
+    non_rest = [s for s in planned_sessions if s and 'rest' not in str(s.get('type', '')).lower()]
 
     # Get yesterday's actual activities
     activities_json = get_activities_range(yesterday_str, yesterday_str)
     actual_activities = json.loads(activities_json)
 
     # Determine status
-    if not planned:
+    if not non_rest:
         # Rest day planned
         if actual_activities:
             status = 'bonus'  # Did activity on rest day
@@ -251,21 +253,28 @@ def audit_yesterday(today: date) -> dict[str, Any]:
             status = 'rest_taken'
             message = "Rest day taken as planned"
     else:
-        # Activity planned
+        planned_types = [s.get('type', 'session') for s in non_rest]
+        actual_types = [a.get('type', '').lower() for a in actual_activities]
+
         if not actual_activities:
             status = 'missed'
-            message = f"Planned {planned.get('type', 'session')} was missed"
+            message = f"Planned {' + '.join(planned_types)} was missed"
         else:
-            # Compare planned vs actual
-            planned_type = planned.get('type', '').lower()
-            actual_types = [a.get('type', '').lower() for a in actual_activities]
+            matched = [t for t in planned_types if t.lower() in actual_types]
+            unmatched_planned = [t for t in planned_types if t.lower() not in actual_types]
 
-            if planned_type in actual_types:
+            if len(matched) == len(planned_types):
                 status = 'completed'
-                message = f"Completed planned {planned_type}"
+                message = f"Completed planned {' + '.join(planned_types)}"
+            elif matched:
+                status = 'partial'
+                message = (
+                    f"Completed {' + '.join(matched)}; "
+                    f"missed {' + '.join(unmatched_planned)}"
+                )
             else:
                 status = 'substituted'
-                message = f"Planned {planned_type}, did {', '.join(actual_types)}"
+                message = f"Planned {' + '.join(planned_types)}, did {', '.join(actual_types)}"
 
     # Update the plan with actual result
     yesterday_plan['actual'] = actual_activities

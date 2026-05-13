@@ -54,7 +54,20 @@ CANONICAL COACHING FLOW
 2. Athlete claim verification → check week_grid[today] before confirming "I did X today".
 3. Plan building → get_week_constraints() (guardrails) + get_weekly_prescription() \
    (volume + intensity) → update_weekly_plan() → push_plan_to_garmin(). Every planned \
-   session must respect snapshot.injuries[*].restricted_activities.
+   session must respect snapshot.injuries[*].restricted_activities. A day's `planned` \
+   field accepts either a single session dict OR a list of session dicts — use the \
+   list whenever a day has two or three distinct workouts (run + short set, long ride \
+   + UB, gym day split into legs + UB). Each session in the list is pushed to Garmin \
+   as its own workout and counted independently. Do NOT cram multiple workouts into \
+   one description string — that loses per-session tracking. \
+   For RUNNING sessions with intervals (run/walk protocol, threshold reps, fartlek, \
+   hill repeats, distance-based segments), author a `structure` field — a list of \
+   phases: `warmup`, `interval`, `recovery`, `cooldown`, `rest`, or `repeat` (with \
+   `iterations` and nested `steps`). End condition is `duration_secs` / `duration_mins`, \
+   `distance_m`, or `"open"` for lap-button. Targets are `pace [slow_mps, fast_mps]`, \
+   `hr_target [low, high]`, `cadence [low, high]`, or `intensity` (resolves to pace \
+   zone). Without structure, a run pushes as one timed block regardless of what the \
+   description says — see update_weekly_plan docstring for the full schema.
 4. Drill-downs when snapshot isn't enough → get_fitness_status(days=N), \
    get_intensity_distribution(days=N), get_activities_range(start, end), \
    get_training_readiness(for_date).

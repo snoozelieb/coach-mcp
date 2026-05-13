@@ -901,7 +901,14 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     - Pace is more precise for running than HR (less lag, weather-independent)
     - Zones derived from threshold pace using Jack Daniels methodology
     - HR used as secondary metric when pace not available
+
+    If session contains a 'structure' field, delegates to the structured
+    builder for full interval/repeat support. Otherwise produces the
+    simple 3-step (warmup, main, cooldown) shape.
     """
+    if session.get("structure"):
+        return build_structured_running_workout(session, date)
+
     duration_mins = session.get("duration_mins", 45)
     description = session.get("description", "Running workout")
     intensity = session.get("intensity", "easy")
@@ -1005,6 +1012,163 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
                 workoutSteps=steps
             )
         ]
+    )
+
+
+def build_structured_running_workout(session: dict, date: str) -> RunningWorkout:
+    """Build a structured running workout from session['structure'].
+
+    Phase schema (see update_weekly_plan docstring for the full spec):
+      phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
+      End condition (one of, priority order): distance_m, duration_secs,
+        duration_mins, or "open" => lap-button
+      Target (one of, priority order): pace [slow_mps, fast_mps],
+        hr_target [low, high], cadence [low, high], or intensity (resolves
+        to pace zone, falls back to HR zone)
+      notes: free-form, truncated to 50 chars on the step description
+      Repeat phase: iterations: N, steps: [list of nested phases, may
+        contain further repeats]
+    """
+    description = session.get("description", "Running workout")
+    workout_name = description[:40]
+    structure = session.get("structure", [])
+
+    step_order_state = [1]
+
+    def next_order() -> int:
+        n = step_order_state[0]
+        step_order_state[0] += 1
+        return n
+
+    def resolve_target(phase: dict):
+        pace = phase.get("pace")
+        hr_target = phase.get("hr_target")
+        cadence = phase.get("cadence")
+        intensity = phase.get("intensity")
+
+        if pace and len(pace) == 2:
+            return TARGET_PACE, float(pace[0]), float(pace[1])
+        if hr_target and len(hr_target) == 2:
+            return TARGET_HR, float(hr_target[0]), float(hr_target[1])
+        if cadence and len(cadence) == 2:
+            return TARGET_CADENCE, float(cadence[0]), float(cadence[1])
+        if intensity:
+            pace_bounds = get_pace_target_for_intensity(intensity)
+            if pace_bounds:
+                return TARGET_PACE, float(pace_bounds[0]), float(pace_bounds[1])
+            hr_bounds = get_hr_target_for_intensity(intensity)
+            if hr_bounds:
+                return TARGET_HR, float(hr_bounds[0]), float(hr_bounds[1])
+        return TARGET_NONE, None, None
+
+    def resolve_end(phase: dict):
+        """Return (end_condition_dict, end_value_or_None, est_secs)."""
+        distance_m = phase.get("distance_m")
+        if distance_m is not None:
+            if str(distance_m).lower() == "open":
+                return END_LAP_BUTTON, None, 0
+            return END_DISTANCE, float(distance_m), 0
+
+        for key in ("duration_secs", "duration_mins"):
+            val = phase.get(key)
+            if val is None:
+                continue
+            if str(val).lower() == "open":
+                return END_LAP_BUTTON, None, 0
+            secs = float(val) * (60 if key == "duration_mins" else 1)
+            return END_TIME, secs, int(secs)
+
+        return END_LAP_BUTTON, None, 0
+
+    def step_type_for(phase_name: str) -> dict:
+        n = (phase_name or "").lower()
+        if n == "warmup":
+            return STEP_WARMUP
+        if n == "cooldown":
+            return STEP_COOLDOWN
+        if n in ("recovery", "walk", "jog"):
+            return STEP_RECOVERY
+        if n == "rest":
+            return STEP_REST
+        return STEP_INTERVAL
+
+    def build_step(phase: dict, inside_repeat: bool):
+        end_cond, end_val, est_secs = resolve_end(phase)
+        target_type, t_low, t_high = resolve_target(phase)
+
+        step = ExecutableStep(
+            stepOrder=next_order(),
+            stepType=step_type_for(phase.get("phase", "interval")),
+            endCondition=end_cond,
+            targetType=target_type,
+        )
+        if end_val is not None:
+            step.endConditionValue = end_val
+        if t_low is not None and t_high is not None:
+            step.targetValueOne = t_low
+            step.targetValueTwo = t_high
+        if inside_repeat:
+            step.childStepId = 1
+        notes = phase.get("notes")
+        if notes:
+            step.description = str(notes)[:50]
+        return step, est_secs
+
+    def build_repeat(phase: dict, inside_repeat: bool):
+        iterations = int(phase.get("iterations", 1))
+        sub_phases = phase.get("steps", [])
+        group_order = next_order()
+
+        child_steps = []
+        per_iter_secs = 0
+        for sub in sub_phases:
+            if (sub.get("phase") or "").lower() == "repeat":
+                sub_step, sub_secs = build_repeat(sub, inside_repeat=True)
+            else:
+                sub_step, sub_secs = build_step(sub, inside_repeat=True)
+            child_steps.append(sub_step)
+            per_iter_secs += sub_secs
+
+        repeat_group = RepeatGroup(
+            stepOrder=group_order,
+            stepType=STEP_REPEAT,
+            numberOfIterations=iterations,
+            workoutSteps=child_steps,
+            endCondition={
+                "conditionTypeId": 7,
+                "conditionTypeKey": "iterations",
+                "displayOrder": 7,
+                "displayable": False,
+            },
+            endConditionValue=float(iterations),
+        )
+        if inside_repeat:
+            repeat_group.childStepId = 1
+        return repeat_group, iterations * per_iter_secs
+
+    workout_steps = []
+    total_secs = 0
+    for phase in structure:
+        if (phase.get("phase") or "").lower() == "repeat":
+            step_or_group, est = build_repeat(phase, inside_repeat=False)
+        else:
+            step_or_group, est = build_step(phase, inside_repeat=False)
+        workout_steps.append(step_or_group)
+        total_secs += est
+
+    if total_secs <= 0:
+        total_secs = int(session.get("duration_mins", 30)) * 60
+
+    return RunningWorkout(
+        workoutName=workout_name,
+        estimatedDurationInSecs=int(total_secs),
+        workoutSegments=[
+            WorkoutSegment(
+                segmentOrder=1,
+                sportType=RUNNING_SPORT,
+                workoutSteps=workout_steps,
+            )
+        ],
     )
 
 

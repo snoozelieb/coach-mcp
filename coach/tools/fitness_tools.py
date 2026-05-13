@@ -123,7 +123,7 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
         garmin_hr_zones = None
         try:
             hr_zones_data = garmin_api_call(
-                lambda c: c.garth.connectapi('/biometric-service/heartRateZones')
+                lambda c: c.client.connectapi('/biometric-service/heartRateZones')
             )
             garmin_hr_zones = parse_hr_zones(hr_zones_data)
             if garmin_hr_zones:

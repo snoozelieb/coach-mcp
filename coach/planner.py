@@ -364,8 +364,20 @@ def get_current_plan() -> dict[str, Any]:
     return load_json_file('weekly_plan.json')
 
 
+INTERNAL_PLAN_FIELDS = ('pushed_workout_ids',)
+
+
 def save_weekly_plan(plan: dict[str, Any]) -> None:
-    """Save the weekly plan."""
+    """Save the weekly plan.
+
+    Preserves internal metadata fields (e.g. pushed_workout_ids) from the
+    existing file when the caller hasn't supplied them. This stops the
+    coach LLM's plan-edit calls from silently dropping push-tracking state.
+    """
+    existing = load_json_file('weekly_plan.json') or {}
+    for field in INTERNAL_PLAN_FIELDS:
+        if field not in plan and field in existing:
+            plan[field] = existing[field]
     plan['last_updated'] = date.today().isoformat()
     save_json_file('weekly_plan.json', plan)
 

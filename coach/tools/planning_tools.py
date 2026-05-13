@@ -469,6 +469,69 @@ def update_weekly_plan(plan_json: str) -> str:
                 'rationale': 'Why this plan was generated'
             }
 
+        'planned' may also be a LIST of session dicts when the day has two
+        or three distinct workouts (e.g. run + short strength bolt-on, long
+        ride + upper-body block, gym day split into legs + UB). Each session
+        in the list is pushed to Garmin as its own workout on that date and
+        is counted independently in compliance and adherence reports:
+
+            'planned': [
+                {'type': 'running', 'duration_mins': 46, 'intensity': 'easy',
+                 'description': 'Level 3 R8/W2 x 4 — protocol run'},
+                {'type': 'strength', 'duration_mins': 15, 'intensity': 'moderate',
+                 'description': 'Short set — calf raises, SL DL, hip retraction',
+                 'exercises': [...]}
+            ]
+
+        Prefer the list form over cramming multiple workouts into one
+        description string — the list form gets proper per-session tracking.
+
+    STRUCTURED RUNNING SESSIONS
+
+        For running sessions with intervals, repeats, run/walk protocols,
+        threshold reps, fartlek, hill repeats, or distance-based segments —
+        author a `structure` field. Without it, the run pushes as one
+        timed block regardless of what the description prose says.
+
+            {
+                'type': 'running',
+                'duration_mins': 30,          # fallback estimate
+                'intensity': 'easy',          # default for phases without their own
+                'description': 'L2 R4/W2 x 4',
+                'structure': [
+                    {'phase': 'warmup', 'duration_secs': 180, 'intensity': 'recovery',
+                     'notes': '300m walk + 4 heel + 4 toe steps'},
+                    {'phase': 'repeat', 'iterations': 4, 'steps': [
+                        {'phase': 'interval', 'duration_secs': 240, 'intensity': 'easy',
+                         'notes': 'Run 4 min'},
+                        {'phase': 'recovery', 'duration_secs': 120, 'intensity': 'recovery',
+                         'notes': 'Walk 2 min'}
+                    ]},
+                    {'phase': 'cooldown', 'duration_secs': 180, 'intensity': 'recovery',
+                     'notes': '200-300m walk'}
+                ]
+            }
+
+        Phase schema:
+            phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
+            End condition (one of, priority order):
+                distance_m: 300                 -> end at distance
+                duration_secs: 240              -> end at time (or duration_mins)
+                "open" as any duration value    -> lap-button advance
+            Target (one of, priority order):
+                pace: [slow_mps, fast_mps]      -> explicit pace band, metres/sec
+                hr_target: [low, high]          -> explicit HR band, bpm
+                cadence: [low, high]            -> steps per minute
+                intensity: "easy"|"recovery"|"tempo"|"threshold"|"vo2"
+                                                -> resolves to pace zone (HR fallback)
+            notes: free-form, truncated to 50 chars on display
+        Repeat phase:
+            iterations: N
+            steps: [list of nested phases — may include further repeats]
+
+    The plan is saved as-supplied; internal fields like `pushed_workout_ids`
+    are preserved server-side and do not need to be carried in the JSON.
+
     Returns confirmation or error.
     """
     try:
@@ -532,34 +595,22 @@ def push_plan_to_garmin() -> str:
         deleted_count = 0
 
         if previous_ids:
-            # Normal path: delete the specific workouts we pushed last time
+            # Delete only the specific workouts we pushed last time. Never
+            # delete the entire Garmin workout library — that would wipe
+            # manually-created workouts and any history outside this plan.
             existing_workouts = garmin_api_call(lambda c: c.get_workouts())
             existing_ids = {w.get('workoutId') for w in existing_workouts}
             for wid in previous_ids:
                 if wid in existing_ids:
                     try:
                         garmin_api_call(
-                            lambda c, wid=wid: c.garth.delete(
+                            lambda c, wid=wid: c.client.delete(
                                 'connectapi', f'/workout-service/workout/{wid}', api=True
                             )
                         )
                         deleted_count += 1
                     except Exception:
                         pass
-        else:
-            # First run after fix: no stored IDs, delete ALL workouts to clear duplicates
-            existing_workouts = garmin_api_call(lambda c: c.get_workouts())
-            for workout in existing_workouts:
-                wid = workout.get('workoutId')
-                try:
-                    garmin_api_call(
-                        lambda c, wid=wid: c.garth.delete(
-                            'connectapi', f'/workout-service/workout/{wid}', api=True
-                        )
-                    )
-                    deleted_count += 1
-                except Exception:
-                    pass
 
         results = {
             'status': 'success',
@@ -713,10 +764,15 @@ def push_plan_to_garmin() -> str:
                         'error': str(e)
                     })
 
-        # Store pushed workout IDs for cleanup on next push
+        # Store pushed workout IDs for cleanup on next push. Accumulate
+        # across pushes so partial pushes don't clobber earlier history:
+        # carry forward prior IDs that weren't just deleted, then add the
+        # newly-pushed ones.
         pushed_ids = [p['workout_id'] for p in results['pushed'] if 'workout_id' in p]
         if pushed_ids:
-            plan['pushed_workout_ids'] = pushed_ids
+            prior_ids = set(plan.get('pushed_workout_ids', []))
+            deleted_ids = set(previous_ids) if previous_ids else set()
+            plan['pushed_workout_ids'] = list((prior_ids - deleted_ids) | set(pushed_ids))
             from ..planner import save_json_file
             save_json_file(DATA_DIR / 'weekly_plan.json', plan)
 

@@ -32,12 +32,12 @@ def main():
     print("Starting browser-based Garmin login...")
     client = Garmin(email, password)
 
-    oauth1, oauth2 = playwright_sso_login(client.garth)
-    client.garth.oauth1_token = oauth1
-    client.garth.oauth2_token = oauth2
+    oauth1, oauth2 = playwright_sso_login(client.client)
+    client.client.oauth1_token = oauth1
+    client.client.oauth2_token = oauth2
 
     os.makedirs(TOKEN_DIR, exist_ok=True)
-    client.garth.dump(TOKEN_DIR)
+    client.client.dump(TOKEN_DIR)
 
     print(f"Tokens saved to {TOKEN_DIR}")
     print("You can now start the MCP server — it will use these tokens.")

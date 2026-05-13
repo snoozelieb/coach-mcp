@@ -40,7 +40,7 @@ def playwright_sso_login(garth_client) -> tuple[OAuth1Token, OAuth2Token]:
     extracts the SSO ticket, and exchanges it for OAuth tokens via garth.
 
     Args:
-        garth_client: A garth.http.Client instance (from Garmin().garth)
+        garth_client: A garth.http.Client instance (from Garmin().client)
 
     Returns:
         Tuple of (OAuth1Token, OAuth2Token) ready to use with garth
