@@ -8,6 +8,7 @@ from coach.rules import (
     check_weekly_compliance,
     check_safety_rules,
     get_upcoming_events,
+    pillars_as_name_dict,
 )
 
 
@@ -336,3 +337,45 @@ class TestGetUpcomingEvents:
 
         assert len(result) == 1
         assert result[0]['name'] == 'Future'
+
+
+class TestPillarsAsNameDict:
+    def test_new_wrapper_format(self):
+        wrapper = {
+            'based_on_persona': 'multi_sport',
+            'customized': True,
+            'pillars': [
+                {'name': 'endurance', 'target_type': 'hours', 'target_hours_per_week': 4},
+                {'name': 'strength', 'target_type': 'sessions', 'target_sessions_per_week': 2},
+            ],
+        }
+        result = pillars_as_name_dict(wrapper)
+        assert set(result.keys()) == {'endurance', 'strength'}
+        assert result['endurance']['target_type'] == 'hours'
+        assert result['strength']['target_sessions_per_week'] == 2
+
+    def test_legacy_name_keyed_format(self):
+        legacy = {
+            'strength': {'target_type': 'sessions', 'target_sessions_per_week': 2},
+            'endurance': {'target_type': 'hours', 'target_hours_per_week': 4},
+        }
+        result = pillars_as_name_dict(legacy)
+        assert result is legacy
+
+    def test_none_returns_empty(self):
+        assert pillars_as_name_dict(None) == {}
+
+    def test_empty_dict_returns_empty(self):
+        assert pillars_as_name_dict({}) == {}
+
+    def test_malformed_pillars_dropped(self):
+        wrapper = {
+            'pillars': [
+                {'name': 'good', 'target_type': 'sessions'},
+                {'target_type': 'sessions'},        # missing name
+                'not_a_dict',                       # not a dict
+                {'name': '', 'target_type': 'x'},   # empty name
+            ],
+        }
+        result = pillars_as_name_dict(wrapper)
+        assert list(result.keys()) == ['good']

@@ -1014,6 +1014,34 @@ class TestBuildComplianceDiagnostics:
         assert result['per_pillar']['strength']['met_weeks'] == 0
         assert result['per_pillar']['strength']['chronic_miss'] is True
 
+    def test_accepts_new_wrapper_format_via_normalizer(self):
+        """Regression: snapshot passes the new wrapper-format training_pillars after
+        normalisation through pillars_as_name_dict. Iterating the raw wrapper used
+        to crash with `'str' object has no attribute 'get'` because keys like
+        'based_on_persona' map to string values."""
+        from coach.rules import pillars_as_name_dict
+        wrapper = {
+            'based_on_persona': 'multi_sport',
+            'customized': True,
+            'last_updated': '2026-01-13',
+            'pillars': [
+                {'name': 'strength', 'target_type': 'sessions',
+                 'target_sessions_per_week': 2, 'types': ['strength_training']},
+                {'name': 'endurance', 'target_type': 'hours',
+                 'target_hours_per_week': 4, 'types': ['cycling', 'running']},
+            ],
+        }
+        week = [
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'strength_training', 'duration_mins': 45},
+            {'type': 'cycling', 'duration_mins': 240},
+        ]
+        weekly_4wk = [week] * 4
+        normalized = pillars_as_name_dict(wrapper)
+        result = _build_compliance_diagnostics(weekly_4wk, normalized)
+        assert result['per_pillar']['strength']['met_weeks'] == 4
+        assert result['per_pillar']['endurance']['met_weeks'] == 4
+
 
 # ---------------------------------------------------------------------------
 # _build_week_grid

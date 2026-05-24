@@ -46,6 +46,25 @@ def get_thresholds() -> dict[str, Any]:
     }
 
 
+def pillars_as_name_dict(training_pillars: dict | None) -> dict[str, dict]:
+    """Return pillars as {name: config_dict}, handling both wrapper and legacy formats.
+
+    New wrapper format: {"pillars": [{"name": "x", ...}], "based_on_persona": ...}
+    Legacy format:      {"x": {...}, "y": {...}}
+    Empty/None:         {}
+    """
+    if not training_pillars:
+        return {}
+    pillars_list = training_pillars.get('pillars')
+    if isinstance(pillars_list, list):
+        return {
+            p['name']: p
+            for p in pillars_list
+            if isinstance(p, dict) and p.get('name')
+        }
+    return training_pillars
+
+
 def load_athlete_pillars() -> dict[str, Any] | None:
     """
     Load personalized training pillars from athlete.json.

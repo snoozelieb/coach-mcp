@@ -7,7 +7,7 @@ from ..planner import (get_current_plan, save_weekly_plan,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
                      get_week_constraints as _get_week_constraints)
-from ..rules import load_training_config, check_weekly_compliance
+from ..rules import load_training_config, check_weekly_compliance, pillars_as_name_dict
 from ..fitness import load_fitness_history, calculate_fitness_metrics
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
@@ -814,7 +814,7 @@ def get_week_constraints() -> str:
         compliance_diagnostics = None
         try:
             from tools.coaching_tools import _build_compliance_diagnostics
-            training_pillars = athlete.get('training_pillars')
+            training_pillars = pillars_as_name_dict(athlete.get('training_pillars'))
             if training_pillars:
                 history = load_fitness_history()
                 daily_loads = history.get('daily_loads', {})

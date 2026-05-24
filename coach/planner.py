@@ -504,7 +504,8 @@ def get_week_constraints(
         constraints['available_days'] = available_days
 
     # Pillar requirements
-    pillars = athlete.get('training_pillars', {})
+    from .rules import pillars_as_name_dict
+    pillars = pillars_as_name_dict(athlete.get('training_pillars'))
     if pillars:
         pillar_reqs = {}
         for name, config in pillars.items():

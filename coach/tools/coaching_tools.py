@@ -33,6 +33,7 @@ from ..rules import (
     check_safety_rules,
     get_upcoming_events,
     load_training_config,
+    pillars_as_name_dict,
 )
 from ..fitness import (
     load_fitness_history,
@@ -1416,7 +1417,7 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             athlete = {}
 
         compliance_diagnostics = None
-        training_pillars = athlete.get('training_pillars')
+        training_pillars = pillars_as_name_dict(athlete.get('training_pillars'))
         if training_pillars and daily_loads:
             weekly_activities_4wk = []
             for week_offset in range(4):  # 0=this week, 3=oldest
