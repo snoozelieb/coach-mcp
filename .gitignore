@@ -4,6 +4,7 @@
 
 # Local data backups (personal health data)
 data-backups/
+data/*.bak
 
 # Personal data files (created by setup wizard)
 data/athlete.json

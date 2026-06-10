@@ -695,60 +695,157 @@
           "name": "Posterior Chain",
           "focus": "posterior_chain",
           "exercises": [
-            {"name": "Barbell Hip Thrust", "sets": 4, "reps": "10-12"},
-            {"name": "Lat Pulldown", "sets": 3, "reps": "10-12"},
-            {"name": "Romanian Deadlift", "sets": 3, "reps": "10-12"},
-            {"name": "Seated Row (Cable)", "sets": 3, "reps": "12-15"},
-            {"name": "Glute Kickback (Cable)", "sets": 3, "reps": "15 each"}
+            {
+              "name": "Barbell Hip Thrust",
+              "sets": 4,
+              "reps": "10-12"
+            },
+            {
+              "name": "Lat Pulldown",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Romanian Deadlift",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Seated Row (Cable)",
+              "sets": 3,
+              "reps": "12-15"
+            },
+            {
+              "name": "Glute Kickback (Cable)",
+              "sets": 3,
+              "reps": "15 each"
+            }
           ],
           "core_finisher": {
             "format": "30s per move, 2 rounds",
-            "exercises": ["Plank", "Dead Bug", "Side Plank L", "Side Plank R"]
+            "exercises": [
+              "Plank",
+              "Dead Bug",
+              "Side Plank L",
+              "Side Plank R"
+            ]
           }
         },
         "workout_2": {
           "name": "Anterior Chain",
           "focus": "anterior_chain",
           "exercises": [
-            {"name": "Barbell Back Squat", "sets": 4, "reps": "8-10"},
-            {"name": "Incline Dumbbell Press", "sets": 3, "reps": "10-12"},
-            {"name": "Walking Lunges", "sets": 3, "reps": "12 each leg"},
-            {"name": "Overhead Press (Dumbbell)", "sets": 3, "reps": "10-12"},
-            {"name": "Leg Extension", "sets": 3, "reps": "12-15"}
+            {
+              "name": "Barbell Back Squat",
+              "sets": 4,
+              "reps": "8-10"
+            },
+            {
+              "name": "Incline Dumbbell Press",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Walking Lunges",
+              "sets": 3,
+              "reps": "12 each leg"
+            },
+            {
+              "name": "Overhead Press (Dumbbell)",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Leg Extension",
+              "sets": 3,
+              "reps": "12-15"
+            }
           ],
           "core_finisher": {
             "format": "10 reps per move, 2 rounds",
-            "exercises": ["Reverse Crunch", "Russian Twist", "Hollow Hold (20s)"]
+            "exercises": [
+              "Reverse Crunch",
+              "Russian Twist",
+              "Hollow Hold (20s)"
+            ]
           }
         },
         "workout_3": {
           "name": "Posterior Chain Heavy",
           "focus": "posterior_chain_heavy",
           "exercises": [
-            {"name": "Deadlift (Trap Bar or Barbell)", "sets": 4, "reps": "6-8"},
-            {"name": "Pull-Up or Assisted Pull-Up", "sets": 3, "reps": "Max Reps"},
-            {"name": "Bulgarian Split Squat", "sets": 3, "reps": "10 each leg"},
-            {"name": "Face Pulls", "sets": 3, "reps": "12-15"},
-            {"name": "Hamstring Curl (Machine)", "sets": 3, "reps": "12-15"}
+            {
+              "name": "Deadlift (Trap Bar or Barbell)",
+              "sets": 4,
+              "reps": "6-8"
+            },
+            {
+              "name": "Pull-Up or Assisted Pull-Up",
+              "sets": 3,
+              "reps": "Max Reps"
+            },
+            {
+              "name": "Bulgarian Split Squat",
+              "sets": 3,
+              "reps": "10 each leg"
+            },
+            {
+              "name": "Face Pulls",
+              "sets": 3,
+              "reps": "12-15"
+            },
+            {
+              "name": "Hamstring Curl (Machine)",
+              "sets": 3,
+              "reps": "12-15"
+            }
           ],
           "core_finisher": {
             "format": "30s per move, 2 rounds",
-            "exercises": ["Mountain Climbers", "Side Plank Hip Dips L", "Side Plank Hip Dips R"]
+            "exercises": [
+              "Mountain Climbers",
+              "Side Plank Hip Dips L",
+              "Side Plank Hip Dips R"
+            ]
           }
         },
         "workout_4": {
           "name": "Anterior Chain Heavy",
           "focus": "anterior_chain_heavy",
           "exercises": [
-            {"name": "Front Squat", "sets": 4, "reps": "8-10"},
-            {"name": "Push-Up", "sets": 3, "reps": "Max Reps"},
-            {"name": "Step-Ups (Weighted)", "sets": 3, "reps": "12 each leg"},
-            {"name": "Arnold Press", "sets": 3, "reps": "10-12"},
-            {"name": "Leg Press", "sets": 3, "reps": "12-15"}
+            {
+              "name": "Front Squat",
+              "sets": 4,
+              "reps": "8-10"
+            },
+            {
+              "name": "Push-Up",
+              "sets": 3,
+              "reps": "Max Reps"
+            },
+            {
+              "name": "Step-Ups (Weighted)",
+              "sets": 3,
+              "reps": "12 each leg"
+            },
+            {
+              "name": "Arnold Press",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Leg Press",
+              "sets": 3,
+              "reps": "12-15"
+            }
           ],
           "core_finisher": {
             "format": "10 reps per move, 2 rounds",
-            "exercises": ["V-Up", "Plank Shoulder Tap", "Flutter Kick (20s)"]
+            "exercises": [
+              "V-Up",
+              "Plank Shoulder Tap",
+              "Flutter Kick (20s)"
+            ]
           }
         }
       }
@@ -757,40 +854,225 @@
   "session_guidelines": {
     "_description": "Phase-appropriate session parameters. The LLM uses these as starting points, then adapts based on athlete context (CTL, compliance, injuries).",
     "long_ride": {
-      "base": {"duration_range": [90, 150], "intensity": "easy", "hr_zone": "Z2", "principle": "Aerobic base. Scale duration to current CTL."},
-      "build": {"duration_range": [120, 180], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Sustained endurance. Include tempo blocks if CTL > 40."},
-      "peak": {"duration_range": [150, 240], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Race-specific duration. Practice nutrition strategy."},
-      "taper": {"duration_range": [60, 90], "intensity": "easy", "hr_zone": "Z2", "principle": "Maintain feel. Reduce volume 40-60%."}
+      "base": {
+        "duration_range": [
+          90,
+          150
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Aerobic base. Scale duration to current CTL."
+      },
+      "build": {
+        "duration_range": [
+          120,
+          180
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Sustained endurance. Include tempo blocks if CTL > 40."
+      },
+      "peak": {
+        "duration_range": [
+          150,
+          240
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Race-specific duration. Practice nutrition strategy."
+      },
+      "taper": {
+        "duration_range": [
+          60,
+          90
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Maintain feel. Reduce volume 40-60%."
+      }
     },
     "long_run": {
-      "base": {"duration_range": [60, 90], "intensity": "easy", "hr_zone": "Z2", "principle": "Time on feet. Walk breaks OK for beginners."},
-      "build": {"duration_range": [75, 120], "intensity": "easy", "hr_zone": "Z2", "principle": "Progressive distance. Last 20min at goal pace if feeling good."},
-      "peak": {"duration_range": [90, 150], "intensity": "moderate", "hr_zone": "Z2-Z3", "principle": "Race-specific terrain and nutrition practice."},
-      "taper": {"duration_range": [40, 60], "intensity": "easy", "hr_zone": "Z2", "principle": "Short, easy. Maintain neuromuscular feel."}
+      "base": {
+        "duration_range": [
+          60,
+          90
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Time on feet. Walk breaks OK for beginners."
+      },
+      "build": {
+        "duration_range": [
+          75,
+          120
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Progressive distance. Last 20min at goal pace if feeling good."
+      },
+      "peak": {
+        "duration_range": [
+          90,
+          150
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Race-specific terrain and nutrition practice."
+      },
+      "taper": {
+        "duration_range": [
+          40,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Short, easy. Maintain neuromuscular feel."
+      }
     },
     "intervals": {
-      "base": {"duration_range": [30, 45], "intensity": "moderate", "hr_zone": "Z3-Z4", "principle": "Tempo only in base. No VO2max work."},
-      "build": {"duration_range": [45, 75], "intensity": "hard", "hr_zone": "Z4-Z5", "principle": "VO2max stimulus. Beginner: 3x3min. Experienced: 5x5min."},
-      "peak": {"duration_range": [45, 60], "intensity": "hard", "hr_zone": "Z4-Z5", "principle": "Race-specific intensity. Reduce interval volume, maintain intensity."},
-      "taper": {"duration_range": [30, 40], "intensity": "moderate", "hr_zone": "Z3-Z4", "principle": "Short openers only. 3-4 short efforts to keep sharpness."}
+      "base": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z3-Z4",
+        "principle": "Tempo only in base. No VO2max work."
+      },
+      "build": {
+        "duration_range": [
+          45,
+          75
+        ],
+        "intensity": "hard",
+        "hr_zone": "Z4-Z5",
+        "principle": "VO2max stimulus. Beginner: 3x3min. Experienced: 5x5min."
+      },
+      "peak": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "hard",
+        "hr_zone": "Z4-Z5",
+        "principle": "Race-specific intensity. Reduce interval volume, maintain intensity."
+      },
+      "taper": {
+        "duration_range": [
+          30,
+          40
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z3-Z4",
+        "principle": "Short openers only. 3-4 short efforts to keep sharpness."
+      }
     },
     "strength": {
-      "base": {"duration_range": [45, 60], "intensity": "moderate", "principle": "Foundation. Compound lifts, moderate load, good form."},
-      "build": {"duration_range": [45, 60], "intensity": "moderate", "principle": "Sport-specific. Heavier loads, fewer reps, explosive movements."},
-      "peak": {"duration_range": [30, 45], "intensity": "moderate", "principle": "Maintenance only. Reduce volume 50%, keep intensity."},
-      "taper": {"duration_range": [20, 30], "intensity": "easy", "principle": "Light activation. Bodyweight or very light loads."}
+      "base": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "moderate",
+        "principle": "Foundation. Compound lifts, moderate load, good form."
+      },
+      "build": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "moderate",
+        "principle": "Sport-specific. Heavier loads, fewer reps, explosive movements."
+      },
+      "peak": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "moderate",
+        "principle": "Maintenance only. Reduce volume 50%, keep intensity."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Light activation. Bodyweight or very light loads."
+      }
     },
     "mobility": {
-      "base": {"duration_range": [20, 45], "intensity": "easy", "principle": "Address limitations. Focus on hip/ankle/thoracic mobility."},
-      "build": {"duration_range": [20, 30], "intensity": "easy", "principle": "Maintenance. Pre/post workout routines."},
-      "peak": {"duration_range": [15, 30], "intensity": "easy", "principle": "Recovery-focused. Gentle stretching and foam rolling."},
-      "taper": {"duration_range": [20, 30], "intensity": "easy", "principle": "Daily mobility. Reduce stiffness from reduced training."}
+      "base": {
+        "duration_range": [
+          20,
+          45
+        ],
+        "intensity": "easy",
+        "principle": "Address limitations. Focus on hip/ankle/thoracic mobility."
+      },
+      "build": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Maintenance. Pre/post workout routines."
+      },
+      "peak": {
+        "duration_range": [
+          15,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Recovery-focused. Gentle stretching and foam rolling."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Daily mobility. Reduce stiffness from reduced training."
+      }
     },
     "recovery_ride": {
-      "base": {"duration_range": [30, 60], "intensity": "easy", "hr_zone": "Z1", "principle": "Active recovery. Keep HR below Z2."},
-      "build": {"duration_range": [30, 60], "intensity": "easy", "hr_zone": "Z1", "principle": "Flush legs after hard sessions."},
-      "peak": {"duration_range": [30, 45], "intensity": "easy", "hr_zone": "Z1", "principle": "Very easy. Mental recovery as much as physical."},
-      "taper": {"duration_range": [20, 30], "intensity": "easy", "hr_zone": "Z1", "principle": "Optional. Only if legs feel heavy."}
+      "base": {
+        "duration_range": [
+          30,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Active recovery. Keep HR below Z2."
+      },
+      "build": {
+        "duration_range": [
+          30,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Flush legs after hard sessions."
+      },
+      "peak": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Very easy. Mental recovery as much as physical."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Optional. Only if legs feel heavy."
+      }
     }
-  }
+  },
+  "schema_version": 1
 }
