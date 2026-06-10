@@ -8,7 +8,7 @@ This script orchestrates the morning training review:
 
 Modes:
   python scripts/daily_loop.py          # Template-based brief (no LLM)
-  python scripts/daily_loop.py --llm    # LLM-powered brief via MCP sampling
+  python scripts/daily_loop.py --llm    # LLM-powered brief via the Anthropic API
 
 Run via Task Scheduler at 05:00 daily.
 """
@@ -38,6 +38,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Model for --llm brief generation. Override via the COACH_LLM_MODEL env var.
+DEFAULT_LLM_MODEL = 'claude-sonnet-4-6'
 
 # Import tool functions directly from their modules
 from coach.tools.coaching_tools import get_compliance_report, get_coaching_snapshot
@@ -72,6 +75,20 @@ class _NullContext:
 
     async def log(self, *args, **kwargs):
         pass
+
+
+def _normalize_planned(raw: Any) -> list[dict[str, Any]]:
+    """Normalize a plan day's 'planned' field to a list of session dicts.
+
+    Live plan data contains both shapes: a single session dict (older plans)
+    and a list of session dicts (newer plans). Every read of planned sessions
+    in this script goes through this helper so both shapes are handled.
+    """
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
 
 
 async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
@@ -160,7 +177,11 @@ async def _generate_llm_brief(
     try:
         import anthropic
     except ImportError:
-        logger.warning("anthropic package not installed — falling back to template brief")
+        logger.warning(
+            "--llm requested but the anthropic SDK is not installed. "
+            "Install it with: pip install \"anthropic>=0.109\" "
+            "(listed in requirements.txt). Falling back to template brief."
+        )
         return generate_morning_brief(context, compliance, audit)
 
     api_key = os.environ.get('ANTHROPIC_API_KEY')
@@ -190,7 +211,8 @@ async def _generate_llm_brief(
     plan = get_current_plan()
     today_str = today.isoformat()
     if plan and 'days' in plan and today_str in plan['days']:
-        data['today_plan'] = plan['days'][today_str].get('planned')
+        today_sessions = _normalize_planned(plan['days'][today_str].get('planned'))
+        data['today_plan'] = today_sessions or None
 
     system_prompt = (
         "You are an expert adaptive training coach generating a concise morning brief. "
@@ -202,7 +224,7 @@ async def _generate_llm_brief(
     client = anthropic.Anthropic(api_key=api_key)
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=os.environ.get('COACH_LLM_MODEL', DEFAULT_LLM_MODEL),
             max_tokens=500,
             system=system_prompt,
             messages=[{
@@ -235,9 +257,8 @@ def audit_yesterday(today: date) -> dict[str, Any]:
         return {'status': 'not_in_plan', 'date': yesterday_str}
 
     yesterday_plan = plan['days'][yesterday_str]
-    raw_planned = yesterday_plan.get('planned')
-    planned_sessions = raw_planned if isinstance(raw_planned, list) else ([raw_planned] if raw_planned else [])
-    non_rest = [s for s in planned_sessions if s and 'rest' not in str(s.get('type', '')).lower()]
+    planned_sessions = _normalize_planned(yesterday_plan.get('planned'))
+    non_rest = [s for s in planned_sessions if 'rest' not in str(s.get('type', '')).lower()]
 
     # Get yesterday's actual activities
     activities_json = get_activities_range(yesterday_str, yesterday_str)
@@ -287,7 +308,7 @@ def audit_yesterday(today: date) -> dict[str, Any]:
         'status': status,
         'message': message,
         'date': yesterday_str,
-        'planned': planned,
+        'planned': planned_sessions,
         'actual_count': len(actual_activities),
     }
 
@@ -347,11 +368,15 @@ def generate_morning_brief(
     plan = get_current_plan()
     today_str = today.isoformat()
     if plan and 'days' in plan and today_str in plan['days']:
-        today_plan = plan['days'][today_str].get('planned')
-        if today_plan:
-            lines.append(f"**Today:** {today_plan.get('description', today_plan.get('type', 'Session'))}")
-            if today_plan.get('duration_mins'):
-                lines.append(f"  Duration: {today_plan['duration_mins']} mins")
+        today_sessions = _normalize_planned(plan['days'][today_str].get('planned'))
+        if today_sessions:
+            descriptions = []
+            for session in today_sessions:
+                desc = session.get('description', session.get('type', 'Session'))
+                if session.get('duration_mins'):
+                    desc = f"{desc} ({session['duration_mins']} mins)"
+                descriptions.append(desc)
+            lines.append(f"**Today:** {' + '.join(descriptions)}")
         else:
             lines.append("**Today:** Rest day")
     else:
