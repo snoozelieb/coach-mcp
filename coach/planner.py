@@ -26,22 +26,26 @@ logger = logging.getLogger(__name__)
 
 
 def load_json_file(filename: str) -> dict[str, Any]:
-    """Load a JSON file from the data directory."""
-    filepath = DATA_DIR / filename
-    if not filepath.exists():
-        return {}
-    with open(filepath) as f:
-        return json.load(f)
+    """Load a JSON file from the data directory.
+
+    Delegates to coach.storage: utf-8, cross-process locked, schema-validated
+    (flag-only — validation problems are logged, data is always returned).
+    DATA_DIR is read at call time so tests can monkeypatch planner.DATA_DIR.
+    """
+    from . import storage
+    return storage.read_json(filename, data_dir=DATA_DIR)
 
 
 def save_json_file(filename: str, data: dict[str, Any]) -> None:
-    """Save data to a JSON file in the data directory (atomic write)."""
-    DATA_DIR.mkdir(exist_ok=True)
-    filepath = DATA_DIR / filename
-    tmp_path = filepath.with_suffix('.tmp')
-    with open(tmp_path, 'w') as f:
-        json.dump(data, f, indent=2)
-    tmp_path.replace(filepath)
+    """Save data to a JSON file in the data directory.
+
+    Delegates to coach.storage: atomic write (unique tempfile + os.replace),
+    utf-8, cross-process locked, schema_version stamping + registered
+    migrations on outgoing data (with one-time .v<N>.bak before the first
+    migrating write).
+    """
+    from . import storage
+    storage.write_json(filename, data, data_dir=DATA_DIR)
 
 
 def load_athlete() -> dict[str, Any]:
