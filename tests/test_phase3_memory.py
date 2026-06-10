@@ -350,7 +350,7 @@ class TestNeedsReviewAutoTransition:
         _seed_decision(memory_dir, 'd_ok',
                        review_date=(TODAY + timedelta(days=3)).isoformat())
 
-        log, transitioned = auto_transition_due_decisions()
+        log, transitioned = auto_transition_due_decisions(TODAY)
 
         assert [d['id'] for d in transitioned] == ['d_old']
         statuses = {d['id']: d['status'] for d in log['decisions']}

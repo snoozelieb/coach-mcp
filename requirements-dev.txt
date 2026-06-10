@@ -1,3 +1,6 @@
+# Test/dev dependencies — pinned exactly for reproducible test runs
+# (the weekly CI cron exists to catch date-rot, not dependency drift).
+# Install with: pip install -r requirements-dev.txt
 -r requirements.txt
-pytest>=8.0.0
-pytest-asyncio>=1.0.0
+pytest==9.0.3
+pytest-asyncio==1.3.0

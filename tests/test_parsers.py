@@ -5,7 +5,7 @@ These tests have zero MCP dependency and test pure data transformations.
 """
 import json
 import pytest
-from datetime import datetime
+from datetime import date, datetime
 from coach.parsers import (
     check_setup,
     parse_resting_heart_rate,
@@ -33,8 +33,11 @@ from conftest import (
 
 class TestParseRestingHeartRateWithRealData:
     def test_parses_real_garmin_response(self, garmin_fixtures):
+        # Shape/range assertion only: the value differs between the real
+        # capture (gitignored) and the committed sanitized sample.
         result = parse_resting_heart_rate(garmin_fixtures["user_summary"])
-        assert result == 40
+        assert isinstance(result, int)
+        assert 25 <= result <= 110
 
 
 
@@ -175,12 +178,19 @@ class TestTrainingReadinessHRVOverlay:
 class TestParseBodyBatteryWithRealData:
     def test_parses_real_garmin_response(self, garmin_fixtures):
         result = parse_body_battery(garmin_fixtures["body_battery"])
-        assert result == 33
+        assert isinstance(result, int)
+        assert 0 <= result <= 100
 
     def test_gets_last_value_not_first(self, garmin_fixtures):
+        # Shape assertion: parse must return the LAST [timestamp, value]
+        # pair. Both the real capture and the sanitized sample carry arrays
+        # whose first and last values differ, so a first-value bug fails.
+        values = garmin_fixtures["body_battery"][0]["bodyBatteryValuesArray"]
+        assert values[0][1] != values[-1][1], \
+            "fixture must distinguish first from last body battery value"
         result = parse_body_battery(garmin_fixtures["body_battery"])
-        assert result != 40
-        assert result == 33
+        assert result == values[-1][1]
+        assert result != values[0][1]
 
 
 
@@ -627,14 +637,14 @@ class TestParseUserProfile:
                 'dateWeightList': [{'calendarDate': '2026-02-07', 'weight': 75000}],
                 'totalAverage': {'weight': 75000},
             },
+            today=date(2026, 4, 18),
         )
         assert result['full_name'] == 'John Doe'
         assert result['display_name'] == 'johndoe'
         assert result['weight_kg'] == 75.0
         assert result['weight_date'] == '2026-02-07'
         assert result['birth_date'] == '1990-06-15'
-        assert isinstance(result['age'], int)
-        assert result['age'] >= 35  # Born 1990, test written 2026
+        assert result['age'] == 35  # Born 1990-06-15, frozen today 2026-04-18
         assert result['max_hr'] == 192
 
     def test_max_hr_extracted(self):
@@ -711,15 +721,17 @@ class TestParseUserProfile:
     def test_birth_date_without_user_data_wrapper(self):
         """Handles user profile without userData wrapper (flat structure)."""
         result = parse_user_profile(
-            user_profile={'birthDate': '1985-03-20'}
+            user_profile={'birthDate': '1985-03-20'},
+            today=date(2026, 4, 18),
         )
         assert result['birth_date'] == '1985-03-20'
-        assert result['age'] >= 40
+        assert result['age'] == 41
 
     def test_invalid_birth_date(self):
         """Invalid birth date doesn't crash, age stays None."""
         result = parse_user_profile(
-            user_profile={'userData': {'birthDate': 'not-a-date'}}
+            user_profile={'userData': {'birthDate': 'not-a-date'}},
+            today=date(2026, 4, 18),
         )
         assert result['birth_date'] == 'not-a-date'
         assert result['age'] is None

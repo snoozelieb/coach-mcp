@@ -86,14 +86,21 @@ def load_coaching_log() -> dict[str, Any]:
 
 
 def save_coaching_log(log: dict[str, Any]) -> None:
-    """Save the coaching log file."""
+    """Save the coaching log file.
+
+    The date.today() here is a write-time audit stamp (metadata.last_updated),
+    not date logic — allowlisted in tests/test_clock_discipline.py.
+    """
     log.setdefault('metadata', {})['last_updated'] = date.today().isoformat()
     save_json_file(COACHING_LOG_FILE, log)
 
 
-def get_coaching_context() -> dict[str, Any]:
+def get_coaching_context(today: date) -> dict[str, Any]:
     """
     Get coaching context for LLM continuity.
+
+    Args:
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         - active_decisions: Decisions currently influencing planning
@@ -102,7 +109,6 @@ def get_coaching_context() -> dict[str, Any]:
         - decisions_due_review: Decisions that should be reviewed
     """
     log = load_coaching_log()
-    today = date.today()
 
     decisions = log.get('decisions', [])
     pending = log.get('pending_approvals', [])
@@ -157,7 +163,7 @@ def get_coaching_context() -> dict[str, Any]:
 
 
 def validate_season_config(training_config: dict[str, Any],
-                           today: date | None = None) -> dict[str, Any]:
+                           today: date) -> dict[str, Any]:
     """Season-layer config validation → data_quality flags (flag, don't fix).
 
     Pure function over training_config.json content. Returns a dict of flags
@@ -173,7 +179,6 @@ def validate_season_config(training_config: dict[str, Any],
     - phase_overdue: {target_transition, days_overdue} when
       periodization.target_transition has passed
     """
-    today = today or date.today()
     config = training_config or {}
     flags: dict[str, Any] = {}
 
@@ -289,6 +294,8 @@ def build_planning_context(
     today_recovery: dict[str, Any],
     pending_suggestions: list[dict[str, Any]] = None,
     methodology: dict[str, Any] = None,
+    *,
+    today: date,
 ) -> dict[str, Any]:
     """
     Assemble a context dict from already-loaded inputs.
@@ -307,12 +314,11 @@ def build_planning_context(
         pending_suggestions: Legacy kwarg, pass-through only (the suggestion
             workflow was consolidated into the unified proposal API)
         methodology: Pillars, constraints, race_templates from methodology.json
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Complete context dict (same shape tests assert against)
     """
-    today = date.today()
-
     # Load methodology if not provided
     if methodology is None:
         methodology = load_methodology()
@@ -412,7 +418,7 @@ def build_planning_context(
         'pending_suggestions': pending_suggestions or [],
 
         # Coaching continuity (decisions, patterns, approvals)
-        'coaching_context': get_coaching_context(),
+        'coaching_context': get_coaching_context(today),
     }
 
     # Add active injuries with restrictions for easy reference
@@ -452,7 +458,7 @@ PLAN_HISTORY_FILE = 'plan_history.json'
 PLAN_RETENTION_DAYS = 9  # Day entries older than this (before today) are archived
 
 
-def _prune_and_archive_plan_days(plan: dict[str, Any]) -> None:
+def _prune_and_archive_plan_days(plan: dict[str, Any], today: date) -> None:
     """Prune day entries older than PLAN_RETENTION_DAYS before today.
 
     Pruned days are archived by appending to data/plan_history.json so plan
@@ -462,7 +468,7 @@ def _prune_and_archive_plan_days(plan: dict[str, Any]) -> None:
     if not isinstance(days, dict):
         return
 
-    cutoff = (date.today() - timedelta(days=PLAN_RETENTION_DAYS)).isoformat()
+    cutoff = (today - timedelta(days=PLAN_RETENTION_DAYS)).isoformat()
     pruned = {d: v for d, v in days.items() if d < cutoff}
     if not pruned:
         return
@@ -479,13 +485,13 @@ def _prune_and_archive_plan_days(plan: dict[str, Any]) -> None:
             day_entry = pruned[day_str] if isinstance(pruned[day_str], dict) else {'value': pruned[day_str]}
             entries.append({'date': day_str, **day_entry})
         archive['archived_days'] = entries
-        archive['last_archived'] = date.today().isoformat()
+        archive['last_archived'] = today.isoformat()
         save_json_file(PLAN_HISTORY_FILE, archive)
     except Exception:
         logger.warning("Failed to archive pruned plan days", exc_info=True)
 
 
-def save_weekly_plan(plan: dict[str, Any]) -> None:
+def save_weekly_plan(plan: dict[str, Any], today: date | None = None) -> None:
     """Save the weekly plan.
 
     Preserves internal metadata fields (e.g. pushed_workout_ids) from the
@@ -495,14 +501,21 @@ def save_weekly_plan(plan: dict[str, Any]) -> None:
     Also enforces plan lifecycle: day entries older than PLAN_RETENTION_DAYS
     are pruned (archived to plan_history.json), and week_start/week_end are
     derived from the day keys when missing.
+
+    `today` should be threaded from the tool boundary. The internal
+    date.today() fallback exists because scripts/daily_loop.py calls this
+    bare — that one resolution line is allowlisted in
+    tests/test_clock_discipline.py (storage boundary).
     """
+    if today is None:
+        today = date.today()
     existing = load_json_file('weekly_plan.json') or {}
     for field in INTERNAL_PLAN_FIELDS:
         if field not in plan and field in existing:
             plan[field] = existing[field]
 
     # Prune stale days first, then derive week bounds from what remains
-    _prune_and_archive_plan_days(plan)
+    _prune_and_archive_plan_days(plan, today)
 
     days = plan.get('days')
     if isinstance(days, dict):
@@ -519,13 +532,16 @@ def save_weekly_plan(plan: dict[str, Any]) -> None:
             if not plan.get('week_end'):
                 plan['week_end'] = max(valid_keys)
 
-    plan['last_updated'] = date.today().isoformat()
+    plan['last_updated'] = today.isoformat()
     save_json_file('weekly_plan.json', plan)
 
 
-def create_empty_week_template() -> dict[str, Any]:
+def create_empty_week_template(today: date) -> dict[str, Any]:
     """
     Create an empty 7-day plan template starting from today.
+
+    Args:
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns a dict with:
         - week_start, week_end: ISO date strings
@@ -585,7 +601,6 @@ def create_empty_week_template() -> dict[str, Any]:
         }
         Note: Check athlete.pilates profile for experience and injury considerations.
     """
-    today = date.today()
     days = {}
 
     for i in range(7):

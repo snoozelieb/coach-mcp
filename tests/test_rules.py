@@ -251,7 +251,8 @@ class TestCheckSafetyRules:
             {'type': 'interval_training', 'duration_mins': 45, 'date': two_days_ago},
         ]
 
-        result = check_safety_rules(activities, constraints={'max_consecutive_hard_days': 2})
+        result = check_safety_rules(activities, constraints={'max_consecutive_hard_days': 2},
+                                    today=date.today())
 
         assert any('consecutive hard days' in w for w in result['warnings'])
 
@@ -268,7 +269,8 @@ class TestCheckSafetyRules:
         result = check_safety_rules(
             activities,
             today_plan,
-            constraints={'max_consecutive_hard_days': 2}
+            constraints={'max_consecutive_hard_days': 2},
+            today=date.today(),
         )
 
         assert result['safe'] is False
@@ -280,7 +282,8 @@ class TestCheckSafetyRules:
             {'type': 'yoga', 'duration_mins': 45},
         ]
 
-        result = check_safety_rules(activities)
+        from datetime import date
+        result = check_safety_rules(activities, today=date.today())
 
         assert result['safe'] is True
         assert result['blocked'] == []
@@ -290,7 +293,8 @@ class TestCheckSafetyRules:
             {'type': 'running', 'name': 'Park Run Race', 'duration_mins': 25},
         ]
 
-        result = check_safety_rules(activities)
+        from datetime import date
+        result = check_safety_rules(activities, today=date.today())
 
         assert any('race' in w.lower() for w in result['warnings'])
 

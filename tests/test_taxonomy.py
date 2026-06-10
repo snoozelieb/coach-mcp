@@ -482,7 +482,7 @@ class TestSportPrioritiesRaceMap:
             {'name': 'City Marathon', 'date': d1, 'priority': 'A', 'type': 'marathon'},
             {'name': 'Winter Half', 'date': d2, 'priority': 'B', 'type': 'running_half'},
         ]
-        result = _analyze_sport_priorities(events, {}, {})
+        result = _analyze_sport_priorities(events, {}, {}, TODAY)
         assert set(result['sports'].keys()) == {'running'}
         assert result['has_multi_sport'] is False
 
@@ -495,7 +495,7 @@ class TestSportPrioritiesRaceMap:
             'multi_day_mtb': {'key_sessions': [{'type': 'long_mtb_ride'}]},
             'trail_ultra': {'key_sessions': [{'type': 'long_trail_run'}]},
         }
-        result = _analyze_sport_priorities(events, {}, race_templates)
+        result = _analyze_sport_priorities(events, {}, race_templates, TODAY)
         assert 'cycling' in result['sport_specific_sessions']
         assert 'long_mtb_ride' in result['sport_specific_sessions']['cycling']
         assert 'running' in result['sport_specific_sessions']
@@ -571,7 +571,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(1)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is True
         assert not any('consecutive hard days' in w for w in result['warnings'])
@@ -582,7 +582,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(2)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is False
         assert any('consecutive hard days' in b for b in result['blocked'])
@@ -595,7 +595,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(3)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is True
         assert not any('consecutive hard days' in w for w in result['warnings'])
@@ -607,7 +607,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(3)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is True
 
@@ -618,7 +618,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(5)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is True
         assert not any('consecutive hard days' in w for w in result['warnings'])
@@ -630,7 +630,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'hiit', 'duration_mins': 30, 'date': self._iso(1)},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is False
 
@@ -642,7 +642,7 @@ class TestSafetyRulesDayCounting:
              'date': self._iso(5)},
         ]
         today_plan = {'type': 'easy_run', 'duration_mins': 30}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is True
         assert not any('race' in w.lower() for w in result['warnings'])
@@ -653,7 +653,7 @@ class TestSafetyRulesDayCounting:
              'date': self._iso(1)},
         ]
         today_plan = {'type': 'easy_run', 'duration_mins': 30}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is False
         assert any('race' in b.lower() for b in result['blocked'])
@@ -663,7 +663,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'triathlon', 'duration_mins': 180, 'date': self._iso(0)},
         ]
         today_plan = {'type': 'easy_run', 'duration_mins': 30}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is False
 
@@ -674,7 +674,7 @@ class TestSafetyRulesDayCounting:
             {'type': 'marathon', 'duration_mins': 200, 'date': self._iso(2)},
         ]
         today_plan = {'type': 'easy_run', 'duration_mins': 30}
-        result = check_safety_rules(activities, today_plan, constraints=constraints)
+        result = check_safety_rules(activities, today_plan, constraints=constraints, today=TODAY)
 
         assert result['safe'] is False
 
@@ -688,7 +688,7 @@ class TestSafetyRulesDayCounting:
              'date': self._iso(1)},
         ]
         today_plan = {'type': 'easy_run', 'duration_mins': 30}
-        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, today_plan, constraints=self.CONSTRAINTS, today=TODAY)
 
         assert result['safe'] is False
         assert any('race' in b.lower() for b in result['blocked'])
@@ -698,10 +698,10 @@ class TestSafetyRulesDayCounting:
         activities = [
             {'type': 'running', 'name': 'Park Run Race', 'duration_mins': 25},
         ]
-        result = check_safety_rules(activities, constraints=self.CONSTRAINTS)
+        result = check_safety_rules(activities, constraints=self.CONSTRAINTS, today=TODAY)
         assert any('race' in w.lower() for w in result['warnings'])
 
     def test_no_activities_safe(self, empty_data_dir):
         result = check_safety_rules([], {'type': 'interval_training'},
-                                    constraints=self.CONSTRAINTS)
+                                    constraints=self.CONSTRAINTS, today=TODAY)
         assert result['safe'] is True

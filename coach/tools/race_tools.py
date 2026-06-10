@@ -124,12 +124,14 @@ def _research_race(name: str = None, url: str = None) -> dict:
         return {'error': str(e)}
 
 
-def _list_races() -> dict:
-    """List all configured races/events with priority and days until."""
+def _list_races(today: date) -> dict:
+    """List all configured races/events with priority and days until.
+
+    today is required — the races boundary resolves it (clock discipline).
+    """
     try:
         config = load_training_config()
         events = config.get('events', [])
-        today = date.today()
 
         result = []
         for event in events:
@@ -372,7 +374,7 @@ def races(
     """
     try:
         if action == 'list':
-            return _list_races()
+            return _list_races(date.today())  # tool boundary resolution
 
         if action == 'add':
             missing = [arg for arg, val in (('name', name),

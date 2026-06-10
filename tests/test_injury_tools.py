@@ -8,6 +8,7 @@ import coach.planner as planner
 from coach.tools.injury_tools import (
     diagnose_injury,
     research_injury,
+    update_injury_status,
     _is_relevant_content,
     _is_significant_redirect,
     _extract_clinical_info,
@@ -549,3 +550,94 @@ class TestResearchInjury:
         # No sources should be added since all redirected
         assert len(result["sources"]) == 0
         assert "suggested_searches" in result["researched_info"]
+
+
+# ---------------------------------------------------------------------------
+# update_injury_status — the gate-lifting mutation
+# ---------------------------------------------------------------------------
+
+SHIN_INJURY = {
+    'date': '2026-05-20',
+    'type': 'shin',
+    'body_region': 'shin',
+    'status': 'active',
+    'severity': 'moderate',
+    'restricted_activities': ['running'],
+    'safe_activities': ['cycling'],
+}
+
+
+@pytest.fixture
+def injury_status_dir(sandbox_data_dir):
+    """Seed athlete.json with one active injury into the sandbox DATA_DIR."""
+    (sandbox_data_dir / 'athlete.json').write_text(json.dumps({
+        'personal': {'name': 'Test', 'age': 30},
+        'injury_history': [dict(SHIN_INJURY)],
+        'coaching_notes': '',
+    }))
+    return sandbox_data_dir
+
+
+class TestUpdateInjuryStatus:
+    def test_status_severity_and_note_updated_and_persisted(
+            self, injury_status_dir):
+        result = json.loads(update_injury_status(
+            '2026-05-20', new_status='improving', severity='mild',
+            notes='Pain-free walking for a week'))
+
+        assert result['status'] == 'success'
+        assert 'status -> improving' in result['message']
+        assert 'severity -> mild' in result['message']
+
+        athlete = json.loads(
+            (injury_status_dir / 'athlete.json').read_text())
+        injury = athlete['injury_history'][0]
+        assert injury['status'] == 'improving'
+        assert injury['severity'] == 'mild'
+        assert injury['progress_notes'][0]['note'] == (
+            'Pain-free walking for a week')
+        assert injury['progress_notes'][0]['date'] == date.today().isoformat()
+        # Restriction lists survive the update untouched
+        assert injury['restricted_activities'] == ['running']
+
+    def test_resolving_lifts_the_injury_gate(self, injury_status_dir):
+        """status='resolved' is what lifts the hard injury gate — verify the
+        persisted record stops matching the active/improving filter every
+        gate consumer uses."""
+        result = json.loads(update_injury_status(
+            '2026-05-20', new_status='resolved'))
+
+        assert result['status'] == 'success'
+        athlete = json.loads(
+            (injury_status_dir / 'athlete.json').read_text())
+        gating = [i for i in athlete['injury_history']
+                  if i.get('status') in ('active', 'improving')]
+        assert gating == []
+
+    def test_unknown_date_lists_existing_injuries(self, injury_status_dir):
+        result = json.loads(update_injury_status(
+            '2026-01-01', new_status='resolved'))
+
+        assert 'No injury found' in result['error']
+        assert result['existing_injuries'] == ['2026-05-20']
+
+    def test_invalid_status_rejected(self, injury_status_dir):
+        result = json.loads(update_injury_status(
+            '2026-05-20', new_status='cured'))
+
+        assert 'Invalid status' in result['error']
+        # Nothing persisted
+        athlete = json.loads(
+            (injury_status_dir / 'athlete.json').read_text())
+        assert athlete['injury_history'][0]['status'] == 'active'
+
+    def test_invalid_severity_rejected(self, injury_status_dir):
+        result = json.loads(update_injury_status(
+            '2026-05-20', severity='catastrophic'))
+
+        assert 'Invalid severity' in result['error']
+
+    def test_no_updates_provided(self, injury_status_dir):
+        result = json.loads(update_injury_status('2026-05-20'))
+
+        assert result['error'] == 'No updates provided'

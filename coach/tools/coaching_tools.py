@@ -1083,7 +1083,7 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
     return out
 
 
-def _build_snapshot_flags(snapshot: dict) -> dict:
+def _build_snapshot_flags(snapshot: dict, today: date) -> dict:
     """Build a summary flags dict for quick scanning of snapshot state.
 
     Returns counts and booleans only — no ranking or prioritization
@@ -1131,7 +1131,7 @@ def _build_snapshot_flags(snapshot: dict) -> dict:
         review_due = len(due_summaries)
     else:
         review_due = _count_decisions_due_review(
-            memory.get('active_decisions', []), date.today()
+            memory.get('active_decisions', []), today
         )
     if review_due:
         flags['decisions_due_for_review'] = review_due
@@ -1145,15 +1145,14 @@ def _build_snapshot_flags(snapshot: dict) -> dict:
     return flags
 
 
-def _analyze_sport_priorities(events: list, current_block: dict, race_templates: dict) -> dict:
+def _analyze_sport_priorities(events: list, current_block: dict,
+                              race_templates: dict, today: date) -> dict:
     """
     Analyze multi-sport priorities based on upcoming races.
 
     Returns recommended volume distribution across sports and identifies
     which sessions are shared (strength, mobility) vs sport-specific.
     """
-    today = date.today()
-
     # Categorize events by sport type (race-type -> sport via taxonomy)
     sports_analysis = {}
     for event in events:
@@ -1274,10 +1273,10 @@ def get_compliance_report(days: int = 7) -> str:
         compliance = check_weekly_compliance(activities)
 
         # Check safety rules
-        safety = check_safety_rules(activities)
+        safety = check_safety_rules(activities, today=today)
 
         # Get upcoming events for context
-        upcoming = get_upcoming_events(days_ahead=56)
+        upcoming = get_upcoming_events(days_ahead=56, today=today)
 
         report = {
             'period': {
@@ -1320,7 +1319,7 @@ def _compute_coaching_score(
     """
     daily_loads = fitness_history.get('daily_loads', {}) or {}
     total_loads = _extract_total_loads(daily_loads) if daily_loads else {}
-    fitness_data = calculate_fitness_metrics(total_loads) if total_loads else {}
+    fitness_data = calculate_fitness_metrics(total_loads, today) if total_loads else {}
     current_ctl = fitness_data.get('ctl', 0) if fitness_data else 0
 
     # 4-week CTL gain from persisted snapshots (v1 + v2)
@@ -1357,7 +1356,7 @@ def _compute_coaching_score(
 
         race_sport = race_sport_for(race_type)
         if race_sport and daily_loads:
-            sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
+            sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport, today)
             if sport_m.get('days_with_data', 0) > 0:
                 current_ctl = sport_m['ctl']
                 progress_data['current_ctl'] = round(current_ctl, 1)
@@ -1659,7 +1658,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             )
             from ..parsers import parse_activities as _pa
             refreshed_activities = _pa(raw_refresh or [])
-            history = update_fitness_history(refreshed_activities)
+            history = update_fitness_history(refreshed_activities, today)
         except GarminAuthRequiredError as e:
             auth_error = str(e)
             logger.warning("Activity ingestion blocked: Garmin auth required")
@@ -1776,12 +1775,12 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         # The LLM must check ALL three levels before prescribing.
         if daily_loads:
             total_loads = _extract_total_loads(daily_loads)
-            overall_metrics = calculate_fitness_metrics(total_loads)
+            overall_metrics = calculate_fitness_metrics(total_loads, today)
 
             # Per-sport metrics
             sport_fitness = {}
             for sport in ['cycling', 'running', 'strength']:
-                sm = calculate_sport_fitness_metrics(daily_loads, sport)
+                sm = calculate_sport_fitness_metrics(daily_loads, sport, today)
                 if sm.get('days_with_data', 0) > 0:
                     sport_fitness[sport] = {
                         'ctl': sm['ctl'], 'atl': sm['atl'],
@@ -1942,7 +1941,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                     'hrv_last_night_avg': recovery.get('hrv_last_night_avg'),
                     'body_battery': recovery.get('body_battery'),
                 }
-                history = persist_readiness_data(readiness_rec, history)
+                history = persist_readiness_data(readiness_rec, history, today=today)
         except GarminAuthRequiredError as e:
             auth_error = auth_error or str(e)
             recovery = {'status': 'unavailable', 'note': str(e)}
@@ -1983,7 +1982,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 fresh_sleep_need = dict(need, date=night_iso)
 
         if fetched_sleep:
-            history = persist_sleep_data(fetched_sleep, history)
+            history = persist_sleep_data(fetched_sleep, history, today=today)
         if fresh_sleep_need:
             # Persisted so later same-day snapshots keep the personalized
             # target even though last night is no longer re-fetched.
@@ -2000,13 +1999,14 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         save_fitness_history(history)
 
         # 6c. Sleep trend (30-day from persisted data) + bedtime drift (14-day window)
-        sleep_trend_30d = get_sleep_trend(history, days=30)
+        sleep_trend_30d = get_sleep_trend(history, days=30, today=today)
         bedtime_drift = detect_bedtime_drift(history.get('sleep_history', []))
 
         # 6d. Readiness baselines (personal norms)
         readiness_baselines = calculate_readiness_baselines(
             history.get('sleep_history', []),
             history.get('readiness_history', []),
+            today,
         )
 
         await ctx.report_progress(7, 10, "Recovery and sleep analyzed")
@@ -2023,7 +2023,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         sport_priorities = _analyze_sport_priorities(
             training_config.get('events', []),
             training_config.get('current_block', {}),
-            methodology.get('race_templates', {})
+            methodology.get('race_templates', {}),
+            today,
         )
 
         # 8. Active + improving injuries (both need attention)
@@ -2057,7 +2058,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         # 9c. Multi-week trends (wire in get_fitness_trend + volume by sport)
         trends = {}
         if daily_loads:
-            overall_trend = get_fitness_trend(28)
+            overall_trend = get_fitness_trend(28, today=today)
             trends['overall_ctl_4wk'] = {
                 'direction': overall_trend.get('trend', 'unknown'),
                 'change': overall_trend.get('ctl_change', 0),
@@ -2134,7 +2135,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 race_date=a_race.get('date'),
                 race_type=race_type,
                 current_ctl=target_ctl_input,
-                current_weekly_tss=last_week_tss if last_week_tss > 0 else None
+                current_weekly_tss=last_week_tss if last_week_tss > 0 else None,
+                today=today,
             )
             if not ctl_target.get('error'):
                 volume_data = {
@@ -2285,7 +2287,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         # decisions_due_review carries their actual summaries, not a count.
         try:
             decision_log, _transitioned = auto_transition_due_decisions(today)
-            coaching_ctx = get_coaching_context()
+            coaching_ctx = get_coaching_context(today)
             active_decisions = sorted(
                 coaching_ctx.get('active_decisions', []),
                 key=lambda d: d.get('date') or '',
@@ -2312,7 +2314,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
 
         # Snapshot flags — quick-scan summary for the LLM (built from the
         # FULL internal snapshot so core flags still see everything)
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, today)
         if flags:
             snapshot['flags'] = flags
 

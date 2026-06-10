@@ -120,7 +120,8 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
             user_profile = garmin_api_call(lambda c: c.get_user_profile())
             thirty_days_ago = (today - timedelta(days=30)).isoformat()
             body_comp = garmin_api_call(lambda c: c.get_body_composition(thirty_days_ago, today.isoformat()))
-            garmin_profile = parse_user_profile(full_name, user_profile, body_comp)
+            garmin_profile = parse_user_profile(full_name, user_profile, body_comp,
+                                                today=today)
         except Exception:
             logger.warning("Failed to pull Garmin profile data", exc_info=True)
 
@@ -180,17 +181,17 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
         return json.dumps({'error': str(e)})
 
 
-def _training_readiness(for_date: str = None) -> dict:
+def _training_readiness(for_date: str) -> dict:
     """Fetch training readiness score and recovery metrics from Garmin.
 
     Always fetches the dedicated HRV endpoint too — Garmin's training readiness
     often returns null for hrv_status even when the device tracks HRV. The HRV
     endpoint fills in last_night_avg, weekly_avg, baseline range, and feedback.
+
+    for_date is required — the query_metrics boundary resolves the default
+    (clock discipline).
     """
     try:
-        if for_date is None:
-            for_date = date.today().isoformat()
-
         readiness_data = garmin_api_call(lambda c: c.get_training_readiness(for_date))
         try:
             hrv_data = garmin_api_call(lambda c: c.get_hrv_data(for_date))
@@ -207,7 +208,7 @@ def _training_readiness(for_date: str = None) -> dict:
         return {"error": str(e)}
 
 
-def _fitness_status(days: int = 90) -> dict:
+def _fitness_status(days: int = 90, *, today: date) -> dict:
     """Detailed fitness analysis: CTL, ATL, TSB, ACWR — overall and per-sport.
 
     CTL (fitness, 42d average), ATL (fatigue, 7d average), TSB (form = CTL - ATL),
@@ -230,12 +231,12 @@ def _fitness_status(days: int = 90) -> dict:
 
         # Calculate current overall metrics (extract flat total loads for v2)
         total_loads = _extract_total_loads(daily_loads)
-        metrics = calculate_fitness_metrics(total_loads)
+        metrics = calculate_fitness_metrics(total_loads, today)
 
         # Calculate per-sport metrics
         by_sport = {}
         for sport in ['cycling', 'running', 'strength']:
-            sport_metrics = calculate_sport_fitness_metrics(daily_loads, sport)
+            sport_metrics = calculate_sport_fitness_metrics(daily_loads, sport, today)
             if sport_metrics.get('days_with_data', 0) > 0:
                 by_sport[sport] = {
                     'ctl': sport_metrics['ctl'],
@@ -246,7 +247,7 @@ def _fitness_status(days: int = 90) -> dict:
                 }
 
         # Get trend
-        trend = get_fitness_trend(days)
+        trend = get_fitness_trend(days, today=today)
 
         # Generate coaching insights
         insights = []
@@ -375,11 +376,11 @@ def refresh_fitness_history(days: int = 180) -> str:
         activities = parse_activities(raw_activities)
 
         # Update fitness history (v2 sport-aware format)
-        history = update_fitness_history(activities)
+        history = update_fitness_history(activities, today)
 
         # Calculate current metrics from total loads
         total_loads = _extract_total_loads(history.get('daily_loads', {}))
-        metrics = calculate_fitness_metrics(total_loads)
+        metrics = calculate_fitness_metrics(total_loads, today)
 
         return json.dumps({
             'status': 'success',
@@ -401,16 +402,18 @@ def refresh_fitness_history(days: int = 180) -> str:
         return json.dumps({'error': str(e)})
 
 
-def _intensity_distribution(days: int = 28) -> dict:
+def _intensity_distribution(days: int = 28, *, today: date) -> dict:
     """Analyze training intensity distribution over a period.
 
     Checks compliance with the Norwegian 80/20 polarized model:
     - 80% low intensity (Zone 1-2: easy/aerobic)
     - 15% moderate intensity (Zone 3: tempo)
     - 5% high intensity (Zone 4-5: threshold/VO2max)
+
+    today is required — the query_metrics boundary resolves it
+    (clock discipline).
     """
     try:
-        today = date.today()
         start = (today - timedelta(days=days)).isoformat()
 
         # Fetch activities
@@ -495,14 +498,15 @@ def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
         A dict per kind; {'error': ...} on failure.
     """
     try:
+        today = date.today()  # tool boundary — threaded into the helpers
         if kind == 'fitness':
-            return _fitness_status(days)
+            return _fitness_status(days, today=today)
         if kind == 'intensity':
-            return _intensity_distribution(days)
+            return _intensity_distribution(days, today=today)
         if kind == 'daily':
-            return _daily_metrics()
+            return _daily_metrics(today)
         if kind == 'readiness':
-            return _training_readiness(for_date)
+            return _training_readiness(for_date or today.isoformat())
         if kind == 'personal_records':
             return _personal_records()
 

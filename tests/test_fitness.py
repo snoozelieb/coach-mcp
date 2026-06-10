@@ -193,23 +193,23 @@ class TestSportSpecificFitnessMetrics:
 
     def test_cycling_ctl_independent_of_running(self):
         loads = self._make_daily_loads(50, cycling_daily=10.0, running_daily=0.0)
-        cycling = calculate_sport_fitness_metrics(loads, 'cycling')
-        running = calculate_sport_fitness_metrics(loads, 'running')
+        cycling = calculate_sport_fitness_metrics(loads, 'cycling', date.today())
+        running = calculate_sport_fitness_metrics(loads, 'running', date.today())
 
         assert cycling['ctl'] > 0
         assert running['ctl'] == 0.0
 
     def test_running_ctl_independent_of_cycling(self):
         loads = self._make_daily_loads(50, cycling_daily=0.0, running_daily=5.0)
-        cycling = calculate_sport_fitness_metrics(loads, 'cycling')
-        running = calculate_sport_fitness_metrics(loads, 'running')
+        cycling = calculate_sport_fitness_metrics(loads, 'cycling', date.today())
+        running = calculate_sport_fitness_metrics(loads, 'running', date.today())
 
         assert cycling['ctl'] == 0.0
         assert running['ctl'] > 0
 
     def test_sport_acwr_calculated(self):
         loads = self._make_daily_loads(50, cycling_daily=10.0, running_daily=5.0)
-        cycling = calculate_sport_fitness_metrics(loads, 'cycling')
+        cycling = calculate_sport_fitness_metrics(loads, 'cycling', date.today())
         assert 'acwr' in cycling
         assert cycling['acwr'] > 0
 
@@ -225,13 +225,13 @@ class TestSportSpecificFitnessMetrics:
             else:
                 loads[d] = {'total': 0, 'by_sport': {}, 'activities': []}
 
-        running = calculate_sport_fitness_metrics(loads, 'running')
+        running = calculate_sport_fitness_metrics(loads, 'running', date.today())
         # ACWR should be high (acute load present but low chronic)
         assert running['acwr'] > 1.3
 
     def test_empty_loads_returns_zero_ctl(self):
         loads = {}
-        m = calculate_sport_fitness_metrics(loads, 'cycling')
+        m = calculate_sport_fitness_metrics(loads, 'cycling', date.today())
         assert m['ctl'] == 0.0
 
 
@@ -246,7 +246,7 @@ class TestUpdateFitnessHistoryV2:
             {'date': '2026-02-01', 'type': 'cycling', 'duration_mins': 60, 'garmin_training_load': 95.0},
             {'date': '2026-02-01', 'type': 'strength_training', 'duration_mins': 30, 'garmin_training_load': 35.0},
         ]
-        history = update_fitness_history(activities)
+        history = update_fitness_history(activities, date(2026, 2, 2))
 
         day = history['daily_loads']['2026-02-01']
         assert 'total' in day
@@ -262,7 +262,7 @@ class TestUpdateFitnessHistoryV2:
         activities = [
             {'date': '2026-02-01', 'activity_id': 123, 'type': 'running', 'duration_mins': 45, 'garmin_training_load': 72.0},
         ]
-        history = update_fitness_history(activities)
+        history = update_fitness_history(activities, date(2026, 2, 2))
 
         day = history['daily_loads']['2026-02-01']
         assert len(day['activities']) == 1
@@ -280,7 +280,7 @@ class TestUpdateFitnessHistoryV2:
             activities.append({'date': d, 'type': 'cycling', 'duration_mins': 60, 'garmin_training_load': 85.0})
             activities.append({'date': d, 'type': 'running', 'duration_mins': 30, 'garmin_training_load': 55.0})
 
-        history = update_fitness_history(activities)
+        history = update_fitness_history(activities, date.today())
         snap = history['snapshots'][-1]
 
         assert 'total' in snap
@@ -301,7 +301,7 @@ class TestPersistSleepData:
             {'date': two_days_ago, 'duration_hrs': 7.2, 'score': 82, 'deep_pct': 22, 'rem_pct': 25, 'avg_hr': 55},
             {'date': yesterday, 'duration_hrs': 6.8, 'score': 75, 'deep_pct': 18, 'rem_pct': 22, 'avg_hr': 57},
         ]
-        result = persist_sleep_data(records, history)
+        result = persist_sleep_data(records, history, today=date.today())
         assert len(result['sleep_history']) == 2
         assert result['sleep_history'][0]['date'] == two_days_ago
 
@@ -317,7 +317,7 @@ class TestPersistSleepData:
             {'date': two_days_ago, 'duration_hrs': 7.5, 'score': 85},  # Duplicate date
             {'date': yesterday, 'duration_hrs': 6.8, 'score': 75},
         ]
-        result = persist_sleep_data(records, history)
+        result = persist_sleep_data(records, history, today=date.today())
         assert len(result['sleep_history']) == 2
         # Original record preserved (not overwritten)
         dup = next(r for r in result['sleep_history'] if r['date'] == two_days_ago)
@@ -332,7 +332,7 @@ class TestPersistSleepData:
         records = [
             {'date': date.today().isoformat(), 'duration_hrs': 7.5, 'score': 85},
         ]
-        result = persist_sleep_data(records, history)
+        result = persist_sleep_data(records, history, today=date.today())
         # Old record should be pruned
         dates = [r['date'] for r in result['sleep_history']]
         assert '2025-12-01' not in dates
@@ -344,9 +344,11 @@ class TestPersistSleepData:
             {'date': '2026-02-04', 'duration_hrs': 7.5},
             {'date': '2026-02-05', 'duration_hrs': 6.8},
         ]
-        result = persist_sleep_data(records, history)
+        # Frozen today keeps these fixed-date records inside the 30-day window
+        result = persist_sleep_data(records, history, today=date(2026, 2, 7))
         dates = [r['date'] for r in result['sleep_history']]
         assert dates == sorted(dates)
+        assert len(dates) == 3
 
 
 # ── Sleep Trend ──────────────────────────────────────────────────
@@ -367,7 +369,7 @@ class TestGetSleepTrend:
 
     def test_returns_avg_duration(self):
         history = {'sleep_history': self._make_sleep_history(14, base_hrs=7.5)}
-        result = get_sleep_trend(history, days=30)
+        result = get_sleep_trend(history, days=30, today=date.today())
         assert result['avg_duration'] == 7.5
 
     def test_detects_improving_trend(self):
@@ -383,7 +385,7 @@ class TestGetSleepTrend:
             hrs = 7.5 if i < 10 else 6.5
             records.append({'date': d, 'duration_hrs': hrs, 'score': 75})
         history = {'sleep_history': records}
-        result = get_sleep_trend(history, days=30)
+        result = get_sleep_trend(history, days=30, today=date.today())
         # After sort ascending: oldest first → first half is 6.5hrs, second half is 7.5hrs
         assert result['direction'] == 'improving'
 
@@ -395,19 +397,19 @@ class TestGetSleepTrend:
             hrs = 6.0 if i < 10 else 7.5
             records.append({'date': d, 'duration_hrs': hrs, 'score': 75})
         history = {'sleep_history': records}
-        result = get_sleep_trend(history, days=30)
+        result = get_sleep_trend(history, days=30, today=date.today())
         # After sort ascending: first half (older) = 7.5hrs, second half (newer) = 6.0hrs
         assert result['direction'] == 'declining'
 
     def test_empty_history(self):
-        result = get_sleep_trend({'sleep_history': []})
+        result = get_sleep_trend({'sleep_history': []}, today=date.today())
         assert result['status'] == 'no_data'
 
     def test_counts_deficit_weeks(self):
         # All records at 6.5hrs → every week is a deficit
         records = self._make_sleep_history(14, base_hrs=6.5)
         history = {'sleep_history': records}
-        result = get_sleep_trend(history, days=30)
+        result = get_sleep_trend(history, days=30, today=date.today())
         assert result['weeks_in_deficit'] > 0
 
 
@@ -683,7 +685,7 @@ class TestPersistReadinessData:
         rec_date = (date.today() - timedelta(days=1)).isoformat()
         history = {'readiness_history': []}
         rec = {'date': rec_date, 'score': 72, 'level': 'MODERATE', 'hrv_status': 'BALANCED', 'body_battery': 55}
-        result = persist_readiness_data(rec, history)
+        result = persist_readiness_data(rec, history, today=date.today())
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['score'] == 72
 
@@ -696,7 +698,7 @@ class TestPersistReadinessData:
             ],
         }
         rec = {'date': rec_date, 'score': 75}
-        result = persist_readiness_data(rec, history)
+        result = persist_readiness_data(rec, history, today=date.today())
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['score'] == 72  # Original preserved
 
@@ -709,20 +711,20 @@ class TestPersistReadinessData:
             ],
         }
         rec = {'date': recent_date, 'score': 72}
-        result = persist_readiness_data(rec, history)
+        result = persist_readiness_data(rec, history, today=date.today())
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['date'] == recent_date
 
     def test_missing_date_ignored(self):
         history = {'readiness_history': []}
         rec = {'score': 72}
-        result = persist_readiness_data(rec, history)
+        result = persist_readiness_data(rec, history, today=date.today())
         assert len(result['readiness_history']) == 0
 
     def test_creates_readiness_history_key(self):
         history = {}
         rec = {'date': '2026-03-14', 'score': 72}
-        result = persist_readiness_data(rec, history)
+        result = persist_readiness_data(rec, history, today=date.today())
         assert 'readiness_history' in result
 
 
@@ -739,14 +741,14 @@ class TestCalculateReadinessBaselines:
             {'date': (today - timedelta(days=i)).isoformat(), 'score': 70 + i}
             for i in range(10)
         ]
-        result = calculate_readiness_baselines(sleep, readiness)
+        result = calculate_readiness_baselines(sleep, readiness, today)
         assert result['status'] == 'sufficient'
         assert 'sleep_duration_14d_avg' in result
         assert 'sleep_score_14d_avg' in result
         assert 'readiness_14d_avg' in result
 
     def test_insufficient_data(self):
-        result = calculate_readiness_baselines([], [])
+        result = calculate_readiness_baselines([], [], date.today())
         assert result['status'] == 'insufficient_data'
 
     def test_partial_sleep_only(self):
@@ -755,7 +757,7 @@ class TestCalculateReadinessBaselines:
             {'date': (today - timedelta(days=i)).isoformat(), 'duration_hrs': 7.0, 'score': 80}
             for i in range(5)
         ]
-        result = calculate_readiness_baselines(sleep, [])
+        result = calculate_readiness_baselines(sleep, [], today)
         assert 'sleep_duration_14d_avg' in result
         assert 'readiness_14d_avg' not in result
 
@@ -769,7 +771,7 @@ class TestCalculateReadinessBaselines:
                 'date': (today - timedelta(days=i)).isoformat(),
                 'duration_hrs': 7.5, 'score': score,
             })
-        result = calculate_readiness_baselines(sleep, [])
+        result = calculate_readiness_baselines(sleep, [], today)
         assert result['sleep_score_14d_avg'] > result['sleep_score_30d_avg']
 
 

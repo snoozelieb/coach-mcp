@@ -1,9 +1,11 @@
 """Tests for tools/coaching_tools.py — helper functions (pure logic, no mocking needed)."""
+import json
 import pytest
 from datetime import date, timedelta
 from unittest.mock import patch
 
 from coach.tools.coaching_tools import (
+    get_coaching_snapshot,
     _compare_planned_actual,
     _parse_readiness_for_snapshot,
     _build_adaptation_patterns,
@@ -17,6 +19,7 @@ from coach.tools.coaching_tools import (
     _summarize_plan_adherence_by_pillar,
     _compute_coaching_score,
 )
+from conftest import FakeGarminClient, patch_garmin_everywhere
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +466,7 @@ class TestAnalyzeSportPriorities:
         # Relative date so the test isn't date-dependent
         event_date = (date.today() + timedelta(days=45)).isoformat()
         events = [{'name': 'sani2c', 'date': event_date, 'priority': 'A', 'type': 'multi_day_mtb'}]
-        result = _analyze_sport_priorities(events, {}, {})
+        result = _analyze_sport_priorities(events, {}, {}, date.today())
 
         assert 'cycling' in result['sports']
         assert result['sports']['cycling']['primary_focus'] is True
@@ -477,7 +480,7 @@ class TestAnalyzeSportPriorities:
             {'name': 'sani2c', 'date': cycling_date, 'priority': 'A', 'type': 'multi_day_mtb'},
             {'name': '10k trail', 'date': running_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
-        result = _analyze_sport_priorities(events, {}, {})
+        result = _analyze_sport_priorities(events, {}, {}, date.today())
 
         assert result['has_multi_sport'] is True
         total_pct = sum(s['volume_pct'] for s in result['sports'].values())
@@ -491,13 +494,13 @@ class TestAnalyzeSportPriorities:
             {'name': 'past_race', 'date': past_date, 'priority': 'A', 'type': 'road_cycling'},
             {'name': 'future_race', 'date': future_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
-        result = _analyze_sport_priorities(events, {}, {})
+        result = _analyze_sport_priorities(events, {}, {}, date.today())
 
         assert 'cycling' not in result['sports']
         assert 'running' in result['sports']
 
     def test_no_events(self):
-        result = _analyze_sport_priorities([], {}, {})
+        result = _analyze_sport_priorities([], {}, {}, date.today())
 
         assert result['sports'] == {}
         assert result['has_multi_sport'] is False
@@ -511,7 +514,7 @@ class TestAnalyzeSportPriorities:
             {'name': 'far_race', 'date': far_date, 'priority': 'A', 'type': 'multi_day_mtb'},
             {'name': 'close_race', 'date': close_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
-        result = _analyze_sport_priorities(events, {}, {})
+        result = _analyze_sport_priorities(events, {}, {}, date.today())
 
         # close B-race (13 days away): priority_weight=3, time_weight=4 → score=12
         # far A-race (200 days away): priority_weight=4, time_weight=1 → score=4
@@ -523,151 +526,203 @@ class TestAnalyzeSportPriorities:
 
 
 # ---------------------------------------------------------------------------
-# Snapshot coaching_memory integration
+# Snapshot coaching_memory + data_quality — driven through the REAL snapshot
+#
+# These used to re-implement the slicing/flag logic inside the test body and
+# assert on their own copy (zero production coverage). They now seed the
+# sandbox DATA_DIR, answer Garmin with the canonical FakeGarminClient, and
+# assert on get_coaching_snapshot()'s actual output.
 # ---------------------------------------------------------------------------
 
+def _seed_snapshot_env(data_dir, *, athlete=None, training_config=None,
+                       coaching_log=None, history_days=10):
+    """Minimal-but-valid data files for driving the real snapshot."""
+    today = date.today()
+    daily_loads = {}
+    for i in range(history_days):
+        d_iso = (today - timedelta(days=i)).isoformat()
+        daily_loads[d_iso] = {
+            'total': 50.0,
+            'by_sport': {'cycling': 50.0},
+            'activities': [{'id': i, 'type': 'cycling', 'sport': 'cycling',
+                            'duration_mins': 60, 'load': 50.0, 'avg_hr': 130,
+                            'date': d_iso}],
+        }
+    files = {
+        'fitness_history.json': {
+            'schema_version': 2, 'daily_loads': daily_loads, 'snapshots': [],
+            'sleep_history': [], 'readiness_history': [],
+            'last_updated': today.isoformat(),
+            'last_activity_ingest_date': today.isoformat(),
+        },
+        'athlete.json': athlete if athlete is not None else {
+            'personal': {'name': 'Test Athlete', 'age': 36, 'weight_kg': 70,
+                         'max_hr': 188, 'resting_hr': 52},
+            'injury_history': [], 'life_constraints': {}, 'preferences': {},
+        },
+        'training_config.json': training_config if training_config is not None else {
+            'current_block': {'phase': 'build'},
+            'events': [{'name': 'Test Race',
+                        'date': (today + timedelta(days=45)).isoformat(),
+                        'type': 'gravel', 'priority': 'A'}],
+        },
+        'coaching_log.json': coaching_log if coaching_log is not None else {
+            'decisions': [], 'athlete_responses': [], 'pending_approvals': [],
+        },
+    }
+    for filename, payload in files.items():
+        (data_dir / filename).write_text(json.dumps(payload), encoding='utf-8')
+    return today
+
+
 class TestSnapshotCoachingMemory:
-    """Test that coaching_memory is wired into the snapshot via get_coaching_context()."""
+    """coaching_memory in the real snapshot payload (production slicing)."""
 
-    @patch('coach.tools.coaching_tools.get_coaching_context')
-    def test_coaching_memory_included(self, mock_ctx):
-        """coaching_memory appears in snapshot with expected fields."""
-        mock_ctx.return_value = {
-            'active_decisions': [
-                {'id': 'd1', 'type': 'volume_increase', 'status': 'active'},
-                {'id': 'd2', 'type': 'phase_transition', 'status': 'active'},
+    async def test_caps_at_five_decisions_newest_first(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """Regression for the memory-recency bug: the snapshot must surface
+        the five MOST RECENT active decisions, newest first — not the five
+        oldest (the [:5]-on-append-order bug that starved coaching memory)."""
+        today = date.today()
+        coaching_log = {
+            'decisions': [
+                {'id': f'd{i}', 'date': (today - timedelta(days=i)).isoformat(),
+                 'type': 'load_adjustment', 'decision': f'decision {i}',
+                 'status': 'active'}
+                for i in range(8)
             ],
-            'pending_approvals': [{'id': 'p1', 'change': 'increase volume 15%'}],
-            'response_patterns': ['handles_volume_well', 'recovers_quickly'],
-            'recent_responses': [
-                {'stimulus': 'hard interval', 'response': 'positive'},
+            'athlete_responses': [
+                {'date': (today - timedelta(days=i)).isoformat(),
+                 'stimulus': f's{i}', 'response': 'good',
+                 'pattern': 'handles_volume_well'}
+                for i in range(5)
+            ],
+            'pending_approvals': [
+                {'id': 'p1', 'change': 'increase volume 15%',
+                 'expires': (today + timedelta(days=5)).isoformat()},
             ],
         }
+        _seed_snapshot_env(sandbox_data_dir, coaching_log=coaching_log)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
 
-        # Build a minimal snapshot dict and apply the coaching_memory logic
-        # (testing the wiring, not the full snapshot which needs Garmin)
-        from coach.tools.coaching_tools import get_coaching_context as _gc
-        coaching_ctx = _gc()
-        coaching_memory = {
-            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
-            'pending_approvals': coaching_ctx.get('pending_approvals', []),
-            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
-            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
+
+        memory = result['coaching_memory']
+        assert [d['id'] for d in memory['active_decisions']] == [
+            'd0', 'd1', 'd2', 'd3', 'd4']  # capped at 5, newest first
+        assert len(memory['pending_approvals']) == 1
+        assert memory['pending_approvals'][0]['id'] == 'p1'
+        # Recent responses capped at 3, newest first
+        assert [r['stimulus'] for r in memory['recent_responses']] == [
+            's0', 's1', 's2']
+
+    async def test_expired_pending_approvals_filtered(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        today = date.today()
+        coaching_log = {
+            'decisions': [], 'athlete_responses': [],
+            'pending_approvals': [
+                {'id': 'stale', 'change': 'old idea',
+                 'expires': (today - timedelta(days=1)).isoformat()},
+                {'id': 'live', 'change': 'current proposal',
+                 'expires': (today + timedelta(days=3)).isoformat()},
+            ],
         }
+        _seed_snapshot_env(sandbox_data_dir, coaching_log=coaching_log)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
 
-        assert len(coaching_memory['active_decisions']) == 2
-        assert len(coaching_memory['pending_approvals']) == 1
-        assert 'handles_volume_well' in coaching_memory['adaptation_patterns']
-        assert len(coaching_memory['recent_responses']) == 1
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
 
-    @patch('coach.tools.coaching_tools.get_coaching_context')
-    def test_coaching_memory_limits_decisions(self, mock_ctx):
-        """Only last 5 active decisions and 3 recent responses are included."""
-        mock_ctx.return_value = {
-            'active_decisions': [{'id': f'd{i}'} for i in range(10)],
-            'pending_approvals': [],
-            'response_patterns': [],
-            'recent_responses': [{'stimulus': f's{i}'} for i in range(10)],
+        pending = result['coaching_memory']['pending_approvals']
+        assert [p['id'] for p in pending] == ['live']
+
+    async def test_empty_log_yields_empty_but_valid_memory(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        _seed_snapshot_env(sandbox_data_dir)  # default: empty coaching log
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
+
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
+
+        memory = result['coaching_memory']
+        assert memory['active_decisions'] == []
+        assert memory['pending_approvals'] == []
+        assert memory['decisions_due_review'] == []
+        assert memory['recent_responses'] == []
+        # Learned patterns are memory-section only — not in the core payload
+        assert 'adaptation_patterns' not in memory
+
+    async def test_memory_section_adds_adaptation_patterns(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        today = date.today()
+        coaching_log = {
+            'decisions': [], 'pending_approvals': [],
+            'athlete_responses': [
+                {'date': today.isoformat(), 'stimulus': 'big week',
+                 'response': 'good', 'pattern': 'handles_volume_well'},
+            ],
         }
+        _seed_snapshot_env(sandbox_data_dir, coaching_log=coaching_log)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
 
-        coaching_ctx = mock_ctx()
-        coaching_memory = {
-            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
-            'pending_approvals': coaching_ctx.get('pending_approvals', []),
-            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
-            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
-        }
+        result = json.loads(
+            await get_coaching_snapshot(mock_ctx, sections=['memory']))
 
-        assert len(coaching_memory['active_decisions']) == 5
-        assert len(coaching_memory['recent_responses']) == 3
-
-    @patch('coach.tools.coaching_tools.get_coaching_context')
-    def test_coaching_memory_empty_log(self, mock_ctx):
-        """Empty coaching log produces empty but valid coaching_memory."""
-        mock_ctx.return_value = {
-            'active_decisions': [],
-            'pending_approvals': [],
-            'response_patterns': [],
-            'recent_responses': [],
-        }
-
-        coaching_ctx = mock_ctx()
-        coaching_memory = {
-            'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
-            'pending_approvals': coaching_ctx.get('pending_approvals', []),
-            'adaptation_patterns': coaching_ctx.get('response_patterns', []),
-            'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
-        }
-
-        assert coaching_memory['active_decisions'] == []
-        assert coaching_memory['adaptation_patterns'] == []
+        patterns = result['coaching_memory']['adaptation_patterns']
+        assert 'handles_volume_well' in patterns
 
 
 class TestDataQuality:
-    """Test data_quality flags in snapshot for missing critical data."""
+    """data_quality flags from the real snapshot payload."""
 
-    def test_flags_missing_weight_and_age(self):
-        """Missing weight and age are flagged in data_quality dict."""
-        athlete = {'personal': {'name': 'Test', 'weight_kg': None, 'age': None}}
-        recovery = {'score': 72, 'level': 'HIGH'}
-        sleep_data = {'status': 'adequate', 'avg_duration_hrs': 7.5}
+    async def test_flags_missing_weight_and_age(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        athlete = {
+            'personal': {'name': 'Test Athlete', 'age': None, 'weight_kg': None,
+                         'max_hr': 188, 'resting_hr': 52},
+            'injury_history': [], 'life_constraints': {}, 'preferences': {},
+        }
+        _seed_snapshot_env(sandbox_data_dir, athlete=athlete)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
 
-        data_quality = {}
-        personal = athlete.get('personal', {})
-        if not personal.get('weight_kg'):
-            data_quality['weight'] = 'missing'
-        if not personal.get('age'):
-            data_quality['age'] = 'missing'
-        if not personal.get('name'):
-            data_quality['name'] = 'missing'
-        if recovery.get('status') == 'unavailable':
-            data_quality['recovery'] = 'unavailable'
-        if not sleep_data or sleep_data.get('status') == 'no_data':
-            data_quality['sleep'] = 'unavailable'
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
 
-        assert data_quality == {'weight': 'missing', 'age': 'missing'}
+        dq = result['data_quality']
+        assert dq.get('weight') == 'missing'
+        assert dq.get('age') == 'missing'
+        assert 'name' not in dq  # name IS present — must not be flagged
 
-    def test_no_flags_when_data_complete(self):
-        """No data_quality flags when all critical data present."""
-        athlete = {'personal': {'name': 'Test', 'weight_kg': 75.0, 'age': 35}}
-        recovery = {'score': 72}
-        sleep_data = {'status': 'adequate'}
+    async def test_no_flags_when_data_complete(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """Healthy Garmin + complete profile + upcoming A-race: every quality
+        check passes and data_quality is exactly {} (always-present key)."""
+        _seed_snapshot_env(sandbox_data_dir)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
 
-        data_quality = {}
-        personal = athlete.get('personal', {})
-        if not personal.get('weight_kg'):
-            data_quality['weight'] = 'missing'
-        if not personal.get('age'):
-            data_quality['age'] = 'missing'
-        if not personal.get('name'):
-            data_quality['name'] = 'missing'
-        if recovery.get('status') == 'unavailable':
-            data_quality['recovery'] = 'unavailable'
-        if not sleep_data or sleep_data.get('status') == 'no_data':
-            data_quality['sleep'] = 'unavailable'
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
 
-        assert data_quality == {}
+        assert result['data_quality'] == {}
 
-    def test_flags_unavailable_recovery_and_sleep(self):
-        """Flags unavailable recovery and sleep data."""
-        athlete = {'personal': {'name': 'Test', 'weight_kg': 75.0, 'age': 35}}
-        recovery = {'status': 'unavailable'}
-        sleep_data = {'status': 'no_data'}
+    async def test_flags_unavailable_recovery_and_sleep(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """Readiness + sleep endpoints down (non-auth errors): the snapshot
+        degrades per-section and flags both in data_quality instead of
+        aborting."""
+        _seed_snapshot_env(sandbox_data_dir)
+        client = FakeGarminClient(overrides={
+            'get_training_readiness': Exception('readiness endpoint down'),
+            'get_sleep_data': Exception('sleep endpoint down'),
+        })
+        patch_garmin_everywhere(monkeypatch, client)
 
-        data_quality = {}
-        personal = athlete.get('personal', {})
-        if not personal.get('weight_kg'):
-            data_quality['weight'] = 'missing'
-        if not personal.get('age'):
-            data_quality['age'] = 'missing'
-        if not personal.get('name'):
-            data_quality['name'] = 'missing'
-        if recovery.get('status') == 'unavailable':
-            data_quality['recovery'] = 'unavailable'
-        if not sleep_data or sleep_data.get('status') == 'no_data':
-            data_quality['sleep'] = 'unavailable'
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
 
-        assert data_quality == {'recovery': 'unavailable', 'sleep': 'unavailable'}
+        dq = result['data_quality']
+        assert dq.get('recovery') == 'unavailable'
+        assert dq.get('sleep') == 'unavailable'
+        assert 'sleep endpoint down' in dq.get('sleep_fetch_error', '')
+        # Degraded, not dead: the rest of the snapshot is still there
+        assert 'error' not in result
+        assert result['week_grid']
 
 
 # ---------------------------------------------------------------------------
@@ -875,17 +930,17 @@ class TestAnomalyContextEnrichment:
 
 class TestBuildSnapshotFlags:
     def test_empty_snapshot_returns_empty(self):
-        flags = _build_snapshot_flags({})
+        flags = _build_snapshot_flags({}, date.today())
         assert flags == {}
 
     def test_acwr_warning_flagged(self):
         snapshot = {'acwr_warnings': [{'level': 'overall', 'zone': 'elevated'}]}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['acwr_warning'] is True
 
     def test_injuries_counted(self):
         snapshot = {'injuries': [{'name': 'knee'}, {'name': 'ankle'}]}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['active_injuries'] == 2
 
     def test_anomalies_counted(self):
@@ -898,32 +953,32 @@ class TestBuildSnapshotFlags:
                 ],
             },
         }
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['anomaly_count'] == 3
 
     def test_sleep_deficit_from_flag(self):
         snapshot = {'sleep': {'deficit_flag': True}}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['sleep_deficit'] is True
 
     def test_sleep_deficit_from_trend(self):
         snapshot = {'sleep': {'trend_direction': 'declining'}}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['sleep_deficit'] is True
 
     def test_pending_approvals(self):
         snapshot = {'coaching_memory': {'pending_approvals': [{'id': 1}]}}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['pending_approvals'] == 1
 
     def test_compliance_below_70(self):
         snapshot = {'compliance': {'compliance_rate_pct': 50.0}}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['compliance_below_70'] is True
 
     def test_compliance_above_70_not_flagged(self):
         snapshot = {'compliance': {'compliance_rate_pct': 85.0}}
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert 'compliance_below_70' not in flags
 
     def test_decisions_due_for_review(self):
@@ -934,7 +989,7 @@ class TestBuildSnapshotFlags:
                 'pending_approvals': [],
             }
         }
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert flags['decisions_due_for_review'] == 1
 
     def test_recent_decisions_not_flagged(self):
@@ -945,7 +1000,7 @@ class TestBuildSnapshotFlags:
                 'pending_approvals': [],
             }
         }
-        flags = _build_snapshot_flags(snapshot)
+        flags = _build_snapshot_flags(snapshot, date.today())
         assert 'decisions_due_for_review' not in flags
 
 

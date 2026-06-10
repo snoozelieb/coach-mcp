@@ -21,11 +21,11 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # requirements-dev.txt pins the test stack and pulls in
+        # requirements.txt (runtime deps) via its -r include.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # Test deps are not in requirements.txt (runtime-only file)
-          pip install pytest pytest-asyncio
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         # test_fixtures.json is gitignored (personal health data), so this is

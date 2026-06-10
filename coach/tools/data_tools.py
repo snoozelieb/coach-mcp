@@ -74,8 +74,11 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-def _daily_metrics() -> dict:
+def _daily_metrics(today: date) -> dict:
     """Fetch today's critical recovery metrics from Garmin.
+
+    today is required — the query_metrics boundary resolves it
+    (clock discipline).
 
     Returns a dict with:
         - date: Today's date
@@ -84,11 +87,11 @@ def _daily_metrics() -> dict:
         - sleep_score: Sleep quality score (from training readiness)
     """
     try:
-        today = date.today().isoformat()
+        today_iso = today.isoformat()
 
-        stats = garmin_api_call(lambda c: c.get_user_summary(today))
-        body_battery = garmin_api_call(lambda c: c.get_body_battery(today))
-        readiness = garmin_api_call(lambda c: c.get_training_readiness(today))
+        stats = garmin_api_call(lambda c: c.get_user_summary(today_iso))
+        body_battery = garmin_api_call(lambda c: c.get_body_battery(today_iso))
+        readiness = garmin_api_call(lambda c: c.get_training_readiness(today_iso))
 
         rhr = parse_resting_heart_rate(stats)
         current_bb = parse_body_battery(body_battery)
@@ -99,7 +102,7 @@ def _daily_metrics() -> dict:
             sleep_score = 'N/A'
 
         return {
-            "date": today,
+            "date": today_iso,
             "rhr": rhr,
             "body_battery": current_bb,
             "sleep_score": sleep_score

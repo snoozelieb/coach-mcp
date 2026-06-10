@@ -287,7 +287,8 @@ def get_periodization_status() -> dict:
             history = load_fitness_history()
             daily_loads = history.get('daily_loads', {})
             if daily_loads:
-                fitness_metrics = calculate_fitness_metrics(_extract_total_loads(daily_loads))
+                fitness_metrics = calculate_fitness_metrics(
+                    _extract_total_loads(daily_loads), today)
         except Exception:
             logger.warning("Could not calculate fitness metrics for periodization status",
                            exc_info=True)
@@ -410,7 +411,8 @@ def get_weekly_prescription() -> dict:
             history = load_fitness_history()
             daily_loads = history.get('daily_loads', {})
             if daily_loads:
-                fitness_metrics = calculate_fitness_metrics(_extract_total_loads(daily_loads))
+                fitness_metrics = calculate_fitness_metrics(
+                    _extract_total_loads(daily_loads), today)
         except Exception:
             logger.warning("Could not calculate fitness metrics for weekly prescription",
                            exc_info=True)
@@ -656,7 +658,7 @@ def get_weekly_plan() -> dict:
     try:
         plan = get_current_plan()
         if not plan:
-            plan = create_empty_week_template()
+            plan = create_empty_week_template(date.today())  # tool boundary
         return plan
     except Exception as e:
         logger.exception("get_weekly_plan failed")
@@ -935,7 +937,7 @@ def update_weekly_plan(plan: dict | None = None,
                 'violations': violations,
             }
 
-        save_weekly_plan(plan)
+        save_weekly_plan(plan, today=today)
         # Computed AFTER save: save_weekly_plan prunes stale days in place, so
         # warnings only cover days that actually remain in the plan. Non-empty
         # only when the purpose gate was overridden.

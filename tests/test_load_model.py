@@ -229,8 +229,8 @@ class TestSnapshotUpsertByDate:
         acts = [{'date': today_iso, 'type': 'cycling', 'duration_mins': 60,
                  'garmin_training_load': 50.0}]
 
-        update_fitness_history(acts)
-        h2 = update_fitness_history(acts)  # same-day re-run (snapshot path)
+        update_fitness_history(acts, TODAY)
+        h2 = update_fitness_history(acts, TODAY)  # same-day re-run (snapshot path)
 
         todays = [s for s in h2['snapshots'] if s['date'] == today_iso]
         assert len(todays) == 1
@@ -242,13 +242,13 @@ class TestSnapshotUpsertByDate:
         h1 = update_fitness_history([
             {'date': today_iso, 'type': 'cycling', 'duration_mins': 60,
              'garmin_training_load': 50.0},
-        ])
+        ], TODAY)
         first_atl = h1['snapshots'][-1]['total']['atl']
 
         h2 = update_fitness_history([
             {'date': today_iso, 'type': 'cycling', 'duration_mins': 90,
              'garmin_training_load': 120.0},
-        ])
+        ], TODAY)
         todays = [s for s in h2['snapshots'] if s['date'] == today_iso]
         assert len(todays) == 1
         assert todays[0]['total']['atl'] > first_atl  # latest write wins
@@ -274,7 +274,7 @@ class TestSnapshotUpsertByDate:
         h = update_fitness_history([
             {'date': today_iso, 'type': 'cycling', 'duration_mins': 60,
              'garmin_training_load': 40.0},
-        ])
+        ], TODAY)
 
         dates = [s['date'] for s in h['snapshots']]
         assert dates == sorted(dates)
@@ -310,7 +310,7 @@ class TestFitnessTrendDayMath:
              'total': {'ctl': 50, 'atl': 55, 'tsb': -5, 'acwr': 1.1}},
         ])
 
-        trend = get_fitness_trend(days=28)
+        trend = get_fitness_trend(days=28, today=TODAY)
 
         assert trend['trend'] == 'building'
         assert trend['ctl_change'] == 20
@@ -327,7 +327,7 @@ class TestFitnessTrendDayMath:
              'total': {'ctl': 55, 'atl': 50, 'tsb': 5, 'acwr': 0.9}},
         ])
 
-        trend = get_fitness_trend(days=28)
+        trend = get_fitness_trend(days=28, today=TODAY)
 
         assert trend['data_points'] == 2          # duplicates collapsed
         assert trend['ctl_start'] == 45           # last write for d10 wins
@@ -341,7 +341,7 @@ class TestFitnessTrendDayMath:
             {'date': TODAY.isoformat(), 'total': {'ctl': 42, 'atl': 42, 'tsb': 0, 'acwr': 1.0}},
         ])
 
-        trend = get_fitness_trend(days=28)
+        trend = get_fitness_trend(days=28, today=TODAY)
 
         assert trend['trend'] == 'unknown'
         assert trend['data_points'] == 1

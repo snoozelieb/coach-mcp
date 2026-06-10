@@ -131,7 +131,7 @@ def fitness_env(tmp_path, monkeypatch):
 class TestRacesParity:
     def test_list_matches_old_impl(self, race_env):
         via_dispatcher = races(action='list')
-        direct = _list_races()
+        direct = _list_races(TODAY)
 
         assert via_dispatcher == direct
         assert via_dispatcher['count'] == 2
@@ -221,7 +221,7 @@ class TestRacesParity:
 class TestQueryMetricsParity:
     def test_fitness_matches_old_impl(self, fitness_env):
         via_dispatcher = query_metrics(kind='fitness', days=30)
-        direct = _fitness_status(30)
+        direct = _fitness_status(30, today=TODAY)
 
         assert via_dispatcher == direct
         overall = via_dispatcher['metrics']['overall']
@@ -233,7 +233,7 @@ class TestQueryMetricsParity:
     def test_fitness_no_data_matches_old_impl(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fitness_lib, 'DATA_DIR', tmp_path)
         via_dispatcher = query_metrics(kind='fitness')
-        assert via_dispatcher == _fitness_status(30)
+        assert via_dispatcher == _fitness_status(30, today=TODAY)
         assert via_dispatcher['status'] == 'no_data'
 
     @patch('coach.tools.fitness_tools.fetch_activity_hr_zones',
@@ -245,7 +245,7 @@ class TestQueryMetricsParity:
         mock_api.return_value = [SAMPLE_RUNNING_ACTIVITY]
 
         via_dispatcher = query_metrics(kind='intensity', days=28)
-        direct = _intensity_distribution(28)
+        direct = _intensity_distribution(28, today=TODAY)
 
         assert via_dispatcher == direct
         assert via_dispatcher['period']['days'] == 28
@@ -255,7 +255,7 @@ class TestQueryMetricsParity:
     def test_intensity_no_activities_matches_old_impl(self, mock_api):
         mock_api.return_value = []
         via_dispatcher = query_metrics(kind='intensity', days=28)
-        assert via_dispatcher == _intensity_distribution(28)
+        assert via_dispatcher == _intensity_distribution(28, today=TODAY)
         assert via_dispatcher['status'] == 'no_activities'
 
     @patch('coach.tools.data_tools.garmin_api_call')
@@ -268,7 +268,7 @@ class TestQueryMetricsParity:
         mock_api.side_effect = lambda fn, *a, **kw: fn(mock_client, *a, **kw)
 
         via_dispatcher = query_metrics(kind='daily')
-        direct = _daily_metrics()
+        direct = _daily_metrics(TODAY)
 
         assert via_dispatcher == direct
         assert via_dispatcher['rhr'] == 42

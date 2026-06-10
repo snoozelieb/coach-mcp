@@ -242,6 +242,10 @@ def _save_diagnosis_to_profile(body_region: str, location: str,
 
     Deduplicates: if same body_region + same date already exists, updates it.
     Returns True on success, False on error.
+
+    The date.today() here is the write-time diagnosis date stamp on the
+    injury record (and its same-day dedup key), not filtering logic —
+    allowlisted in tests/test_clock_discipline.py.
     """
     try:
         athlete = load_athlete()

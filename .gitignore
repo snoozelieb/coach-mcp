@@ -30,7 +30,7 @@ tmpclaude-*
 # Log files
 *.log
 
-# Test fixtures (contains personal health data)
+# Test fixtures (contains personal health data; sanitized fallback is committed at tests/fixtures/garmin_sample.json)
 test_fixtures.json
 
 # Python

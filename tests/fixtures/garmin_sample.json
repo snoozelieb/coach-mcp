@@ -1,0 +1,309 @@
+{
+  "_note": "Committed sanitized Garmin fixture: synthetic values, REAL response shapes (list-vs-dict fidelity preserved). Fallback for the gitignored real capture test_fixtures.json - see scripts/capture_fixtures.py and the garmin_fixtures fixture in tests/conftest.py.",
+  "test_date": "2026-01-15",
+  "user_summary": {
+    "userProfileId": 0,
+    "calendarDate": "2026-01-15",
+    "totalKilocalories": 2600.0,
+    "activeKilocalories": 700.0,
+    "bmrKilocalories": 1900.0,
+    "totalSteps": 9500,
+    "dailyStepGoal": 8000,
+    "totalDistanceMeters": 7600,
+    "minHeartRate": 50,
+    "maxHeartRate": 142,
+    "restingHeartRate": 52,
+    "lastSevenDaysAvgRestingHeartRate": 53,
+    "averageStressLevel": 28,
+    "maxStressLevel": 86,
+    "stressQualifier": "BALANCED",
+    "bodyBatteryChargedValue": 45,
+    "bodyBatteryDrainedValue": 28,
+    "bodyBatteryHighestValue": 70,
+    "bodyBatteryLowestValue": 30,
+    "bodyBatteryMostRecentValue": 64,
+    "averageSpo2": 95.0,
+    "avgWakingRespirationValue": 14.0,
+    "sleepingSeconds": 27000,
+    "moderateIntensityMinutes": 35,
+    "vigorousIntensityMinutes": 20,
+    "intensityMinutesGoal": 150,
+    "floorsAscended": 8.0,
+    "floorsDescended": 7.0,
+    "includesWellnessData": true,
+    "includesActivityData": true,
+    "privacyProtected": false,
+    "source": "GARMIN"
+  },
+  "body_battery": [
+    {
+      "date": "2026-01-15",
+      "charged": 45,
+      "drained": 28,
+      "startTimestampGMT": "2026-01-15T00:00:00.0",
+      "endTimestampGMT": "2026-01-15T23:59:59.0",
+      "startTimestampLocal": "2026-01-15T02:00:00.0",
+      "endTimestampLocal": "2026-01-16T01:59:59.0",
+      "bodyBatteryValuesArray": [
+        [
+          1768456800000,
+          35
+        ],
+        [
+          1768460400000,
+          52
+        ],
+        [
+          1768464000000,
+          70
+        ],
+        [
+          1768467600000,
+          64
+        ]
+      ],
+      "bodyBatteryValueDescriptorDTOList": [
+        {
+          "bodyBatteryValueDescriptorIndex": 0,
+          "bodyBatteryValueDescriptorKey": "timestamp"
+        },
+        {
+          "bodyBatteryValueDescriptorIndex": 1,
+          "bodyBatteryValueDescriptorKey": "bodyBatteryLevel"
+        }
+      ]
+    }
+  ],
+  "training_readiness": [
+    {
+      "userProfilePK": 0,
+      "calendarDate": "2026-01-15",
+      "timestamp": "2026-01-15T06:10:00.0",
+      "deviceId": 0,
+      "score": 72,
+      "level": "HIGH",
+      "sleepScore": 85,
+      "sleepScoreFactorPercent": 70,
+      "recoveryTime": 720,
+      "recoveryTimeInHours": 12,
+      "recoveryTimeFactorPercent": 60,
+      "acwrFactorPercent": 80,
+      "acuteLoad": 410,
+      "hrvFactorPercent": 90,
+      "hrvStatus": null,
+      "stressHistoryFactorPercent": 85,
+      "feedbackShort": "READY_FOR_ANYTHING",
+      "feedbackPhrase": "Synthetic readiness \u2014 well recovered."
+    }
+  ],
+  "hrv": {
+    "userProfilePk": 0,
+    "hrvSummary": {
+      "calendarDate": "2026-01-15",
+      "weeklyAvg": 55,
+      "lastNightAvg": 58,
+      "lastNight5MinHigh": 72,
+      "baseline": {
+        "lowUpper": 45,
+        "balancedLow": 50,
+        "balancedUpper": 70,
+        "markerValue": 58
+      },
+      "status": "BALANCED",
+      "feedbackPhrase": "Your HRV is within your baseline range.",
+      "createTimeStamp": "2026-01-15T06:10:00.0"
+    },
+    "hrvReadings": [
+      {
+        "hrvValue": 55,
+        "readingTimeLocal": "2026-01-15T02:00:00.0"
+      },
+      {
+        "hrvValue": 61,
+        "readingTimeLocal": "2026-01-15T04:00:00.0"
+      }
+    ],
+    "sleepStartTimestampLocal": null,
+    "sleepEndTimestampLocal": null
+  },
+  "sleep": {
+    "dailySleepDTO": {
+      "id": 1768429800000,
+      "calendarDate": "2026-01-15",
+      "sleepTimeSeconds": 27000,
+      "napTimeSeconds": 0,
+      "sleepStartTimestampLocal": 1768429800000,
+      "sleepEndTimestampLocal": 1768456800000,
+      "deepSleepSeconds": 5400,
+      "lightSleepSeconds": 13500,
+      "remSleepSeconds": 5940,
+      "awakeSleepSeconds": 2160,
+      "awakeCount": 2,
+      "avgSleepStress": 14.0,
+      "avgHeartRate": 48,
+      "averageRespirationValue": 14.2,
+      "sleepScores": {
+        "overall": {
+          "value": 82,
+          "qualifierKey": "GOOD"
+        },
+        "deepPercentage": {
+          "qualifierKey": "GOOD"
+        },
+        "remPercentage": {
+          "qualifierKey": "GOOD"
+        },
+        "stress": {
+          "qualifierKey": "GOOD"
+        },
+        "restlessness": {
+          "qualifierKey": "GOOD"
+        }
+      },
+      "sleepNeed": {
+        "actual": 480,
+        "baseline": 450,
+        "feedback": "INCREASED",
+        "trainingFeedback": "CHRONIC"
+      }
+    },
+    "restingHeartRate": 50
+  },
+  "body_composition": {
+    "startDate": "2026-01-15",
+    "endDate": "2026-01-15",
+    "dateWeightList": [
+      {
+        "samplePk": 1,
+        "date": 1768460400000,
+        "calendarDate": "2026-01-15",
+        "weight": 70000.0,
+        "bmi": 22.9,
+        "bodyFat": null,
+        "sourceType": "MANUAL"
+      }
+    ],
+    "totalAverage": {
+      "from": 1768435200000,
+      "until": 1768521599000,
+      "weight": 70000.0,
+      "bmi": 22.9,
+      "bodyFat": null,
+      "bodyWater": null,
+      "boneMass": null,
+      "muscleMass": null
+    }
+  },
+  "user_profile": {
+    "id": 0,
+    "userData": {
+      "gender": "MALE",
+      "weight": 70000.0,
+      "height": 178.0,
+      "birthDate": "1990-01-15",
+      "maxHeartRate": 188,
+      "measurementSystem": "metric",
+      "handedness": "RIGHT",
+      "vo2MaxRunning": 48.0,
+      "vo2MaxCycling": 50.0
+    },
+    "userSleep": {
+      "sleepTime": 81000,
+      "wakeTime": 21600
+    }
+  },
+  "personal_records": [
+    {
+      "id": 1,
+      "prTypeLabelKey": "pr_running_fastest_5k_time",
+      "typeId": 3,
+      "value": 1500.0,
+      "unitKey": "time",
+      "prStartTimeGmtFormatted": "2025-06-15T08:30:00.0",
+      "activityId": 11111111111
+    },
+    {
+      "id": 2,
+      "prTypeLabelKey": "pr_running_longest_distance",
+      "typeId": 7,
+      "value": 21100.0,
+      "unitKey": "meter",
+      "prStartTimeGmtFormatted": "2025-10-10T06:00:00.0",
+      "activityId": 22222222222
+    }
+  ],
+  "activities": [
+    {
+      "activityId": 2026011300,
+      "activityName": "Endurance Ride",
+      "startTimeLocal": "2026-01-13 08:00:00",
+      "activityType": {
+        "typeId": 2,
+        "typeKey": "cycling",
+        "parentTypeId": 17
+      },
+      "eventType": {
+        "typeKey": "training"
+      },
+      "duration": 5400,
+      "movingDuration": 5130.0,
+      "distance": 20000.0,
+      "elevationGain": 120.0,
+      "elevationLoss": 118.0,
+      "averageHR": 128,
+      "maxHR": 152,
+      "calories": 600,
+      "activityTrainingLoad": 70.0,
+      "aerobicTrainingEffect": 2.8,
+      "anaerobicTrainingEffect": 0.4
+    },
+    {
+      "activityId": 2026011400,
+      "activityName": "Easy Run",
+      "startTimeLocal": "2026-01-14 08:00:00",
+      "activityType": {
+        "typeId": 2,
+        "typeKey": "running",
+        "parentTypeId": 17
+      },
+      "eventType": {
+        "typeKey": "training"
+      },
+      "duration": 2700,
+      "movingDuration": 2565.0,
+      "distance": 8000.0,
+      "elevationGain": 120.0,
+      "elevationLoss": 118.0,
+      "averageHR": 145,
+      "maxHR": 168,
+      "calories": 600,
+      "activityTrainingLoad": 60.0,
+      "aerobicTrainingEffect": 2.8,
+      "anaerobicTrainingEffect": 0.4
+    },
+    {
+      "activityId": 2026011500,
+      "activityName": "Strength Training",
+      "startTimeLocal": "2026-01-15 08:00:00",
+      "activityType": {
+        "typeId": 2,
+        "typeKey": "strength_training",
+        "parentTypeId": 17
+      },
+      "eventType": {
+        "typeKey": "training"
+      },
+      "duration": 2700,
+      "movingDuration": 2565.0,
+      "distance": null,
+      "elevationGain": 120.0,
+      "elevationLoss": 118.0,
+      "averageHR": 108,
+      "maxHR": 132,
+      "calories": 600,
+      "activityTrainingLoad": 30.0,
+      "aerobicTrainingEffect": 2.8,
+      "anaerobicTrainingEffect": 0.4
+    }
+  ]
+}

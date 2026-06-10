@@ -446,24 +446,46 @@ loudly instead of failing silently in production.
 
 ## Testing
 
-1,085 tests across 28 test files (CI: GitHub Actions on push/PR + weekly cron to catch date-rot tests).
-Some tests use real API responses captured in `test_fixtures.json` (gitignored; those tests skip when
-it's absent, so clean checkouts stay green). Async tools tested with `pytest-asyncio` (auto mode) and
-`mock_ctx` fixture from `conftest.py`. Use relative dates (`date.today() + timedelta(...)`) in tests —
-hardcoded dates rot.
+1,260 tests across 36 test files (CI: GitHub Actions on push/PR + weekly cron to catch date-rot
+tests; CI installs `requirements-dev.txt`, which pins the test stack and pulls in runtime deps).
+
+Four patterns are THE way tests are written here:
+
+- **FakeGarminClient** (`tests/conftest.py`) — the canonical fake for ALL Garmin traffic. One
+  fake, realistic response SHAPES for every endpoint the codebase calls (list-vs-dict fidelity
+  is load-bearing: readiness is a LIST, sleep is a dict wrapping `dailySleepDTO` with epoch-ms
+  timestamps). Route it everywhere with `patch_garmin_everywhere(monkeypatch, client)`; override
+  per-endpoint behaviour via `overrides={'get_sleep_data': Exception('down')}` (plain value,
+  exception, or callable); assert on the call log (`client.calls`, `client.call_counts`,
+  `client.uploaded`, `client.scheduled`). Don't hand-roll Garmin mocks.
+- **Fixtures fallback** — the `garmin_fixtures` fixture loads the committed sanitized sample
+  (`tests/fixtures/garmin_sample.json`: synthetic values, real response shapes) and overlays the
+  gitignored real capture (`test_fixtures.json`, written by `scripts/capture_fixtures.py`) when
+  it exists. Clean checkouts run every fixture-driven test; real responses win where captured.
+- **Live-data sandbox guard** (autouse, `tests/conftest.py`) — tests can NEVER touch the live
+  coaching data in `data/`. `sandbox_data_dir` redirects `DATA_DIR` in every coach module to a
+  per-test empty tmp dir (request the fixture by name to seed JSON files into it); the
+  session-scoped `live_data_guard` hashes everything under `data/` and fails the run loudly,
+  naming the files, if anything changed. Tests may still monkeypatch `DATA_DIR` themselves —
+  their patch applies after the autouse redirect and simply wins.
+- **Clock discipline** (`tests/test_clock_discipline.py`) — naked `date.today()` /
+  `datetime.now()` in `coach/` is banned outside an explicit allowlist of @mcp.tool boundaries
+  (AST lint; stale allowlist entries also fail). Resolve the clock ONCE at the tool boundary
+  and thread `today: date` through helpers. In tests, use relative dates
+  (`date.today() + timedelta(...)`) — hardcoded dates rot.
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `coach/parsers.py`
 2. Add MCP tool with `@mcp.tool(annotations={...})` in `coach/tools/` — every tool MUST declare readOnly/destructive/idempotent/openWorld hints
 3. Classify the tool in the `tests/test_annotations.py` inventories — the suite fails on unclassified tools by design
-4. Write tests with sample data matching Garmin structure
-5. Run: `python -m pytest -v`
+4. If the tool reads the clock, resolve `today` at the boundary and add the (file, function) pair to the `tests/test_clock_discipline.py` allowlist with a justification
+5. Test happy + error paths through FakeGarminClient + `sandbox_data_dir` (seed input files into the sandbox, assert on the persisted output)
+6. Run: `python -m pytest -v`
 
-Key testing patterns:
-- Patch `garmin_api_call` where it's **used**: `@patch('coach.tools.X.garmin_api_call')`
-- Redirect `DATA_DIR` via `monkeypatch.setattr(planner, 'DATA_DIR', data_dir)` for file I/O tests
-- Import modules as: `import coach.planner as planner` (preserves monkeypatch target)
-- Clean install tests must monkeypatch DATA_DIR in **all** modules that use it
+Other conventions:
+- Async tools: `pytest-asyncio` (auto mode) + the `mock_ctx` fixture from `conftest.py`
+- Import modules as `import coach.planner as planner` (preserves monkeypatch targets)
+- End-to-end golden-schema tests live in `tests/test_e2e_snapshot.py` and `tests/test_e2e_push.py` — extend those when changing snapshot or push behaviour
 
 ## When to Suggest New Tools
 

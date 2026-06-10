@@ -60,14 +60,14 @@ def generate_smart_brief() -> str:
         metrics = {}
         if daily_loads:
             total_loads = _extract_total_loads(daily_loads)
-            metrics = calculate_fitness_metrics(total_loads)
+            metrics = calculate_fitness_metrics(total_loads, today)
 
         injuries = [
             i for i in athlete.get('injury_history', [])
             if i.get('status') in ('active', 'improving')
         ]
 
-        events = get_upcoming_events()
+        events = get_upcoming_events(today=today)
 
         log = load_coaching_log()
         recent_decisions = [

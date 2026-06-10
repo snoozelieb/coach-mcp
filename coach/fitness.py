@@ -146,7 +146,7 @@ def calculate_rolling_acwr(loads_list: list[float]) -> float:
 
 def calculate_fitness_metrics(
     daily_loads: dict[str, float],
-    as_of_date: date = None
+    as_of_date: date,
 ) -> dict[str, Any]:
     """
     Calculate CTL, ATL, TSB, and ACWR from daily training loads.
@@ -169,15 +169,14 @@ def calculate_fitness_metrics(
 
     Args:
         daily_loads: Dict mapping date strings to training load values
-        as_of_date: Calculate metrics as of this date (default: today)
+        as_of_date: Calculate metrics as of this date. Required — resolve
+            date.today() once at the tool boundary and thread it through
+            (clock discipline; see tests/test_clock_discipline.py).
 
     Returns:
         Dict with ctl, atl, tsb, acwr (EWMA), acwr_rolling (shadow),
         acwr_rolling_status, and metadata
     """
-    if as_of_date is None:
-        as_of_date = date.today()
-
     # Build list of daily loads for the calculation window
     # Need CTL_TIME_CONSTANT_DAYS of history for accurate CTL
     start_date = as_of_date - timedelta(days=CTL_TIME_CONSTANT_DAYS + 7)
@@ -241,7 +240,9 @@ def calculate_ctl_target(
     race_date: str,
     race_type: str,
     current_ctl: float,
-    current_weekly_tss: float = None
+    current_weekly_tss: float = None,
+    *,
+    today: date,
 ) -> dict[str, Any]:
     """
     Calculate target CTL for race day and required weekly training.
@@ -257,6 +258,7 @@ def calculate_ctl_target(
         race_type: Type of race (from CTL_TARGETS keys)
         current_ctl: Current chronic training load
         current_weekly_tss: Recent weekly TSS (optional, for pace assessment)
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Dict with target_ctl, weekly_tss_required, hours_required, on_track, etc.
@@ -267,7 +269,6 @@ def calculate_ctl_target(
     except (ValueError, TypeError):
         return {"error": f"Invalid race date: {race_date}"}
 
-    today = date.today()
     days_until_race = (race_dt - today).days
 
     if days_until_race <= 0:
@@ -564,6 +565,9 @@ def save_fitness_history(history: dict[str, Any]) -> None:
 
     Delegates to coach.storage: atomic write, utf-8, cross-process locked.
     DATA_DIR is read at call time so tests can monkeypatch it on this module.
+
+    The date.today() here is a write-time audit stamp (last_updated), not
+    date logic — allowlisted in tests/test_clock_discipline.py.
     """
     from . import storage  # function-local: avoids module-level import cycle
     history['last_updated'] = date.today().isoformat()
@@ -572,12 +576,14 @@ def save_fitness_history(history: dict[str, Any]) -> None:
 
 def update_fitness_history(
     activities: list[dict[str, Any]],
+    today: date,
 ) -> dict[str, Any]:
     """
     Update fitness history with new activity data (v2 sport-aware format).
 
     Args:
         activities: List of parsed activities with date, type, garmin_training_load
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Updated fitness history dict
@@ -622,14 +628,14 @@ def update_fitness_history(
 
     # Calculate overall metrics from total loads
     total_loads_flat = _extract_total_loads(daily_loads)
-    metrics = calculate_fitness_metrics(total_loads_flat)
+    metrics = calculate_fitness_metrics(total_loads_flat, today)
 
     # Calculate per-sport metrics for the snapshot
     sport_metrics = {}
     for sport in ['cycling', 'running', 'strength']:
         sport_loads = _extract_sport_loads(daily_loads, sport)
         if any(v > 0 for v in sport_loads.values()):
-            sm = calculate_fitness_metrics(sport_loads)
+            sm = calculate_fitness_metrics(sport_loads, today)
             sport_metrics[sport] = {
                 'ctl': sm['ctl'],
                 'atl': sm['atl'],
@@ -660,14 +666,14 @@ def update_fitness_history(
     snapshots.sort(key=lambda s: s.get('date', ''))
 
     # Keep last 90 days of snapshots
-    cutoff = (date.today() - timedelta(days=90)).isoformat()
+    cutoff = (today - timedelta(days=90)).isoformat()
     snapshots = [s for s in snapshots if s['date'] >= cutoff]
     history['snapshots'] = snapshots
 
     # Dedicated activity-ingestion marker. save_fitness_history bumps
     # last_updated on EVERY save (including sleep/readiness persistence),
     # so staleness checks must use this field instead.
-    history['last_activity_ingest_date'] = date.today().isoformat()
+    history['last_activity_ingest_date'] = today.isoformat()
 
     save_fitness_history(history)
     return history
@@ -698,7 +704,7 @@ def _extract_sport_loads(daily_loads: dict[str, Any], sport: str) -> dict[str, f
 def calculate_sport_fitness_metrics(
     daily_loads: dict[str, Any],
     sport: str,
-    as_of_date: date = None,
+    as_of_date: date,
 ) -> dict[str, Any]:
     """
     Calculate CTL/ATL/TSB/ACWR for a specific sport.
@@ -709,7 +715,7 @@ def calculate_sport_fitness_metrics(
     Args:
         daily_loads: v2 daily_loads dict
         sport: Sport group name ('cycling', 'running', 'strength')
-        as_of_date: Calculate as of this date (default: today)
+        as_of_date: Calculate as of this date, resolved at the tool boundary
 
     Returns:
         Dict with sport-specific ctl, atl, tsb, acwr, acwr_status
@@ -719,13 +725,15 @@ def calculate_sport_fitness_metrics(
     return metrics
 
 
-def get_sleep_trend(history: dict[str, Any] = None, days: int = 30) -> dict[str, Any]:
+def get_sleep_trend(history: dict[str, Any] = None, days: int = 30,
+                    *, today: date) -> dict[str, Any]:
     """
     Get sleep trend from persisted sleep_history.
 
     Args:
         history: Fitness history dict (loads from file if None)
         days: Number of days to analyze (default 30)
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Dict with avg_duration, avg_score, direction, weeks_in_deficit
@@ -740,7 +748,7 @@ def get_sleep_trend(history: dict[str, Any] = None, days: int = 30) -> dict[str,
             'note': 'No persisted sleep data. Sleep history builds as coaching snapshots are taken.',
         }
 
-    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    cutoff = (today - timedelta(days=days)).isoformat()
     recent = sorted(
         [r for r in sleep_records if r.get('date', '') >= cutoff],
         key=lambda r: r.get('date', ''),
@@ -888,7 +896,8 @@ def detect_bedtime_drift(sleep_nights: list[dict], min_nights: int = 8) -> dict[
     }
 
 
-def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None) -> dict[str, Any]:
+def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None,
+                       *, today: date) -> dict[str, Any]:
     """
     Save nightly sleep records to fitness_history.json → sleep_history.
 
@@ -899,6 +908,7 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
     Args:
         sleep_records: List of sleep record dicts from get_sleep_summary
         history: Fitness history dict (loads from file if None)
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Updated fitness history dict
@@ -930,7 +940,7 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
         existing_dates.add(rec_date)
 
     # Prune to 30 days
-    cutoff = (date.today() - timedelta(days=30)).isoformat()
+    cutoff = (today - timedelta(days=30)).isoformat()
     existing = [r for r in existing if r.get('date', '') >= cutoff]
     existing.sort(key=lambda r: r.get('date', ''))
 
@@ -938,7 +948,8 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
     return history
 
 
-def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = None) -> dict[str, Any]:
+def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = None,
+                           *, today: date) -> dict[str, Any]:
     """
     Persist daily readiness data to fitness_history.json → readiness_history.
 
@@ -947,6 +958,7 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
     Args:
         readiness_record: Dict with {date, score, level, hrv_status, body_battery}
         history: Fitness history dict (loads from file if None)
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Updated fitness history dict
@@ -968,7 +980,7 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
         })
 
     # Prune to 60 days
-    cutoff = (date.today() - timedelta(days=60)).isoformat()
+    cutoff = (today - timedelta(days=60)).isoformat()
     existing = [r for r in existing if r.get('date', '') >= cutoff]
     existing.sort(key=lambda r: r.get('date', ''))
 
@@ -976,7 +988,8 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
     return history
 
 
-def calculate_readiness_baselines(sleep_history: list, readiness_history: list) -> dict:
+def calculate_readiness_baselines(sleep_history: list, readiness_history: list,
+                                  today: date) -> dict:
     """Calculate rolling averages for personal baseline comparison.
 
     Provides 14-day and 30-day averages so the LLM can compare today's
@@ -985,13 +998,13 @@ def calculate_readiness_baselines(sleep_history: list, readiness_history: list) 
     Args:
         sleep_history: List of sleep records from fitness_history
         readiness_history: List of readiness records from fitness_history
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Dict with rolling averages and data sufficiency status.
     """
-    today_str = date.today().isoformat()
-    cutoff_14d = (date.today() - timedelta(days=14)).isoformat()
-    cutoff_30d = (date.today() - timedelta(days=30)).isoformat()
+    cutoff_14d = (today - timedelta(days=14)).isoformat()
+    cutoff_30d = (today - timedelta(days=30)).isoformat()
 
     result = {}
 
@@ -1125,7 +1138,7 @@ def derive_adaptation_thresholds(responses: list) -> dict:
 
 def analyze_activity_patterns(
     daily_loads: dict[str, Any],
-    today: date = None,
+    today: date,
     days: int = 28,
 ) -> dict[str, Any]:
     """
@@ -1134,9 +1147,6 @@ def analyze_activity_patterns(
     Returns last activity date by sport, sessions per week by sport,
     and alerts for concerning patterns.
     """
-    if today is None:
-        today = date.today()
-
     cutoff = (today - timedelta(days=days)).isoformat()
 
     # Track last activity and weekly sessions per sport
@@ -1216,12 +1226,13 @@ def analyze_activity_patterns(
     }
 
 
-def get_fitness_trend(days: int = 28) -> dict[str, Any]:
+def get_fitness_trend(days: int = 28, *, today: date) -> dict[str, Any]:
     """
     Get fitness trend over specified period.
 
     Args:
         days: Number of days to analyze
+        today: Current date, resolved at the tool boundary (clock discipline)
 
     Returns:
         Dict with CTL trend, direction, and projection
@@ -1246,7 +1257,7 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
         }
 
     # Get snapshots within the period
-    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    cutoff = (today - timedelta(days=days)).isoformat()
     recent_snapshots = [s for s in snapshots if s['date'] >= cutoff]
 
     if len(recent_snapshots) < 2:

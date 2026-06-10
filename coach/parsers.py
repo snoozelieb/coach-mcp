@@ -66,6 +66,11 @@ def build_current_time_context(now: datetime | None = None) -> dict:
     Time-of-day materially changes what advice is possible: morning fueling
     differs from evening recovery; today's session differs if today is already
     done. This helper is pure — inject `now` in tests for deterministic output.
+
+    This is the canonical clock reader: the one place that converts wall-clock
+    time into coaching context. Its internal datetime.now() fallback is
+    allowlisted in tests/test_clock_discipline.py because MCP resource/tool
+    boundaries (coach://context/now, interactive_check_in) call it bare.
     """
     now = now or datetime.now()
     hour = now.hour
@@ -398,16 +403,20 @@ def parse_user_profile(
     full_name: dict = None,
     user_profile: dict = None,
     body_composition: dict = None,
+    today: date | None = None,
 ) -> dict:
     """
     Extract athlete profile data from Garmin API responses.
 
-    Pure function — no I/O, no side effects.
+    Pure function — no I/O, no side effects, no clock reads.
 
     Args:
         full_name: Response from get_full_name() — typically a dict with firstName/lastName
         user_profile: Response from get_user_profile() — contains userData with birthDate etc.
         body_composition: Response from get_body_composition() — contains dateWeightList + totalAverage
+        today: Current date, resolved at the tool boundary. Age is only
+            computed when provided (clock discipline — this parser never
+            reads the wall clock itself).
 
     Returns:
         Dict with: full_name, display_name, weight_kg, weight_date, birth_date, age, max_hr (all nullable)
@@ -467,15 +476,15 @@ def parse_user_profile(
         birth_date_str = user_data.get('birthDate')
         if birth_date_str:
             result['birth_date'] = birth_date_str
-            try:
-                birth = date.fromisoformat(birth_date_str)
-                today = date.today()
-                age = today.year - birth.year
-                if (today.month, today.day) < (birth.month, birth.day):
-                    age -= 1
-                result['age'] = age
-            except (ValueError, TypeError):
-                pass
+            if today is not None:
+                try:
+                    birth = date.fromisoformat(birth_date_str)
+                    age = today.year - birth.year
+                    if (today.month, today.day) < (birth.month, birth.day):
+                        age -= 1
+                    result['age'] = age
+                except (ValueError, TypeError):
+                    pass
 
         # Parse max heart rate from user settings
         max_hr = user_data.get('maxHeartRate')

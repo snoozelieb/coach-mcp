@@ -475,7 +475,9 @@ def _consecutive_hard_days(hard_by_day: dict[date, bool], anchor: date) -> int:
 def check_safety_rules(
     recent_activities: list[dict[str, Any]],
     today_plan: dict[str, Any] = None,
-    constraints: dict[str, Any] = None
+    constraints: dict[str, Any] = None,
+    *,
+    today: date,
 ) -> dict[str, Any]:
     """
     Check safety constraints for training decisions.
@@ -489,6 +491,8 @@ def check_safety_rules(
         recent_activities: Last 7-14 days of activities (any order; grouped by date)
         today_plan: Planned session for today (optional)
         constraints: Safety constraints (loads from config if None)
+        today: Current date, resolved at the tool boundary (clock discipline) —
+            the hard-day streak and post-race rest window are anchored to it
 
     Returns:
         {
@@ -506,8 +510,6 @@ def check_safety_rules(
 
     max_consecutive_hard = constraints.get('max_consecutive_hard_days', 2)
     rest_after_race = constraints.get('mandatory_rest_after_race_days', 1)
-
-    today = date.today()
 
     # --- Consecutive hard DAYS gate -------------------------------------
     # A day is hard when ANY activity that day is hard.
@@ -575,15 +577,22 @@ def check_safety_rules(
     }
 
 
-def get_upcoming_events(days_ahead: int = 56) -> list[dict[str, Any]]:
+def get_upcoming_events(days_ahead: int = 56,
+                        today: date | None = None) -> list[dict[str, Any]]:
     """
     Get events within the specified number of days.
 
     Returns events sorted by date with days_until calculated.
+
+    `today` should be threaded from the tool boundary. The internal
+    date.today() fallback exists because the weekly_planning @mcp.prompt
+    (coach/prompts.py) calls this bare — that one resolution line is
+    allowlisted in tests/test_clock_discipline.py.
     """
     config = load_training_config()
     events = config.get('events', [])
-    today = date.today()
+    if today is None:
+        today = date.today()
     cutoff = today + timedelta(days=days_ahead)
 
     upcoming = []

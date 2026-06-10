@@ -24,6 +24,7 @@ class TestBuildPlanningContext:
             recent_activities=[],
             compliance_status={'overall_compliant': True},
             today_recovery={'score': 75},
+            today=date(2026, 4, 18),
         )
 
         assert 'today' in context
@@ -47,6 +48,7 @@ class TestBuildPlanningContext:
             recent_activities=activities,
             compliance_status={},
             today_recovery={},
+            today=today,
         )
 
         assert len(context['activities_last_7_days']) == 1
@@ -68,6 +70,7 @@ class TestBuildPlanningContext:
             recent_activities=[],
             compliance_status={},
             today_recovery={},
+            today=today,
         )
 
         # All future events included, past excluded, sorted by days_until
@@ -92,6 +95,7 @@ class TestBuildPlanningContext:
             recent_activities=[],
             compliance_status={},
             today_recovery={},
+            today=today,
         )
 
         assert context['next_a_race'] is not None
@@ -107,6 +111,7 @@ class TestBuildPlanningContext:
             compliance_status={},
             today_recovery={},
             pending_suggestions=suggestions,
+            today=date(2026, 4, 18),
         )
 
         assert len(context['pending_suggestions']) == 1
@@ -115,20 +120,20 @@ class TestBuildPlanningContext:
 
 class TestCreateEmptyWeekTemplate:
     def test_creates_7_day_structure(self):
-        template = create_empty_week_template()
+        template = create_empty_week_template(date(2026, 4, 18))
 
         assert 'days' in template
         assert len(template['days']) == 7
 
     def test_days_start_from_today(self):
-        today = date.today()
-        template = create_empty_week_template()
+        today = date(2026, 4, 18)
+        template = create_empty_week_template(today)
 
         assert template['week_start'] == today.isoformat()
         assert today.isoformat() in template['days']
 
     def test_each_day_has_required_fields(self):
-        template = create_empty_week_template()
+        template = create_empty_week_template(date(2026, 4, 18))
 
         for day_date, day_data in template['days'].items():
             assert 'day_name' in day_data
@@ -138,8 +143,8 @@ class TestCreateEmptyWeekTemplate:
             assert day_data['status'] == 'pending'
 
     def test_days_are_consecutive(self):
-        today = date.today()
-        template = create_empty_week_template()
+        today = date(2026, 4, 18)
+        template = create_empty_week_template(today)
 
         dates = sorted(template['days'].keys())
         for i, day_str in enumerate(dates):

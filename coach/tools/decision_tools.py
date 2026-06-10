@@ -115,6 +115,10 @@ def register_detected_anomalies(detected: list | None) -> list:
     The returned list is every open/asked registry entry, newest date first:
     lifecycle fields (id, status, summary, athlete_explanation) merged with
     the fresh detection detail when the anomaly is still being detected.
+
+    The date.today() here is a write-time created/updated stamp on new
+    registry entries, not date logic — allowlisted in
+    tests/test_clock_discipline.py.
     """
     log = load_coaching_log()
     registry = log.get('anomalies', [])
@@ -206,6 +210,11 @@ def ensure_tagged_proposal(event_tag: str, action_type: str, proposal: str,
     (open, approved, rejected, expired) blocks re-creation, so detection
     can run on every snapshot without nagging.
 
+    The date.today() here is a write-time 'created' stamp on the tag
+    registry entry, not date logic (expiry math lives in
+    propose_coaching_action, a tool boundary) — allowlisted in
+    tests/test_clock_discipline.py.
+
     Returns {'created': bool, 'event_tag': ..., 'proposal_id'|'existing': ...}.
     """
     log = load_coaching_log()
@@ -243,7 +252,7 @@ def ensure_tagged_proposal(event_tag: str, action_type: str, proposal: str,
 # Decision review lifecycle
 # ---------------------------------------------------------------------------
 
-def auto_transition_due_decisions(today: date | None = None) -> tuple[dict, list]:
+def auto_transition_due_decisions(today: date) -> tuple[dict, list]:
     """Flip active decisions past their review_date to 'needs_review'.
 
     Runs whenever decisions are loaded (get_active_decisions, the snapshot's
@@ -252,9 +261,11 @@ def auto_transition_due_decisions(today: date | None = None) -> tuple[dict, list
     a review_date are left active (legacy entries; the due-review summary
     still surfaces them by age).
 
+    today is required — resolve date.today() at the tool boundary and
+    thread it through (clock discipline).
+
     Returns (coaching_log, transitioned_decisions).
     """
-    today = today or date.today()
     log = load_coaching_log()
     transitioned = []
     for d in log.get('decisions', []):
@@ -280,7 +291,7 @@ def auto_transition_due_decisions(today: date | None = None) -> tuple[dict, list
 
 
 def summarize_decisions_due_review(decisions: list | None,
-                                   today: date | None = None,
+                                   today: date,
                                    review_after_days: int = 7) -> list:
     """Compact summaries (id, decision excerpt, review_date, status) of
     decisions due a review conversation.
@@ -290,7 +301,6 @@ def summarize_decisions_due_review(decisions: list | None,
     entries without a review_date — active decisions logged more than
     review_after_days ago.
     """
-    today = today or date.today()
     due = []
     for d in decisions or []:
         status = d.get('status')
@@ -404,9 +414,9 @@ def get_active_decisions() -> str:
         Active decisions, needs_review decisions, and ids due for review.
     """
     try:
-        log, transitioned = auto_transition_due_decisions()
-        decisions = log.get('decisions', [])
         today = date.today()
+        log, transitioned = auto_transition_due_decisions(today)
+        decisions = log.get('decisions', [])
 
         active = [d for d in decisions if d.get('status') == 'active']
         needs_review = [d for d in decisions if d.get('status') == 'needs_review']
