@@ -11,7 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': False})
 def update_athlete(
     section: str,
     data: str
@@ -154,7 +155,8 @@ def update_athlete(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def set_threshold_pace(
     pace: str = None,
     time_trial_mins: int = None,
@@ -253,7 +255,8 @@ def set_threshold_pace(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def set_ftp(
     ftp_watts: int = None,
     test_avg_watts: int = None,
@@ -337,7 +340,7 @@ def set_ftp(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def analyze_ftp_test(activity_id: str = None) -> str:
     """
     Analyze a completed FTP cycling test in detail.
@@ -650,7 +653,7 @@ def analyze_ftp_test(activity_id: str = None) -> str:
         return json.dumps({'status': 'error', 'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_methodology() -> str:
     """
     Returns the complete training methodology.
@@ -671,7 +674,8 @@ def get_methodology() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def update_methodology(
     section: str,
     data: str

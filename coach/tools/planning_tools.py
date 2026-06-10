@@ -10,8 +10,11 @@ from ..planner import (get_current_plan, save_weekly_plan,
 from ..rules import (load_training_config, check_weekly_compliance,
                    pillars_as_name_dict, normalize_injury)
 from ..fitness import load_fitness_history, calculate_fitness_metrics, _extract_total_loads
+from ..schemas import WeeklyPlan as WeeklyPlanSchema
+from ..taxonomy import workout_family_for
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
+from pydantic import ValidationError
 import json
 import logging
 
@@ -84,8 +87,86 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
     return violations
 
 
-@mcp.tool()
-def get_periodization_status() -> str:
+# Union-branch markers pydantic inserts into error locs for
+# PlanDay.planned's Union[list[Session], Session, None] — stripped when
+# naming the offending field, and used to drop bare shape-mismatch noise
+# when a more specific field-level error exists for the same day.
+_UNION_LOC_MARKERS = frozenset({
+    'Session', 'list[Session]', 'PlanDay',
+    'SessionExercise', 'list[SessionExercise]',
+})
+
+
+def _format_plan_validation_errors(exc: ValidationError) -> list[dict]:
+    """Convert a pydantic ValidationError into problems naming day + field.
+
+    Each problem is {'day': 'YYYY-MM-DD' | None, 'field': 'planned.type' | ...,
+    'message': str}. Union branches (single Session vs list[Session]) each
+    report their own miss — when a day has field-level errors, the bare
+    shape-mismatch errors from the other branch are dropped as noise.
+    """
+    raw = []
+    for err in exc.errors():
+        loc = err.get('loc', ())
+        day = None
+        field_loc = loc
+        if len(loc) >= 2 and loc[0] == 'days':
+            day = str(loc[1])
+            field_loc = loc[2:]
+        parts = [str(p) for p in field_loc if str(p) not in _UNION_LOC_MARKERS]
+        # An error terminating AT a union marker is a branch-shape mismatch,
+        # not a field-level problem.
+        specific = bool(loc) and str(loc[-1]) not in _UNION_LOC_MARKERS
+        raw.append({
+            'day': day,
+            'field': '.'.join(parts) or None,
+            'message': err.get('msg', 'invalid value'),
+            '_specific': specific,
+        })
+
+    days_with_specific = {p['day'] for p in raw if p['_specific']}
+    problems = []
+    seen = set()
+    for p in raw:
+        if not p['_specific'] and p['day'] in days_with_specific:
+            continue
+        key = (p['day'], p['field'], p['message'])
+        if key in seen:
+            continue
+        seen.add(key)
+        problems.append({'day': p['day'], 'field': p['field'], 'message': p['message']})
+    return problems
+
+
+def _missing_purpose_sessions(plan_days: dict) -> list[dict]:
+    """Non-rest sessions whose 'purpose' is missing or blank.
+
+    Warn-only for now (Phase 3 makes this a gate): every non-rest session
+    should say WHY it exists. Wrapper sessions that just hold a nested
+    'sessions' list are skipped — their leaf sessions are checked instead.
+    """
+    warnings = []
+    for day_str, day_data in sorted((plan_days or {}).items()):
+        for session in _iter_plan_sessions(day_data):
+            if isinstance(session.get('sessions'), list):
+                continue  # container for sub-sessions, not a session itself
+            session_type = str(session.get('type', '')).lower()
+            if (not session_type or 'rest' in session_type
+                    or workout_family_for(session_type) == 'rest'):
+                continue
+            purpose = session.get('purpose')
+            if not (isinstance(purpose, str) and purpose.strip()):
+                warnings.append({
+                    'date': day_str,
+                    'type': session.get('type'),
+                    'name': session.get('name'),
+                    'warning': 'missing purpose',
+                })
+    return warnings
+
+
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
+def get_periodization_status() -> dict:
     """
     Where are we in the season? Current phase, progress, and what comes next.
 
@@ -229,15 +310,15 @@ def get_periodization_status() -> str:
 
         result['coaching_notes'] = notes
 
-        return json.dumps(result, indent=2)
+        return result
 
     except Exception as e:
         logger.exception("get_periodization_status failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def get_weekly_prescription() -> str:
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
+def get_weekly_prescription() -> dict:
     """
     What should this week look like? Volume, intensity, and key sessions.
 
@@ -409,15 +490,16 @@ def get_weekly_prescription() -> str:
         elif fitness_metrics_unavailable:
             prescription['fitness_metrics_unavailable'] = True
 
-        return json.dumps(prescription, indent=2)
+        return prescription
 
     except Exception as e:
         logger.exception("get_weekly_prescription failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def update_phase(new_phase: str, notes: str = None) -> str:
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': False})
+def update_phase(new_phase: str, notes: str = None) -> dict:
     """
     Transition to a new training phase.
 
@@ -434,9 +516,9 @@ def update_phase(new_phase: str, notes: str = None) -> str:
     valid_phases = ['base', 'build', 'peak', 'taper', 'recovery', 'maintenance']
 
     if new_phase.lower() not in valid_phases:
-        return json.dumps({
+        return {
             'error': f"Invalid phase '{new_phase}'. Valid phases: {valid_phases}"
-        })
+        }
 
     try:
         config_path = DATA_DIR / TRAINING_CONFIG_FILE
@@ -489,7 +571,7 @@ def update_phase(new_phase: str, notes: str = None) -> str:
         except Exception:
             pass  # Non-critical
 
-        return json.dumps({
+        return {
             'status': 'success',
             'transition': {
                 'from': old_phase,
@@ -498,15 +580,15 @@ def update_phase(new_phase: str, notes: str = None) -> str:
             },
             'phase_info': phase_info if phase_info else 'Custom phase - no template',
             'notes': notes,
-        }, indent=2)
+        }
 
     except Exception as e:
         logger.exception("update_phase failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def get_weekly_plan() -> str:
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
+def get_weekly_plan() -> dict:
     """
     Returns the current 7-day training plan.
 
@@ -519,18 +601,26 @@ def get_weekly_plan() -> str:
         plan = get_current_plan()
         if not plan:
             plan = create_empty_week_template()
-        return json.dumps(plan, indent=2)
+        return plan
     except Exception as e:
         logger.exception("get_weekly_plan failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> str:
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
+def update_weekly_plan(plan: dict | None = None,
+                       override_injury_gate: bool = False,
+                       plan_json: str | None = None) -> dict:
     """
     Saves a new or updated weekly training plan.
 
-    PLAN STRUCTURE (for plan_json)
+    Pass the plan as a structured dict via `plan` (preferred — validated
+    against the typed schema, with errors naming the offending day/field).
+    `plan_json` (a JSON string) is a DEPRECATED alias kept for older clients.
+    Exactly one of the two must be provided.
+
+    PLAN STRUCTURE (for plan)
 
         {
             'days': {
@@ -539,6 +629,7 @@ def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> st
                         'type': 'running',
                         'duration_mins': 45,
                         'intensity': 'easy',
+                        'purpose': 'Aerobic base — Z2 consistency',
                         'description': 'Easy recovery run'
                     },
                     'notes': 'Focus on form'
@@ -547,6 +638,20 @@ def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> st
             },
             'rationale': 'Why this plan was generated'
         }
+
+        Session fields: 'type' is REQUIRED (string). 'purpose' explains WHY
+        the session matters — every non-rest session without one is listed
+        in the response's `purpose_warnings` (warn-only for now).
+
+        'intensity' is a free string. The special value 'discretion' marks
+        an athlete-discretion day: the coach grants the athlete the choice
+        of effort instead of the plan lying about a prescribed intensity.
+        Bound the choice with 'constraints', a list of strings:
+
+            {'type': 'cycling', 'duration_mins': 60,
+             'intensity': 'discretion',
+             'constraints': ['Z2 only', 'no running'],
+             'purpose': 'Unstructured fun — athlete picks the effort'}
 
         'planned' may also be a LIST of session dicts when the day has two
         or three distinct workouts (e.g. run + short strength bolt-on, long
@@ -623,22 +728,55 @@ def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> st
         entries older than 9 days are pruned to data/plan_history.json.
 
     Args:
-        plan_json: JSON string containing the plan (see PLAN STRUCTURE above)
+        plan: Structured plan dict (see PLAN STRUCTURE above). Preferred.
         override_injury_gate: Bypass the injury restriction check (default False)
+        plan_json: DEPRECATED — JSON string form of the plan. Use `plan`.
 
     Returns:
-        Confirmation or structured error.
+        Confirmation (with `purpose_warnings` for non-rest sessions missing a
+        purpose) or structured error naming the offending day/field.
     """
     try:
-        plan = json.loads(plan_json)
+        # Tolerate legacy positional calls that pass the JSON string as the
+        # first argument (pre-typed clients).
+        if isinstance(plan, str) and plan_json is None:
+            plan, plan_json = None, plan
+
+        # Exactly one of plan / plan_json must be provided.
+        if plan is not None and plan_json is not None:
+            return {'error': "Provide either 'plan' (structured dict) or "
+                             "'plan_json' (deprecated JSON string), not both"}
+        if plan is None and plan_json is None:
+            return {'error': "No plan provided — pass 'plan' as a structured "
+                             "dict (preferred) or 'plan_json' as a JSON string "
+                             "(deprecated)"}
+        if plan_json is not None:
+            plan = json.loads(plan_json)
 
         # Validate plan structure
         if not isinstance(plan, dict):
-            return json.dumps({'error': 'Plan must be a JSON object, not ' + type(plan).__name__})
+            return {'error': 'Plan must be a JSON object, not ' + type(plan).__name__}
         if 'days' not in plan:
-            return json.dumps({'error': "Plan must contain a 'days' key"})
+            return {'error': "Plan must contain a 'days' key"}
         if not isinstance(plan['days'], dict):
-            return json.dumps({'error': "'days' must be a dict keyed by YYYY-MM-DD date strings"})
+            return {'error': "'days' must be a dict keyed by YYYY-MM-DD date strings"}
+
+        # Typed schema validation: day keys must be ISO dates, every session
+        # needs at least a string 'type'. The raw dict (not a model dump) is
+        # what gets saved — validation gates, it never rewrites.
+        try:
+            WeeklyPlanSchema.model_validate(plan)
+        except ValidationError as exc:
+            problems = _format_plan_validation_errors(exc)
+            logger.warning("update_weekly_plan rejected by schema validation: %s",
+                           problems)
+            return {
+                'error': 'validation_error',
+                'message': 'Plan failed schema validation',
+                'problems': problems,
+                'hint': ("Day keys must be YYYY-MM-DD ISO dates and every "
+                         "planned session needs at least a string 'type'."),
+            }
 
         # Injury write-gate: never save sessions that violate active/improving
         # injury restrictions unless explicitly overridden.
@@ -647,14 +785,14 @@ def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> st
         injury_gate_note = None
         if violations:
             if not override_injury_gate:
-                return json.dumps({
+                return {
                     'error': 'injury_gate',
                     'message': 'Plan contains sessions restricted by active/improving injuries',
                     'violations': violations,
                     'hint': ('Adjust the offending sessions, or pass '
                              'override_injury_gate=True with a logged rationale '
                              'after confirming with the athlete.'),
-                }, indent=2)
+                }
             logger.warning(
                 "Injury gate OVERRIDDEN in update_weekly_plan: %s", violations
             )
@@ -664,24 +802,35 @@ def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> st
             }
 
         save_weekly_plan(plan)
+        # Computed AFTER save: save_weekly_plan prunes stale days in place, so
+        # warnings only cover days that actually remain in the plan.
+        purpose_warnings = _missing_purpose_sessions(plan.get('days', {}))
         result = {
             'status': 'success',
             'message': 'Weekly plan saved',
-            'last_updated': date.today().isoformat()
+            'last_updated': date.today().isoformat(),
+            'purpose_warnings': purpose_warnings,
         }
+        if purpose_warnings:
+            result['message'] = (
+                f"Weekly plan saved — {len(purpose_warnings)} non-rest "
+                "session(s) have no purpose. Every non-rest session should "
+                "explain WHY it matters."
+            )
         if injury_gate_note:
             result['injury_gate'] = injury_gate_note
-        return json.dumps(result)
+        return result
     except json.JSONDecodeError as e:
         logger.exception("update_weekly_plan failed: invalid JSON")
-        return json.dumps({'error': f'Invalid JSON: {str(e)}'})
+        return {'error': f'Invalid JSON: {str(e)}'}
     except Exception as e:
         logger.exception("update_weekly_plan failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True,
+                       'idempotentHint': False, 'openWorldHint': True})
+def push_plan_to_garmin(override_injury_gate: bool = False) -> dict:
     """
     Push the current 7-day plan to Garmin Connect calendar.
 
@@ -708,7 +857,7 @@ def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
         override_injury_gate: Bypass the injury restriction check (default False)
 
     Returns:
-        JSON summary with count of pushed workouts, dates, and any errors.
+        Structured summary with count of pushed workouts, dates, and any errors.
     """
     from ..workout_builder import build_workout, get_workout_type_name
 
@@ -716,7 +865,7 @@ def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
         plan = get_current_plan()
 
         if not plan or 'days' not in plan:
-            return json.dumps({'error': 'No weekly plan found. Generate a plan first.'})
+            return {'error': 'No weekly plan found. Generate a plan first.'}
 
         # Injury write-gate: never push sessions that violate active/improving
         # injury restrictions unless explicitly overridden.
@@ -725,14 +874,14 @@ def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
         injury_gate_note = None
         if violations:
             if not override_injury_gate:
-                return json.dumps({
+                return {
                     'error': 'injury_gate',
                     'message': 'Plan contains sessions restricted by active/improving injuries — push blocked',
                     'violations': violations,
                     'hint': ('Fix the plan via update_weekly_plan, or pass '
                              'override_injury_gate=True with a logged rationale '
                              'after confirming with the athlete.'),
-                }, indent=2)
+                }
             logger.warning(
                 "Injury gate OVERRIDDEN in push_plan_to_garmin: %s", violations
             )
@@ -938,15 +1087,15 @@ def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
         else:
             results['summary'] = "No workouts pushed (all sessions were rest days)"
 
-        return json.dumps(results, indent=2)
+        return results
 
     except Exception as e:
         logger.exception("push_plan_to_garmin failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def get_week_constraints() -> str:
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
+def get_week_constraints() -> dict:
     """Get constraints and requirements for building next week's plan.
 
     Returns blocked days, pillar requirements, phase-appropriate session
@@ -957,7 +1106,7 @@ def get_week_constraints() -> str:
     Call this before building or adjusting a weekly plan.
 
     Returns:
-        JSON with structured constraints for week planning.
+        Structured constraints dict for week planning.
     """
     try:
         athlete = load_athlete()
@@ -998,8 +1147,8 @@ def get_week_constraints() -> str:
             compliance_diagnostics=compliance_diagnostics,
         )
 
-        return json.dumps(constraints, indent=2)
+        return constraints
 
     except Exception as e:
         logger.exception("get_week_constraints failed")
-        return json.dumps({'error': str(e)})
+        return {'error': str(e)}

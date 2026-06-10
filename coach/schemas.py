@@ -162,12 +162,24 @@ class SessionExercise(LenientModel):
 
 class Session(LenientModel):
     """One planned session. 'structure' entries are free-form (phases,
-    distance/duration steps, nested repeat blocks) so they stay dicts."""
-    type: str | None = None
+    distance/duration steps, nested repeat blocks) so they stay dicts.
+
+    'type' is the one REQUIRED field — a session without a type can't be
+    matched against actuals, gated against injuries, or pushed to Garmin.
+    (This is the typed input contract for update_weekly_plan; storage
+    validation of legacy files stays flag-only.)
+
+    'intensity' is a free string. The special value 'discretion' marks an
+    athlete-discretion day: the coach grants the athlete the choice of effort
+    instead of the plan pretending an intensity was prescribed. Pair it with
+    'constraints' to bound the choice (e.g. ['Z2 only', 'no running']).
+    """
+    type: str
     name: str | None = None
     duration_mins: float | None = None
-    intensity: str | None = None
-    purpose: str | None = None
+    intensity: str | None = None       # free string; 'discretion' = athlete's choice
+    constraints: list[str] | None = None  # bounds on a discretion day, e.g. ['Z2 only']
+    purpose: str | None = None         # WHY this session matters (warn-only for now)
     description: str | None = None
     structure: list[dict[str, Any]] | None = None
     exercises: list[SessionExercise] | None = None

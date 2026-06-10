@@ -44,7 +44,8 @@ DEFAULT_LLM_MODEL = 'claude-sonnet-4-6'
 
 # Import tool functions directly from their modules
 from coach.tools.coaching_tools import get_compliance_report, get_coaching_snapshot
-from coach.tools.data_tools import get_daily_metrics, get_activities_range
+from coach.tools.data_tools import get_activities_range
+from coach.tools.fitness_tools import query_metrics
 from coach.planner import (
     get_current_plan,
     save_weekly_plan,
@@ -115,7 +116,7 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
     try:
         # Step 1: INGEST - Pull fresh data
         logger.info("Step 1: INGEST - Pulling fresh data")
-        daily_metrics = get_daily_metrics()
+        daily_metrics = query_metrics(kind='daily')
         results['steps']['ingest'] = {
             'status': 'complete',
             'daily_metrics': daily_metrics,
@@ -135,10 +136,17 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
         results['steps']['compliance'] = compliance
         logger.info(f"Compliance: {json.dumps(compliance, indent=2)}")
 
-        # Step 4: Build context for LLM (canonical snapshot)
+        # Step 4: Build context for LLM (canonical snapshot).
+        # The default snapshot is the compact core payload — request the
+        # recovery + plan sections explicitly so the brief keeps readiness
+        # detail and today's full plan (core alone degrades recovery to {}).
         logger.info("Step 4: Building coaching snapshot")
-        context_json = await get_coaching_snapshot(ctx)
+        context_json = await get_coaching_snapshot(
+            ctx, sections=['core', 'recovery', 'plan'])
         context = json.loads(context_json)
+        # upcoming_events moved out of the snapshot core — backfill from the
+        # compliance report so the template brief keeps the next-event line.
+        context.setdefault('upcoming_events', compliance.get('upcoming_events', []))
         results['steps']['context'] = {'status': 'built', 'keys': list(context.keys())}
 
         # Step 5: Generate morning brief

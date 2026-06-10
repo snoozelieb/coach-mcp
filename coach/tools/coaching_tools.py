@@ -19,7 +19,11 @@ Also contains helper functions:
 from collections import defaultdict
 from fastmcp import Context
 from ..mcp_app import mcp
-from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
+from ..garmin_client import (
+    garmin_api_call,
+    fetch_activity_hr_zones,
+    GarminAuthRequiredError,
+)
 from ..parsers import parse_activities, build_current_time_context
 from ..planner import (
     get_current_plan,
@@ -42,7 +46,8 @@ from ..fitness import (
     calculate_fitness_metrics,
     calculate_intensity_distribution,
     get_athlete_hr_zones,
-    get_sleep_summary,
+    parse_sleep_payload,
+    summarize_sleep_records,
     calculate_ctl_target,
     _extract_total_loads,
     calculate_sport_fitness_metrics,
@@ -68,12 +73,89 @@ from ..taxonomy import types_match, race_sport_for
 from datetime import date, datetime, timedelta
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
 
 # Import shared helper from strength_tools
 from .strength_tools import _get_strength_baseline_data
+
+
+# ---------------------------------------------------------------------------
+# Snapshot sections
+# ---------------------------------------------------------------------------
+# The default snapshot is the CORE payload (~2-3K tokens): time context,
+# flags, week_grid, ACWR status (+ shadow), injuries, plan adherence,
+# today/tomorrow plan, coaching memory, open anomalies, the sleep gate and
+# data_quality. Named sections add the heavier detail on request;
+# sections=['full'] adds everything.
+
+SNAPSHOT_NAMED_SECTIONS = (
+    'plan', 'activities', 'fitness', 'sleep', 'recovery',
+    'strength', 'memory', 'goals', 'patterns', 'sport_priorities',
+)
+SNAPSHOT_VALID_SECTIONS = ('core', 'full') + SNAPSHOT_NAMED_SECTIONS
+
+
+def _resolve_snapshot_sections(sections: list[str] | None) -> tuple[set | None, str | None]:
+    """Normalize the sections argument. Returns (named_extras, error).
+
+    named_extras is the set of NAMED sections to include on top of core
+    (core itself is always included). Unknown names produce an error string
+    listing the valid vocabulary; named_extras is None in that case.
+    """
+    if not sections:
+        return set(), None
+    if isinstance(sections, str):  # tolerate a bare 'full' instead of ['full']
+        sections = [sections]
+    requested = {str(s).strip().lower() for s in sections}
+    unknown = sorted(requested - set(SNAPSHOT_VALID_SECTIONS))
+    if unknown:
+        return None, (
+            f"Unknown snapshot section(s): {', '.join(unknown)}. "
+            f"Valid sections: {', '.join(SNAPSHOT_VALID_SECTIONS)}"
+        )
+    if 'full' in requested:
+        return set(SNAPSHOT_NAMED_SECTIONS), None
+    requested.discard('core')
+    return requested, None
+
+
+# ---------------------------------------------------------------------------
+# Short-TTL Garmin fetch cache
+# ---------------------------------------------------------------------------
+# Back-to-back snapshot calls in one conversation would otherwise re-fetch
+# identical Garmin data. Successful fetches are cached for
+# GARMIN_CACHE_TTL_SECS (monotonic clock); get_coaching_snapshot's
+# force_refresh=True bypasses the cache. Keys embed str(DATA_DIR) (so tests
+# with redirected data dirs can never share entries) and a purpose namespace
+# ('activities_ingest' vs 'activities_range') so the always-run ingestion
+# side effect can never be confused with an unrelated range fetch.
+
+GARMIN_CACHE_TTL_SECS = 300.0
+_garmin_fetch_cache: dict[tuple, tuple[float, object]] = {}
+
+
+def _cached_garmin_fetch(key: tuple, fetch, force_refresh: bool = False):
+    """Return fetch(), reusing a cached value younger than the TTL.
+
+    Only successful fetches are cached — exceptions propagate uncached so
+    the next call retries.
+    """
+    full_key = (str(DATA_DIR),) + tuple(key)
+    now = time.monotonic()
+    if not force_refresh:
+        hit = _garmin_fetch_cache.get(full_key)
+        if hit is not None and (now - hit[0]) < GARMIN_CACHE_TTL_SECS:
+            return hit[1]
+    value = fetch()
+    # Opportunistic prune so a long-lived server can't grow the cache unbounded
+    for stale_key in [k for k, (ts, _v) in _garmin_fetch_cache.items()
+                      if (now - ts) >= GARMIN_CACHE_TTL_SECS]:
+        _garmin_fetch_cache.pop(stale_key, None)
+    _garmin_fetch_cache[full_key] = (time.monotonic(), value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +805,164 @@ def _build_week_grid(activities: list, today: date,
     return grid
 
 
+def _count_decisions_due_review(active_decisions: list, today: date,
+                                review_after_days: int = 7) -> int:
+    """Count active decisions older than review_after_days (due a check-in)."""
+    due = 0
+    for d in active_decisions or []:
+        d_date = d.get('date', '')
+        try:
+            if d_date and (today - date.fromisoformat(d_date)).days > review_after_days:
+                due += 1
+        except (ValueError, TypeError):
+            pass
+    return due
+
+
+def _activities_from_history(daily_loads: dict, start_iso: str, end_iso: str) -> list[dict]:
+    """Reconstruct a parsed-activity list from persisted daily_loads.
+
+    Fallback for when the Garmin activities fetch is unavailable — week_grid
+    and planned-vs-actual then reflect locally persisted history instead of
+    falsely showing every day as REST.
+    """
+    activities = []
+    for day_iso, day_data in (daily_loads or {}).items():
+        if not (start_iso <= day_iso <= end_iso) or not isinstance(day_data, dict):
+            continue
+        for act in day_data.get('activities', []) or []:
+            entry = dict(act)
+            entry.setdefault('date', day_iso)
+            activities.append(entry)
+    activities.sort(key=lambda a: a.get('date', ''))
+    return activities
+
+
+def _merge_sleep_nights(history_nights: list[dict], fetched: list[dict],
+                        today: date, days: int = 7) -> list[dict]:
+    """Last-N nights: persisted history overlaid with freshly fetched records.
+
+    Freshly fetched records carry full detail and win on date collisions.
+    Returns most-recent-first, capped at ``days`` nights.
+    """
+    cutoff = (today - timedelta(days=days - 1)).isoformat()
+    by_date: dict[str, dict] = {}
+    for rec in history_nights or []:
+        d = rec.get('date')
+        if d and d >= cutoff:
+            by_date[d] = rec
+    for rec in fetched or []:
+        d = rec.get('date')
+        if d and d >= cutoff:
+            by_date[d] = rec
+    return [by_date[d] for d in sorted(by_date, reverse=True)][:days]
+
+
+def _build_sleep_gate(sleep_data: dict | None) -> dict:
+    """Compact sleep-gate signal for the core payload.
+
+    Sleep is a GATE for training decisions — the core snapshot always
+    carries enough to apply it without the full per-night breakdown.
+    """
+    if not sleep_data or sleep_data.get('status') == 'no_data':
+        return {'status': 'no_data'}
+    nights = sleep_data.get('nights') or []
+    last_night = nights[0] if nights else {}
+    return {
+        'avg_hours': sleep_data.get('avg_duration_hrs'),
+        'deficit': sleep_data.get('status') in ('deficit', 'severe_deficit'),
+        'status': sleep_data.get('status'),
+        'acute_status': sleep_data.get('acute_status'),
+        'last_night_score': last_night.get('score'),
+        'last_night_hrs': last_night.get('duration_hrs'),
+        'nights_analyzed': sleep_data.get('days_analyzed'),
+    }
+
+
+def _assemble_snapshot_payload(full: dict, include: set) -> dict:
+    """Filter the internal full snapshot down to core + requested sections.
+
+    Core ALWAYS carries: time context, flags, week_grid, slim fitness
+    metrics (acwr_status + acwr_shadow + load hierarchy), acwr_warnings,
+    injuries, plan_adherence, today/tomorrow plan, coaching memory, open
+    planned-vs-actual anomalies, the sleep gate, and data_quality. Memory +
+    curiosity + the sleep gate live in the DEFAULT payload by design — a
+    bare metrics dashboard is explicitly not enough to coach with.
+    """
+    weekly_plan_full = full.get('weekly_plan') or {}
+    plan_days = weekly_plan_full.get('days') or {}
+    today_iso = full.get('snapshot_date')
+    tomorrow_iso = None
+    try:
+        tomorrow_iso = (date.fromisoformat(today_iso) + timedelta(days=1)).isoformat()
+    except (ValueError, TypeError):
+        pass
+    weekly_plan = {
+        'week_start': weekly_plan_full.get('week_start'),
+        'week_end': weekly_plan_full.get('week_end'),
+        'has_plan': weekly_plan_full.get('has_plan'),
+        'today': plan_days.get(today_iso),
+        'tomorrow': plan_days.get(tomorrow_iso),
+    }
+    if 'plan' in include:
+        weekly_plan['days'] = plan_days
+
+    pva = full.get('planned_vs_actual')
+    if isinstance(pva, dict) and 'plan' not in include:
+        pva = {k: v for k, v in pva.items() if k != 'details'}
+
+    memory = full.get('coaching_memory')
+    if isinstance(memory, dict) and 'memory' not in include:
+        memory = {k: v for k, v in memory.items() if k != 'adaptation_patterns'}
+
+    out = {
+        'current_time_context': full.get('current_time_context'),
+        'snapshot_date': full.get('snapshot_date'),
+        'day_of_week': full.get('day_of_week'),
+        'sections': {
+            'included': ['core'] + sorted(include),
+            'available': list(SNAPSHOT_NAMED_SECTIONS) + ['full'],
+        },
+        'flags': full.get('flags', {}),
+        'week_grid': full.get('week_grid'),
+        'weekly_plan': weekly_plan,
+        'plan_adherence': full.get('plan_adherence'),
+        'planned_vs_actual': pva,
+        'fitness_metrics': full.get('fitness_metrics'),
+        'acwr_warnings': full.get('acwr_warnings'),
+        'injuries': full.get('injuries'),
+        'coaching_memory': memory,
+        'sleep_gate': full.get('sleep_gate'),
+        # Always present — {} means every quality check passed
+        'data_quality': full.get('data_quality') or {},
+    }
+
+    if 'plan' in include:
+        out['compliance'] = full.get('compliance')
+    if 'activities' in include:
+        out['activities_this_week'] = full.get('activities_this_week')
+    if 'fitness' in include:
+        out['volume_data'] = full.get('volume_data')
+        out['trends'] = full.get('trends')
+        out['intensity_distribution'] = full.get('intensity_distribution')
+    if 'sleep' in include:
+        out['sleep'] = full.get('sleep')
+    if 'recovery' in include:
+        out['recovery'] = full.get('recovery')
+        out['readiness_baselines'] = full.get('readiness_baselines')
+    if 'strength' in include:
+        out['strength'] = full.get('strength')
+    if 'goals' in include:
+        out['goal_progress'] = full.get('goal_progress')
+    if 'patterns' in include:
+        out['adaptation_patterns'] = full.get('adaptation_patterns')
+        out['activity_patterns'] = full.get('activity_patterns')
+        out['compliance_diagnostics'] = full.get('compliance_diagnostics')
+    if 'sport_priorities' in include:
+        out['sport_priorities'] = full.get('sport_priorities')
+    return out
+
+
 def _build_snapshot_flags(snapshot: dict) -> dict:
     """Build a summary flags dict for quick scanning of snapshot state.
 
@@ -764,16 +1004,9 @@ def _build_snapshot_flags(snapshot: dict) -> dict:
         flags['pending_approvals'] = len(pending)
 
     # Decisions due for review (active decisions older than 7 days)
-    active = memory.get('active_decisions', [])
-    review_due = 0
-    today = date.today()
-    for d in active:
-        d_date = d.get('date', '')
-        try:
-            if d_date and (today - date.fromisoformat(d_date)).days > 7:
-                review_due += 1
-        except (ValueError, TypeError):
-            pass
+    review_due = _count_decisions_due_review(
+        memory.get('active_decisions', []), date.today()
+    )
     if review_due:
         flags['decisions_due_for_review'] = review_due
 
@@ -879,7 +1112,7 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
 # MCP Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def get_compliance_report(days: int = 7) -> str:
     """
     Check whether the athlete is meeting their training pillars.
@@ -1170,7 +1403,7 @@ def _compute_coaching_score(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_coaching_score() -> str:
     """
     Self-assessment: is the coaching working?
@@ -1202,36 +1435,70 @@ def get_coaching_score() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
-async def get_coaching_snapshot(ctx: Context) -> str:
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
+async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
+                                force_refresh: bool = False) -> str:
     """
     MANDATORY FIRST CALL before any coaching recommendation.
 
-    Returns everything needed to coach this athlete right now:
-    - Weekly plan vs actual activities (with anomalies to investigate)
-    - Fitness metrics: CTL, ATL, TSB, ACWR (overall + per-sport)
-    - Load hierarchy: overall ACWR safety, sport-specific spike detection
-    - Compliance, recovery, sleep (with 30-day trend)
-    - Adaptation signals for load personalization
-    - Sport priority breakdown (multi-sport volume distribution)
-    - Active injuries and restrictions
-    - Coaching memory: active decisions, pending approvals, adaptation patterns
+    By default returns the CORE payload — everything needed to coach right
+    now without the heavy detail: current_time_context, flags, week_grid,
+    ACWR status (+ rolling shadow) and load hierarchy, active injuries,
+    plan_adherence, today's + tomorrow's plan, coaching memory (recent
+    decisions, pending approvals, decisions due review), open
+    planned_vs_actual anomalies, a compact sleep_gate signal, and
+    data_quality.
+
+    Request named sections for drill-down detail, or ['full'] for everything:
+    - plan: full week plan days, per-session comparison details, compliance
+    - activities: full activity list (with per-activity HR-zone enrichment)
+    - fitness: volume_data (CTL targeting), 4-week trends, intensity distribution
+    - sleep: full per-night breakdown, 30-day trend, bedtime drift
+    - recovery: readiness/HRV detail + personal baselines
+    - strength: strength sync status + pending progressions
+    - goals: race-prep / fun / aesthetics balance
+    - patterns: adaptation patterns, activity patterns, 4-week compliance diagnostics
+    - sport_priorities: multi-sport volume distribution
+    - memory: adds learned adaptation-pattern list to coaching_memory
+
+    Data ingestion (trailing activity window, sleep + readiness persistence)
+    runs on EVERY call regardless of sections. Garmin fetches are cached for
+    ~5 minutes; pass force_refresh=True to bypass the cache.
 
     The planned_vs_actual.anomalies array flags things that need attention:
     type mismatches, duration deltas, missing sessions, unplanned activities.
     Investigate anomalies with the athlete before drawing conclusions.
 
+    Args:
+        sections: None or ['core'] for the default payload; add any of
+            plan/activities/fitness/sleep/recovery/strength/memory/goals/
+            patterns/sport_priorities, or ['full'] for everything.
+        force_refresh: Bypass the short-lived Garmin fetch cache.
+
     Returns:
-        JSON with complete coaching context. Always check this first.
+        JSON with coaching context. Always check this first.
     """
     try:
+        include, section_error = _resolve_snapshot_sections(sections)
+        if section_error:
+            return json.dumps({'error': section_error})
+
         now = datetime.now()
         today = now.date()
         current_time_context = build_current_time_context(now)
 
-        # 0. Activity ingestion. ALWAYS re-ingest a trailing 3-day window
-        # (idempotent — update_fitness_history overwrites by date), extending
-        # back to the last actual ingest when ingestion has fallen behind.
+        # Garmin failures degrade individual sections instead of killing the
+        # snapshot. AUTH_REQUIRED surfaces its actionable message in the
+        # error envelope ALONGSIDE the locally derivable data.
+        auth_error = None
+        activities_error = None
+
+        # 0. Activity ingestion. ALWAYS runs, regardless of sections — this
+        # write side effect keeps fitness_history (and therefore CTL/ACWR)
+        # alive. Re-ingests a trailing 3-day window (idempotent —
+        # update_fitness_history overwrites by date), extending back to the
+        # last actual ingest when ingestion has fallen behind.
         #
         # Staleness is tracked via the dedicated last_activity_ingest_date:
         # sleep/readiness persistence bumps last_updated on every snapshot,
@@ -1253,12 +1520,20 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             ingest_start = today - timedelta(days=90)
 
         try:
-            raw_refresh = garmin_api_call(
-                lambda c: c.get_activities_by_date(ingest_start.isoformat(), today.isoformat())
+            raw_refresh = _cached_garmin_fetch(
+                ('activities_ingest', ingest_start.isoformat(), today.isoformat()),
+                lambda: garmin_api_call(
+                    lambda c: c.get_activities_by_date(
+                        ingest_start.isoformat(), today.isoformat())
+                ),
+                force_refresh,
             )
             from ..parsers import parse_activities as _pa
             refreshed_activities = _pa(raw_refresh or [])
             history = update_fitness_history(refreshed_activities)
+        except GarminAuthRequiredError as e:
+            auth_error = str(e)
+            logger.warning("Activity ingestion blocked: Garmin auth required")
         except Exception:
             logger.warning("Activity ingestion failed", exc_info=True)
 
@@ -1284,13 +1559,29 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             plan_start = None
             fetch_start = monday_this_week
 
-        raw_activities = garmin_api_call(
-            lambda c: c.get_activities_by_date(
-                fetch_start.isoformat(),
-                today.isoformat()
+        # Guarded: a failed fetch degrades to locally persisted history (so
+        # week_grid can't falsely show REST days) + a data_quality flag,
+        # instead of aborting the whole snapshot.
+        try:
+            raw_activities = _cached_garmin_fetch(
+                ('activities_range', fetch_start.isoformat(), today.isoformat()),
+                lambda: garmin_api_call(
+                    lambda c: c.get_activities_by_date(
+                        fetch_start.isoformat(), today.isoformat())
+                ),
+                force_refresh,
             )
-        )
-        all_fetched_activities = parse_activities(raw_activities)
+            all_fetched_activities = parse_activities(raw_activities)
+        except GarminAuthRequiredError as e:
+            auth_error = auth_error or str(e)
+            activities_error = 'auth_required'
+            all_fetched_activities = _activities_from_history(
+                daily_loads, fetch_start.isoformat(), today.isoformat())
+        except Exception as e:
+            logger.warning("Activities fetch failed", exc_info=True)
+            activities_error = str(e)
+            all_fetched_activities = _activities_from_history(
+                daily_loads, fetch_start.isoformat(), today.isoformat())
         await ctx.report_progress(3, 10, "Activities fetched")
 
         # Calendar week activities — for compliance, intensity distribution, etc.
@@ -1485,10 +1776,20 @@ async def get_coaching_snapshot(ctx: Context) -> str:
 
         # 6. Recovery status (today) + Sleep tracking
         try:
-            readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
+            readiness_data = _cached_garmin_fetch(
+                ('readiness', today.isoformat()),
+                lambda: garmin_api_call(
+                    lambda c: c.get_training_readiness(today.isoformat())),
+                force_refresh,
+            )
             # Fetch dedicated HRV endpoint — readiness often returns null for hrv_status
             try:
-                hrv_data = garmin_api_call(lambda c: c.get_hrv_data(today.isoformat()))
+                hrv_data = _cached_garmin_fetch(
+                    ('hrv', today.isoformat()),
+                    lambda: garmin_api_call(
+                        lambda c: c.get_hrv_data(today.isoformat())),
+                    force_refresh,
+                )
             except Exception:
                 logger.info("HRV data unavailable", exc_info=True)
                 hrv_data = None
@@ -1504,17 +1805,58 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                     'body_battery': recovery.get('body_battery'),
                 }
                 history = persist_readiness_data(readiness_rec, history)
+        except GarminAuthRequiredError as e:
+            auth_error = auth_error or str(e)
+            recovery = {'status': 'unavailable', 'note': str(e)}
         except Exception:
             logger.warning("Failed to fetch recovery data", exc_info=True)
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
 
-        # 6b. Sleep data (last 7 days) + persist to history
-        sleep_data = get_sleep_summary(today, days=7)
-        if sleep_data and sleep_data.get('status') != 'no_data':
-            # Persist sleep records to fitness_history for 30-day trend
-            sleep_recs = sleep_data.get('recent', [])
-            if sleep_recs:
-                history = persist_sleep_data(sleep_recs, history)
+        # 6b. Sleep — ranged fetch: only nights missing from the persisted
+        # sleep_history (persist_sleep_data maintains a 30-day window), capped
+        # at the last 7 nights. Persistence runs on EVERY call regardless of
+        # sections; the summary is computed from persisted + fresh nights.
+        known_sleep_dates = {r.get('date') for r in history.get('sleep_history', [])}
+        fetched_sleep = []
+        sleep_fetch_error = None
+        fresh_sleep_need = None
+        for offset in range(7):
+            night_iso = (today - timedelta(days=offset)).isoformat()
+            if night_iso in known_sleep_dates:
+                continue
+            try:
+                payload = _cached_garmin_fetch(
+                    ('sleep', night_iso),
+                    lambda ds=night_iso: garmin_api_call(
+                        lambda c, _ds=ds: c.get_sleep_data(_ds)),
+                    force_refresh,
+                )
+            except GarminAuthRequiredError as e:
+                auth_error = auth_error or str(e)
+                break
+            except Exception as e:
+                logger.warning("Sleep fetch failed for %s", night_iso, exc_info=True)
+                sleep_fetch_error = str(e)
+                break
+            record, need = parse_sleep_payload(payload, night_iso)
+            if record:
+                fetched_sleep.append(record)
+            if offset == 0 and need:  # last night carries the personalized need
+                fresh_sleep_need = dict(need, date=night_iso)
+
+        if fetched_sleep:
+            history = persist_sleep_data(fetched_sleep, history)
+        if fresh_sleep_need:
+            # Persisted so later same-day snapshots keep the personalized
+            # target even though last night is no longer re-fetched.
+            history['sleep_need'] = fresh_sleep_need
+
+        stored_need = history.get('sleep_need') or None
+        if stored_need and stored_need.get('date', '') < (today - timedelta(days=1)).isoformat():
+            stored_need = None  # stale personalized need — use default target
+        merged_nights = _merge_sleep_nights(
+            history.get('sleep_history', []), fetched_sleep, today)
+        sleep_data = summarize_sleep_records(merged_nights, sleep_need=stored_need)
 
         # Save history once (covers both readiness + sleep persistence)
         save_fitness_history(history)
@@ -1556,8 +1898,13 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         else:
             relevant_injuries = []
 
-        # 9. Intensity distribution (last 7 days) — enrich with per-activity zone data
-        activities_this_week = fetch_activity_hr_zones(activities_this_week)
+        # 9. Intensity distribution (last 7 days). Per-activity HR-zone
+        # enrichment is an N-call Garmin drill-down — only pay for it when
+        # the activity detail is actually being returned (sections includes
+        # 'activities' or 'full'); otherwise the distribution falls back to
+        # avg-HR classification.
+        if 'activities' in include and not activities_error:
+            activities_this_week = fetch_activity_hr_zones(activities_this_week)
         athlete_hr_zones = get_athlete_hr_zones()
         intensity_dist = calculate_intensity_distribution(activities_this_week, athlete_hr_zones)
 
@@ -1717,6 +2064,8 @@ async def get_coaching_snapshot(ctx: Context) -> str:
                 'bedtime_drift': bedtime_drift if bedtime_drift.get('status') == 'ok' else None,
             } if sleep_data else {'status': 'no_data'},
 
+            'sleep_gate': _build_sleep_gate(sleep_data),
+
             'adaptation_patterns': adaptation_patterns,
 
             'trends': trends,
@@ -1761,6 +2110,15 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         if plan_expired:
             data_quality['plan_stale'] = True
             data_quality['plan_days_since_expiry'] = days_since_expiry
+        if activities_error:
+            data_quality['activities_unavailable'] = (
+                f'{activities_error} (week view rebuilt from locally '
+                f'persisted fitness_history)'
+            )
+        if sleep_fetch_error:
+            data_quality['sleep_fetch_error'] = sleep_fetch_error
+        if auth_error:
+            data_quality['garmin_auth'] = 'required'
         if data_quality:
             snapshot['data_quality'] = data_quality
 
@@ -1782,6 +2140,8 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             snapshot['coaching_memory'] = {
                 'active_decisions': active_decisions[:5],
                 'pending_approvals': coaching_ctx.get('pending_approvals', []),
+                'decisions_due_review': _count_decisions_due_review(
+                    active_decisions, today),
                 'adaptation_patterns': coaching_ctx.get('response_patterns', []),
                 'recent_responses': recent_responses[:3],
             }
@@ -1791,12 +2151,27 @@ async def get_coaching_snapshot(ctx: Context) -> str:
 
         await ctx.report_progress(9, 10, "Building snapshot")
 
-        # Snapshot flags — quick-scan summary for the LLM
+        # Snapshot flags — quick-scan summary for the LLM (built from the
+        # FULL internal snapshot so core flags still see everything)
         flags = _build_snapshot_flags(snapshot)
         if flags:
             snapshot['flags'] = flags
 
-        return json.dumps(snapshot, indent=2)
+        # Filter down to core + requested sections (no indent — the payload
+        # is for an LLM, pretty-printing only burns tokens)
+        payload = _assemble_snapshot_payload(snapshot, include)
+
+        # Error envelope: Garmin trouble surfaces loudly, but ALONGSIDE the
+        # locally derivable data (plan, injuries, memory, time context).
+        if auth_error:
+            payload = {'error': auth_error, **payload}
+        elif activities_error:
+            payload = {
+                'error': (f'Garmin activities unavailable: {activities_error}. '
+                          f'Snapshot degraded to locally persisted data.'),
+                **payload,
+            }
+        return json.dumps(payload)
 
     except Exception as e:
         logger.exception("get_coaching_snapshot failed")

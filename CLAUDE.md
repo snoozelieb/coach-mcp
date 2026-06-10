@@ -21,7 +21,7 @@ An **adaptive AI training coach** MCP server that:
 
 1. **Be science-based, not opinion-based**
    - If you don't know something, research it before recommending
-   - Use `research_injury()`, `research_race()`, `research_sport()`, `research_exercise()` to gather evidence
+   - Use `research_injury()`, `races(action='research')`, `research_sport()`, `research_exercise()` to gather evidence
    - Base training loads on actual data (Garmin metrics, compliance history)
 
 2. **Push back on bad ideas**
@@ -85,6 +85,8 @@ DAY                       <- What should today look like?
 
 **CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
+**The snapshot is SECTIONED.** The default is the CORE payload (~2-3K tokens) — everything needed to coach right now: `current_time_context`, `flags`, `week_grid`, `fitness_metrics` (acwr_status + acwr_shadow + load_hierarchy), `acwr_warnings`, `injuries`, `plan_adherence`, `weekly_plan.today`/`weekly_plan.tomorrow`, `coaching_memory` (recent decisions, pending approvals, `decisions_due_review`), open `planned_vs_actual` anomalies, the compact `sleep_gate` signal, and `data_quality` (always present). Request named sections for drill-down detail — `plan`, `activities`, `fitness`, `sleep`, `recovery`, `strength`, `memory`, `goals`, `patterns`, `sport_priorities` — or `sections=['full']` for everything. Activity ingestion + sleep/readiness persistence run on EVERY call regardless of sections; `force_refresh=True` bypasses the ~300s Garmin fetch cache.
+
 **The first key of the snapshot is `current_time_context`** — date, day_of_week, hour, minute, time_period (early_morning/morning/afternoon/evening/night), is_weekend. Verify it BEFORE any advice: morning fueling differs from evening recovery; "do today's session" is wrong if today is already done. The lightweight `coach://context/now` resource exposes the same data if you only need a time check. Server local time is assumed to equal athlete local time (stdio transport on the athlete's machine).
 
 **`week_grid` is the rest-day-visible 7-day view.** Rolling 7-day window ending today, each day keyed by ISO date with `day_of_week`, `activity_count`, `types_summary` (`"cycling+strength"` or `"REST"`), `total_duration_mins`, `total_load`, `is_rest`, `is_today`. Scan this before any weekly-pattern comment; aggregate metrics hide zero-activity days.
@@ -93,11 +95,9 @@ DAY                       <- What should today look like?
 
 **`plan_adherence`** is per-pillar: `{strength, mobility, long_effort}` each with `planned`, `completed`, `skipped_dates`, `pending_dates`, `deficit`. This gives "planned 5 strength, completed 3, skipped Monday + Wednesday" at a glance without a separate tool call.
 
-**`recovery.hrv_*`** is populated from the dedicated `/hrv-service/hrv` endpoint (Garmin's training_readiness often returns null for hrv_status). Fields: `hrv_status`, `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_baseline_low`, `hrv_baseline_high`, `hrv_feedback`.
+**`recovery.hrv_*`** (requires `sections=['recovery']` or `['full']`) is populated from the dedicated `/hrv-service/hrv` endpoint (Garmin's training_readiness often returns null for hrv_status). Fields: `hrv_status`, `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_baseline_low`, `hrv_baseline_high`, `hrv_feedback`.
 
-**`sleep.nights`** is the last 7 nights with full per-night detail: `bedtime`, `wake_time`, `duration_hrs`, `score`, `deep_mins`/`deep_pct`, `rem_mins`/`rem_pct`, `light_mins`/`light_pct`, `awake_mins`, `avg_hr`, `respiration`, `sleep_stress`. `sleep.bedtime_drift` (over 14-day window) flags "later"/"earlier"/"stable" direction + `drift_mins_per_wk` — a meaningful overtraining signal when bedtime drifts >15 min/wk later.
-
-The snapshot also returns: current plan, actual activities, planned vs actual comparison (with anomalies), fitness metrics (CTL/ATL/TSB/ACWR as structured data), compliance, recovery, sleep, adaptation patterns, sport priorities, active injuries, data quality flags.
+**Sleep: `sleep_gate` is in the core payload; `sleep.nights` needs `sections=['sleep']` or `['full']`.** The default payload carries the compact `sleep_gate`: `avg_hours`, `deficit` (bool), `status`, `acute_status`, `last_night_score`/`last_night_hrs`, `nights_analyzed`. The full `sleep` section adds the last 7 nights with per-night detail (`bedtime`, `wake_time`, `duration_hrs`, `score`, `deep_mins`/`deep_pct`, `rem_mins`/`rem_pct`, `light_mins`/`light_pct`, `awake_mins`, `avg_hr`, `respiration`, `sleep_stress`) plus `sleep.bedtime_drift` (14-day window; "later"/"earlier"/"stable" + `drift_mins_per_wk` — a meaningful overtraining signal when bedtime drifts >15 min/wk later). Nights are fetched from Garmin only when missing from `fitness_history.sleep_history`. Request `sections=['sleep']` before any sleep-quality coaching.
 
 Check `data_quality` in the snapshot — it flags missing critical data (weight, age, name), unavailable recovery/sleep, and stale fitness history. The LLM should surface these to the athlete and recommend running `refresh_athlete_baseline()` to auto-populate from Garmin.
 
@@ -127,7 +127,7 @@ Sleep is a GATE for training decisions, not just a metric. Without adequate slee
 - Strength/power least affected (effect size -0.39)
 - Early AM workouts that cut into sleep are COUNTERPRODUCTIVE (effect size -1.17)
 
-The snapshot includes sleep data with `avg_hours`, `scores`, and `deficit_flag`. Use these to decide what training is appropriate — the LLM reasons about the athlete's specific context rather than following fixed thresholds.
+The snapshot's core payload includes the compact `sleep_gate` (`avg_hours`, `deficit`, `status`, `acute_status`, `last_night_score`/`last_night_hrs`); request `sections=['sleep']` for the full per-night breakdown. Use these to decide what training is appropriate — the LLM reasons about the athlete's specific context rather than following fixed thresholds.
 
 ### Personalizing Load Decisions
 
@@ -182,7 +182,12 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 |----------|------|
 | Any coaching recommendation | `get_coaching_snapshot()` (MANDATORY first) |
 | Plan next week from scratch | `get_coaching_snapshot()` + `get_week_constraints()` + `get_weekly_prescription()` |
-| Custom-window ACWR check | `get_fitness_status(days=N)` (snapshot already has current) |
+| Full plan days / per-session comparison detail | `get_coaching_snapshot(sections=['plan'])` |
+| Recovery/HRV detail | `get_coaching_snapshot(sections=['recovery'])` |
+| Sleep-quality coaching (per-night detail) | `get_coaching_snapshot(sections=['sleep'])` |
+| Zone analysis | `get_coaching_snapshot(sections=['fitness', 'activities'])` or `query_metrics(kind='intensity', days=N)` |
+| Custom-window ACWR check | `query_metrics(kind='fitness', days=N)` (snapshot already has current) |
+| Historical readiness lookup | `query_metrics(kind='readiness', for_date=...)` |
 | Pillar compliance | `get_compliance_report()` or `snapshot.compliance` |
 | Coaching self-assessment | `get_coaching_score()` |
 | Push harder or back off? | Check `adaptation_patterns` in snapshot |
@@ -209,34 +214,62 @@ Coaching decisions persist across sessions via `coaching_log.json`:
    → get_week_constraints() — guardrails (includes injury restrictions)
    → get_weekly_prescription() — volume + intensity targets
    → Build plan — every session must respect snapshot.injuries[*].restricted_activities
-   → update_weekly_plan() → push_plan_to_garmin()
+   → update_weekly_plan(plan=...) → push_plan_to_garmin()
    → Both tools CODE-ENFORCE the injury gate: sessions matching an active/improving
      injury's restricted_activities are rejected (override_injury_gate=True bypasses
      with logged rationale — use only with athlete consent)
+   → update_weekly_plan responses include `purpose_warnings` listing non-rest
+     sessions missing a purpose (warn-only; Phase 3 makes it a gate) — fix
+     these BEFORE pushing to Garmin
 
 4. DRILL-DOWNS (when snapshot data isn't enough)
-   → get_fitness_status(days=N) — custom-window CTL/ACWR
-   → get_intensity_distribution(days=N) — zone analysis
-   → get_activities_range(start, end) — specific period detail
-   → get_training_readiness(for_date) — historical readiness (with HRV overlay)
+   → get_coaching_snapshot(sections=[...]) — plan / activities / fitness /
+     sleep / recovery / strength / memory / goals / patterns / sport_priorities
+   → query_metrics(kind='fitness', days=N) — custom-window CTL/ACWR
+   → query_metrics(kind='intensity', days=N) — zone analysis
+   → query_metrics(kind='readiness', for_date=...) — historical readiness (HRV overlay)
+   → query_metrics(kind='daily') — today's RHR / body battery / sleep score
+   → query_metrics(kind='personal_records') — full PB list
+   → get_activities_range(start, end) — specific period detail (standalone:
+     explicit range semantics)
 
-5. MUTATIONS
+5. RACE CALENDAR
+   → races(action='list'|'add'|'update'|'research') — one tool for race CRUD
+     + web research; remove_race stays standalone (destructive)
+
+6. MUTATIONS
    → Coaching memory: log_coaching_decision, record_athlete_response
    → Approvals: propose_coaching_action → approve_proposal / reject_proposal
    → Athlete profile: update_athlete, set_ftp, set_threshold_pace
    → Plan: update_weekly_plan, push_plan_to_garmin, update_phase
+   → Races: races(action='add'|'update'), remove_race
 ```
 
-### Removed tools
+### Removed / consolidated tools
 
-The following tools were removed in the Phase 2 rationalization — their data is in
-`get_coaching_snapshot()`:
+Removed in the first rationalization pass — their data is in `get_coaching_snapshot()`:
 
 - `get_planning_context` → `get_coaching_snapshot` (strict superset)
 - `get_goal_progress` → `snapshot.goal_progress`
 - `list_pending_suggestions` → `snapshot.coaching_memory.pending_approvals`
-- `get_load_status` → `snapshot.fitness_metrics.acwr_status` or `get_fitness_status(days=N)` (the standalone used different math and disagreed with the snapshot)
+- `get_load_status` → `snapshot.fitness_metrics.acwr_status` or `query_metrics(kind='fitness', days=N)` (the standalone used different math and disagreed with the snapshot)
 
+Consolidated in Phase 2 (same behavior, new entry point — bodies moved, not rewritten):
+
+| Old tool | New call |
+|----------|----------|
+| `list_races()` | `races(action='list')` |
+| `add_race(...)` | `races(action='add', ...)` |
+| `update_race(...)` | `races(action='update', ...)` |
+| `research_race(...)` | `races(action='research', ...)` |
+| `get_fitness_status(days)` | `query_metrics(kind='fitness', days=N)` |
+| `get_intensity_distribution(days)` | `query_metrics(kind='intensity', days=N)` |
+| `get_daily_metrics()` | `query_metrics(kind='daily')` |
+| `get_training_readiness(for_date)` | `query_metrics(kind='readiness', for_date=...)` |
+| `get_personal_records()` | `query_metrics(kind='personal_records')` |
+
+`remove_race` stays standalone (destructive — clients must see destructiveHint per-tool).
+`get_activities_range` stays standalone (explicit range semantics, pagination candidate).
 `get_compliance_report` stays — minimal 1-API-call check when you don't need the full
 snapshot; math matches `snapshot.compliance`.
 
@@ -255,14 +288,16 @@ python scripts/garmin_login.py                # Manual Garmin token recovery (ga
 
 ## MCP Framework
 
-Uses **standalone FastMCP v3.2.x** (`from fastmcp import FastMCP`), not the bundled v1 in the `mcp` SDK.
+Uses **standalone FastMCP v3.4.x** (`from fastmcp import FastMCP`, pinned `fastmcp>=3.4,<4`), not the bundled v1 in the `mcp` SDK.
 
 > **2KB limit:** Claude Code truncates MCP server instructions at 2KB. `SERVER_INSTRUCTIONS` is kept
 > under 1,900 chars (test-enforced); the long-form doctrine lives in the `coach://coaching/doctrine` resource.
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **Tools** | 54 tools | `@mcp.tool()` — sync and async |
+| **Tools** | 47 tools | `@mcp.tool()` — sync and async |
+| **Annotations** | All 47 tools | readOnlyHint/destructiveHint/idempotentHint/openWorldHint on every tool — `tests/test_annotations.py` is the contract (explicit inventories; unclassified tools fail the suite) |
+| **Structured output** | Planning tools | The 7 planning tools return structured dicts (not JSON strings); `update_weekly_plan` takes a typed `plan` dict (`plan_json` is a deprecated alias) |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
 | **Resources** | 6 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now, coach://coaching/doctrine |
 | **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
@@ -285,13 +320,13 @@ coach-mcp/
 │   ├── parsers.py           # Pure parsing functions for Garmin API responses
 │   ├── planner.py           # Context builder, plan/suggestion management
 │   ├── prompts.py           # MCP prompt templates (5 coaching workflows)
-│   ├── resources.py         # MCP resources (5 read-only data endpoints)
+│   ├── resources.py         # MCP resources (6 read-only endpoints incl. coach://coaching/doctrine)
 │   ├── rules.py             # Compliance checker, safety rules, classify_activity
 │   ├── web_utils.py         # HTML stripping + page fetching
 │   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
-│   └── tools/               # 54 MCP tools across 11 modules
-│       ├── data_tools.py      (3) # get_daily_metrics, get_activities_range, get_personal_records
-│       ├── fitness_tools.py   (7) # refresh_athlete_baseline, get_training_readiness (HRV overlay), get_fitness_status, refresh_fitness_history, get_intensity_distribution, get_onboarding_guide, get_athlete
+│   └── tools/               # 47 MCP tools across 11 modules
+│       ├── data_tools.py      (1) # get_activities_range (+ private daily-metrics/PR impls behind query_metrics)
+│       ├── fitness_tools.py   (5) # refresh_athlete_baseline, query_metrics (kind=fitness/intensity/daily/readiness/personal_records), refresh_fitness_history, get_onboarding_guide, get_athlete
 │       ├── athlete_tools.py   (6) # update_athlete, set_threshold_pace, set_ftp, analyze_ftp_test, get_methodology, update_methodology
 │       ├── planning_tools.py  (7) # get_periodization_status, get_weekly_prescription, update_phase, get_weekly_plan, update_weekly_plan, push_plan_to_garmin, get_week_constraints
 │       ├── coaching_tools.py  (3) # get_coaching_snapshot (canonical), get_compliance_report, get_coaching_score  (+ 13 pure helpers)
@@ -299,7 +334,7 @@ coach-mcp/
 │       ├── injury_tools.py    (3) # diagnose_injury, research_injury, update_injury_status
 │       ├── research_tools.py  (3) # research_exercise, list_exercises, research_sport
 │       ├── decision_tools.py  (9) # log_coaching_decision, get_active_decisions, update_decision_status, propose_coaching_action, list_pending_approvals, approve_proposal, reject_proposal, record_athlete_response, get_response_patterns
-│       ├── race_tools.py      (5) # research_race, list/add/remove/update_race
+│       ├── race_tools.py      (2) # races (action=list/add/update/research), remove_race (standalone, destructive)
 │       └── interactive_tools.py (2) # generate_smart_brief (data shape for brief), interactive_check_in (question set)
 ├── scripts/
 │   ├── daily_loop.py        # Morning audit automation (async, --llm for Anthropic API)
@@ -358,6 +393,10 @@ Optional environment variables:
 - `COACH_CODE_MODE` — Set to `1` to enable Code Mode transform
 - `FASTMCP_HOST` / `FASTMCP_PORT` — HTTP bind address (default: 127.0.0.1:5000)
 
+> **Upgrading fastmcp:** an existing env on fastmcp <3.3 must `pip uninstall fastmcp fastmcp-slim`
+> and then fresh-install (`pip install -r requirements.txt`) — the 3.3 distribution split
+> (`fastmcp` / `fastmcp-slim`) breaks in-place upgrades.
+
 ### Garmin Authentication
 
 Native garminconnect **0.3.5** auth (vendored DI-token client, curl_cffi TLS impersonation
@@ -382,7 +421,7 @@ loudly instead of failing silently in production.
 
 ## Testing
 
-718 tests across 21 test files (CI: GitHub Actions on push/PR + weekly cron to catch date-rot tests).
+1,085 tests across 28 test files (CI: GitHub Actions on push/PR + weekly cron to catch date-rot tests).
 Some tests use real API responses captured in `test_fixtures.json` (gitignored; those tests skip when
 it's absent, so clean checkouts stay green). Async tools tested with `pytest-asyncio` (auto mode) and
 `mock_ctx` fixture from `conftest.py`. Use relative dates (`date.today() + timedelta(...)`) in tests —
@@ -390,9 +429,10 @@ hardcoded dates rot.
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `coach/parsers.py`
-2. Add MCP tool with `@mcp.tool()` decorator in `coach/tools/`
-3. Write tests with sample data matching Garmin structure
-4. Run: `python -m pytest -v`
+2. Add MCP tool with `@mcp.tool(annotations={...})` in `coach/tools/` — every tool MUST declare readOnly/destructive/idempotent/openWorld hints
+3. Classify the tool in the `tests/test_annotations.py` inventories — the suite fails on unclassified tools by design
+4. Write tests with sample data matching Garmin structure
+5. Run: `python -m pytest -v`
 
 Key testing patterns:
 - Patch `garmin_api_call` where it's **used**: `@patch('coach.tools.X.garmin_api_call')`
@@ -407,13 +447,13 @@ The coach should proactively identify gaps. Use `propose_coaching_action(action_
 - Missing context preventing good coaching decisions
 - Same type of request comes up multiple times
 
-Tool design: single responsibility, return JSON, fail gracefully with `{'error': ...}`.
+Tool design: single responsibility, return structured dicts, fail gracefully with `{'error': ...}`.
 
 ## Reliability & Safety
 
 - **Logging**: All 17 modules use `logging.getLogger(__name__)`. Every tool `except` block calls `logger.exception()` before returning JSON errors. Server-side tracebacks are preserved while clients get clean error messages.
 - **Atomic writes**: `save_json_file()` and `save_fitness_history()` write to `.tmp` then `Path.replace()` — a crash mid-write can't corrupt data files.
-- **Input validation**: `get_activities_range()` validates date format before API calls. `update_weekly_plan()` validates plan structure (must be dict with `days` dict). `research_injury()` rejects invalid severity.
+- **Input validation**: `get_activities_range()` validates date format before API calls. `update_weekly_plan()` validates the typed `plan` dict through pydantic (`schemas.WeeklyPlan`) — validation errors name the offending day/field; the `plan_json` string parameter survives only as a deprecated alias. `research_injury()` rejects invalid severity.
 - **No bare except**: All `except:` blocks use `except Exception:` to avoid swallowing `KeyboardInterrupt`/`SystemExit`.
 
 ## Known Issues / TODO
@@ -421,6 +461,11 @@ Tool design: single responsibility, return JSON, fail gracefully with `{'error':
 ### ~~2. Coaching snapshot shows partial data when Garmin API fails~~ FIXED
 - `data_quality` dict in snapshot now explicitly flags: missing weight/age/name, unavailable recovery/sleep, stale fitness_history
 - All silent fallbacks now log warnings with `exc_info=True` for server-side debugging
+
+### ~~12. Snapshot single point of failure~~ FIXED
+- One unguarded Garmin call used to abort the entire snapshot
+- Sections now fetch with per-section try/except — a Garmin failure degrades to a `data_quality` flag while the rest of the payload returns; the week view is rebuilt from local `fitness_history` when activities can't be fetched
+- `AUTH_REQUIRED` errors surface the remediation (`python scripts/garmin_login.py`) alongside the locally-derived data instead of replacing it
 
 ### 3. Rehab sessions not pushed to Garmin calendar
 - Rehab sessions skipped with "unknown workout type" when pushing to Garmin

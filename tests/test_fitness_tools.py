@@ -1,8 +1,8 @@
 """Tests for tools/fitness_tools.py — refresh_athlete_baseline pipeline.
 
 Only tests the baseline refresh (composes API calls + parsing + file write).
-The thin-wrapper tools (get_training_readiness, get_fitness_status) are
-covered by test_parsers.py and test_fitness.py respectively.
+The thin-wrapper paths (query_metrics kind='readiness' / kind='fitness') are
+covered by test_parsers.py, test_fitness.py, and test_consolidations.py.
 """
 import json
 import pytest

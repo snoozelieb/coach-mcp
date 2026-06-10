@@ -1359,6 +1359,89 @@ def get_athlete_hr_zones() -> dict[str, list[int]] | None:
     return None
 
 
+def parse_sleep_payload(payload: dict | None, day_iso: str) -> tuple[dict | None, dict | None]:
+    """Parse one night's raw get_sleep_data payload into a sleep record.
+
+    Pure function — no I/O. Returns ``(record, sleep_need)``:
+    - record: per-night dict (None when the payload has no usable sleep)
+    - sleep_need: Garmin's personalized sleep-need analysis when present
+      ({'actual_mins', 'baseline_mins', 'feedback', 'training_impact'})
+    """
+    if not payload or not payload.get('dailySleepDTO'):
+        return None, None
+
+    dto = payload['dailySleepDTO']
+    scores = dto.get('sleepScores', {})
+
+    duration_secs = dto.get('sleepTimeSeconds', 0)
+    if not duration_secs or duration_secs <= 0:
+        return None, None
+
+    # Extract quality metrics
+    deep_secs = dto.get('deepSleepSeconds', 0)
+    rem_secs = dto.get('remSleepSeconds', 0)
+    light_secs = dto.get('lightSleepSeconds', 0)
+    awake_secs = dto.get('awakeSleepSeconds', 0)
+
+    # Extract nap data for this day
+    nap_secs = dto.get('napTimeSeconds', 0) or 0
+    nap_dtos = dto.get('dailyNapDTOS', []) or []
+    nap_count = len(nap_dtos)
+
+    # Extract bedtime / wake time — Garmin returns either local
+    # ISO8601 strings or epoch-ms ints depending on endpoint
+    # version. Normalize to local ISO strings at parse time.
+    bedtime = epoch_ms_to_local_iso(
+        dto.get('sleepStartTimestampLocal')
+        or dto.get('startTimestampLocal')
+    )
+    wake_time = epoch_ms_to_local_iso(
+        dto.get('sleepEndTimestampLocal')
+        or dto.get('endTimestampLocal')
+    )
+
+    record = {
+        'date': day_iso,
+        'bedtime': bedtime,
+        'wake_time': wake_time,
+        'duration_hrs': round(duration_secs / 3600, 1),
+        'score': scores.get('overall', {}).get('value'),
+        'quality': scores.get('overall', {}).get('qualifierKey'),
+        # Quality breakdown
+        'deep_mins': round(deep_secs / 60, 0),
+        'deep_pct': round(deep_secs / duration_secs * 100, 0) if duration_secs else 0,
+        'deep_quality': scores.get('deepPercentage', {}).get('qualifierKey'),
+        'rem_mins': round(rem_secs / 60, 0),
+        'rem_pct': round(rem_secs / duration_secs * 100, 0) if duration_secs else 0,
+        'rem_quality': scores.get('remPercentage', {}).get('qualifierKey'),
+        'light_mins': round(light_secs / 60, 0),
+        'light_pct': round(light_secs / duration_secs * 100, 0) if duration_secs else 0,
+        'awake_mins': round(awake_secs / 60, 0),
+        'awake_count': dto.get('awakeCount', 0),
+        # Stress and restlessness
+        'sleep_stress': dto.get('avgSleepStress'),
+        'stress_quality': scores.get('stress', {}).get('qualifierKey'),
+        'restlessness': scores.get('restlessness', {}).get('qualifierKey'),
+        # Recovery indicators
+        'avg_hr': dto.get('avgHeartRate'),
+        'respiration': dto.get('averageRespirationValue'),
+        # Nap data
+        'nap_mins': round(nap_secs / 60, 0),
+        'nap_count': nap_count,
+    }
+
+    sleep_need = None
+    need = dto.get('sleepNeed', {})
+    if need:
+        sleep_need = {
+            'actual_mins': need.get('actual'),  # Training-adjusted need
+            'baseline_mins': need.get('baseline'),  # Base need without training
+            'feedback': need.get('feedback'),  # "HIGHLY_INCREASED" etc
+            'training_impact': need.get('trainingFeedback'),  # "CHRONIC" load impact
+        }
+    return record, sleep_need
+
+
 def get_sleep_summary(today: date, days: int = 7) -> dict:
     """
     Get comprehensive sleep analysis for the last N days.
@@ -1366,13 +1449,10 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
     This is a CORE coaching metric - sleep quality and quantity directly
     determine whether training adaptations can occur.
 
-    Analyzes:
-    - Duration vs personalized need (Garmin calculates based on training load)
-    - Quality: deep sleep %, REM %, sleep stress, awake count
-    - Consistency: variance night to night
-    - Accumulated deficit
-
-    Without adequate sleep, training is CATABOLIC not ANABOLIC.
+    Fetches every night from Garmin then delegates to
+    summarize_sleep_records(). Callers that already hold persisted nights
+    (fitness_history sleep_history) should fetch only the missing dates and
+    call summarize_sleep_records() directly — the coaching snapshot does.
 
     Args:
         today: Current date
@@ -1382,98 +1462,64 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
         Dict with sleep status, metrics, quality issues, and training modifications
     """
     sleep_records = []
-    personalized_need_mins = None  # Garmin's calculated need based on training
-    baseline_need_mins = None  # Athlete's base sleep need
-    need_feedback = None  # Garmin's feedback on sleep need ("HIGHLY_INCREASED" etc)
-    training_impact = None  # How chronic training is affecting sleep need
+    sleep_need = None
 
     for i in range(days):
         d = today - timedelta(days=i)
         try:
-            sleep = garmin_api_call(lambda c, ds=d.isoformat(): c.get_sleep_data(ds))
-            if sleep and sleep.get('dailySleepDTO'):
-                dto = sleep['dailySleepDTO']
-                scores = dto.get('sleepScores', {})
-
-                duration_secs = dto.get('sleepTimeSeconds', 0)
-                if not duration_secs or duration_secs <= 0:
-                    continue
-
-                # Extract quality metrics
-                deep_secs = dto.get('deepSleepSeconds', 0)
-                rem_secs = dto.get('remSleepSeconds', 0)
-                light_secs = dto.get('lightSleepSeconds', 0)
-                awake_secs = dto.get('awakeSleepSeconds', 0)
-
-                # Extract nap data for this day
-                nap_secs = dto.get('napTimeSeconds', 0) or 0
-                nap_dtos = dto.get('dailyNapDTOS', []) or []
-                nap_count = len(nap_dtos)
-
-                # Extract bedtime / wake time — Garmin returns either local
-                # ISO8601 strings or epoch-ms ints depending on endpoint
-                # version. Normalize to local ISO strings at parse time.
-                bedtime = epoch_ms_to_local_iso(
-                    dto.get('sleepStartTimestampLocal')
-                    or dto.get('startTimestampLocal')
-                )
-                wake_time = epoch_ms_to_local_iso(
-                    dto.get('sleepEndTimestampLocal')
-                    or dto.get('endTimestampLocal')
-                )
-
-                record = {
-                    'date': d.isoformat(),
-                    'bedtime': bedtime,
-                    'wake_time': wake_time,
-                    'duration_hrs': round(duration_secs / 3600, 1),
-                    'score': scores.get('overall', {}).get('value'),
-                    'quality': scores.get('overall', {}).get('qualifierKey'),
-                    # Quality breakdown
-                    'deep_mins': round(deep_secs / 60, 0),
-                    'deep_pct': round(deep_secs / duration_secs * 100, 0) if duration_secs else 0,
-                    'deep_quality': scores.get('deepPercentage', {}).get('qualifierKey'),
-                    'rem_mins': round(rem_secs / 60, 0),
-                    'rem_pct': round(rem_secs / duration_secs * 100, 0) if duration_secs else 0,
-                    'rem_quality': scores.get('remPercentage', {}).get('qualifierKey'),
-                    'light_mins': round(light_secs / 60, 0),
-                    'light_pct': round(light_secs / duration_secs * 100, 0) if duration_secs else 0,
-                    'awake_mins': round(awake_secs / 60, 0),
-                    'awake_count': dto.get('awakeCount', 0),
-                    # Stress and restlessness
-                    'sleep_stress': dto.get('avgSleepStress'),
-                    'stress_quality': scores.get('stress', {}).get('qualifierKey'),
-                    'restlessness': scores.get('restlessness', {}).get('qualifierKey'),
-                    # Recovery indicators
-                    'avg_hr': dto.get('avgHeartRate'),
-                    'respiration': dto.get('averageRespirationValue'),
-                    # Nap data
-                    'nap_mins': round(nap_secs / 60, 0),
-                    'nap_count': nap_count,
-                }
-                sleep_records.append(record)
-
-                # Get personalized sleep need (most recent)
-                if i == 0:  # Last night
-                    sleep_need = dto.get('sleepNeed', {})
-                    if sleep_need:
-                        personalized_need_mins = sleep_need.get('actual')  # Training-adjusted need
-                        baseline_need_mins = sleep_need.get('baseline')  # Base need without training
-                        need_feedback = sleep_need.get('feedback')  # "HIGHLY_INCREASED" etc
-                        training_impact = sleep_need.get('trainingFeedback')  # "CHRONIC" load impact
-
+            payload = garmin_api_call(lambda c, ds=d.isoformat(): c.get_sleep_data(ds))
         except Exception:
             continue
+        record, need = parse_sleep_payload(payload, d.isoformat())
+        if record:
+            sleep_records.append(record)
+        if i == 0 and need:  # Last night carries the personalized need
+            sleep_need = need
 
+    return summarize_sleep_records(sleep_records, sleep_need=sleep_need)
+
+
+def summarize_sleep_records(sleep_records: list[dict], sleep_need: dict | None = None) -> dict:
+    """Aggregate per-night sleep records into the coaching sleep summary.
+
+    Pure computation — no I/O. Records may come straight from
+    parse_sleep_payload() (full detail) or from persisted fitness_history
+    sleep_history nights (a subset of fields); missing fields degrade
+    gracefully. Records are sorted most-recent-first internally.
+
+    Analyzes:
+    - Duration vs personalized need (Garmin calculates based on training load)
+    - Quality: deep sleep %, REM %, sleep stress, awake count
+    - Consistency: variance night to night
+    - Accumulated deficit
+
+    Without adequate sleep, training is CATABOLIC not ANABOLIC.
+    """
     if not sleep_records:
         return {'status': 'no_data', 'note': 'Could not fetch sleep data'}
 
+    sleep_records = sorted(
+        sleep_records, key=lambda r: r.get('date', ''), reverse=True
+    )
+
+    sleep_need = sleep_need or {}
+    personalized_need_mins = sleep_need.get('actual_mins')
+    baseline_need_mins = sleep_need.get('baseline_mins')
+    need_feedback = sleep_need.get('feedback')
+    training_impact = sleep_need.get('training_impact')
+
+    def _hrs(r):
+        return r.get('duration_hrs') or 0
+
+    def _deep(r):
+        return r.get('deep_pct') or 0
+
     # Calculate averages (7-day)
-    avg_duration = round(sum(r['duration_hrs'] for r in sleep_records) / len(sleep_records), 1)
+    avg_duration = round(sum(_hrs(r) for r in sleep_records) / len(sleep_records), 1)
     scores_with_values = [r['score'] for r in sleep_records if r.get('score')]
     avg_score = round(sum(scores_with_values) / len(scores_with_values), 0) if scores_with_values else None
-    avg_deep_pct = round(sum(r['deep_pct'] for r in sleep_records) / len(sleep_records), 0)
-    avg_rem_pct = round(sum(r['rem_pct'] for r in sleep_records) / len(sleep_records), 0)
+    avg_deep_pct = round(sum(_deep(r) for r in sleep_records) / len(sleep_records), 0)
+    avg_rem_pct = round(sum(r.get('rem_pct') or 0 for r in sleep_records) / len(sleep_records), 0)
 
     # Nap totals
     total_nap_mins = sum(r.get('nap_mins', 0) for r in sleep_records)
@@ -1485,11 +1531,11 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
     if recent_nights:
         recent_scores = [r['score'] for r in recent_nights if r.get('score')]
         recent_avg_score = round(sum(recent_scores) / len(recent_scores), 0) if recent_scores else None
-        recent_avg_duration = round(sum(r['duration_hrs'] for r in recent_nights) / len(recent_nights), 1)
-        recent_avg_deep = round(sum(r['deep_pct'] for r in recent_nights) / len(recent_nights), 0)
+        recent_avg_duration = round(sum(_hrs(r) for r in recent_nights) / len(recent_nights), 1)
+        recent_avg_deep = round(sum(_deep(r) for r in recent_nights) / len(recent_nights), 0)
         # Trend: is sleep improving? (positive = getting better)
         if len(recent_nights) >= 2:
-            trend = recent_nights[0]['duration_hrs'] - recent_nights[-1]['duration_hrs']
+            trend = _hrs(recent_nights[0]) - _hrs(recent_nights[-1])
         else:
             trend = 0
     else:
@@ -1528,7 +1574,7 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
     fair_quality_nights = len([r for r in sleep_records if r.get('quality') in ['FAIR']])
 
     # Consistency check (high variance = poor sleep hygiene)
-    durations = [r['duration_hrs'] for r in sleep_records]
+    durations = [_hrs(r) for r in sleep_records]
     if len(durations) > 1:
         variance = max(durations) - min(durations)
         if variance > SLEEP_VARIANCE_THRESHOLD_HRS:

@@ -9,7 +9,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': False})
 def log_coaching_decision(
     decision_type: str,
     decision: str,
@@ -72,7 +73,7 @@ def log_coaching_decision(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_active_decisions() -> str:
     """
     Get all active coaching decisions.
@@ -115,7 +116,8 @@ def get_active_decisions() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def update_decision_status(
     decision_id: str,
     new_status: str,
@@ -162,7 +164,8 @@ def update_decision_status(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': False})
 def propose_coaching_action(
     action_type: str,
     proposal: str,
@@ -236,7 +239,7 @@ def propose_coaching_action(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def list_pending_approvals() -> str:
     """
     List all pending coaching change proposals.
@@ -276,7 +279,8 @@ def list_pending_approvals() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def approve_proposal(proposal_id: str) -> str:
     """
     Approve a pending coaching proposal — the change becomes an active decision.
@@ -336,7 +340,8 @@ def approve_proposal(proposal_id: str) -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def reject_proposal(proposal_id: str, reason: str = None) -> str:
     """
     Reject a pending coaching proposal.
@@ -382,7 +387,8 @@ def reject_proposal(proposal_id: str, reason: str = None) -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': False})
 def record_athlete_response(
     stimulus: str,
     response: str,
@@ -459,7 +465,7 @@ def record_athlete_response(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_response_patterns() -> str:
     """
     Get identified athlete response patterns.

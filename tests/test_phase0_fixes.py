@@ -151,7 +151,7 @@ class TestPlanningToolsFitnessMetrics:
         self._seed_history(data_env)
         _write(data_env, 'training_config.json', {'current_block': {'phase': 'base'}})
 
-        result = json.loads(get_periodization_status())
+        result = get_periodization_status()
 
         assert 'error' not in result
         assert 'fitness_status' in result, "ACWR metrics silently dropped (v2 dict fed raw)"
@@ -163,7 +163,7 @@ class TestPlanningToolsFitnessMetrics:
         (data_env / 'fitness_history.json').write_text('{not valid json', encoding='utf-8')
         _write(data_env, 'training_config.json', {'current_block': {'phase': 'base'}})
 
-        result = json.loads(get_periodization_status())
+        result = get_periodization_status()
 
         assert 'error' not in result
         assert result.get('fitness_metrics_unavailable') is True
@@ -178,7 +178,7 @@ class TestPlanningToolsFitnessMetrics:
         _write(data_env, 'athlete.json', {'personal': {}})
         _patch_garmin(monkeypatch, FakeGarminClient())
 
-        result = json.loads(get_weekly_prescription())
+        result = get_weekly_prescription()
 
         assert 'error' not in result
         assert result['volume']['adjustment'] == 0.85
@@ -193,7 +193,7 @@ class TestPlanningToolsFitnessMetrics:
         _write(data_env, 'athlete.json', {'personal': {}})
         _patch_garmin(monkeypatch, FakeGarminClient())
 
-        result = json.loads(get_weekly_prescription())
+        result = get_weekly_prescription()
 
         assert 'error' not in result
         assert result.get('fitness_metrics_unavailable') is True
@@ -230,7 +230,7 @@ class TestWeekConstraintsImportFix:
             'last_updated': TODAY.isoformat(),
         })
 
-        result = json.loads(get_week_constraints())
+        result = get_week_constraints()
 
         assert 'error' not in result
         assert 'chronic_misses' in result, "compliance diagnostics never loaded (broken import)"
@@ -561,7 +561,7 @@ class TestPlanLifecycle:
             d1: {'planned': {'type': 'strength', 'duration_mins': 45}},
         }}
 
-        result = json.loads(update_weekly_plan(json.dumps(plan)))
+        result = update_weekly_plan(plan_json=json.dumps(plan))
         assert result['status'] == 'success'
 
         saved = json.loads((data_env / 'weekly_plan.json').read_text())
@@ -579,7 +579,7 @@ class TestPlanLifecycle:
             'week_start': d0, 'week_end': (TODAY + timedelta(days=6)).isoformat(),
             'days': {d0: {'planned': None}, d1: {'planned': None}},
         }
-        result = json.loads(update_weekly_plan(json.dumps(plan)))
+        result = update_weekly_plan(plan_json=json.dumps(plan))
         assert result['status'] == 'success'
         saved = json.loads((data_env / 'weekly_plan.json').read_text())
         assert saved['week_end'] == (TODAY + timedelta(days=6)).isoformat()
@@ -688,7 +688,7 @@ class TestInjuryWriteGate:
             'planned': {'type': 'trail_running', 'duration_mins': 45},
         }}}
 
-        result = json.loads(update_weekly_plan(json.dumps(plan)))
+        result = update_weekly_plan(plan_json=json.dumps(plan))
 
         assert result['error'] == 'injury_gate'
         assert result['violations'][0]['date'] == tomorrow
@@ -704,7 +704,8 @@ class TestInjuryWriteGate:
             'planned': {'type': 'running', 'duration_mins': 30},
         }}}
 
-        result = json.loads(update_weekly_plan(json.dumps(plan), override_injury_gate=True))
+        result = update_weekly_plan(plan_json=json.dumps(plan),
+                                    override_injury_gate=True)
 
         assert result['status'] == 'success'
         assert result['injury_gate']['injury_gate_overridden'] is True
@@ -719,7 +720,7 @@ class TestInjuryWriteGate:
             'planned': {'type': 'cycling', 'duration_mins': 60},
         }}}
 
-        result = json.loads(update_weekly_plan(json.dumps(plan)))
+        result = update_weekly_plan(plan_json=json.dumps(plan))
         assert result['status'] == 'success'
         assert 'injury_gate' not in result
 
@@ -732,7 +733,7 @@ class TestInjuryWriteGate:
             'planned': {'type': 'running', 'duration_mins': 30},
         }}})
 
-        result = json.loads(push_plan_to_garmin())
+        result = push_plan_to_garmin()
 
         assert result['error'] == 'injury_gate'
         assert result['violations'][0]['date'] == tomorrow
@@ -751,7 +752,7 @@ class TestInjuryWriteGate:
             raise Exception("Garmin unavailable")
         monkeypatch.setattr(planning_mod, 'garmin_api_call', _fail)
 
-        result = json.loads(push_plan_to_garmin(override_injury_gate=True))
+        result = push_plan_to_garmin(override_injury_gate=True)
 
         # Gate bypassed: we got past it to the (failing) upload stage
         assert result.get('error') != 'injury_gate'

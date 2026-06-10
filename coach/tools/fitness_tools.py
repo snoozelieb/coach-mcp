@@ -2,17 +2,21 @@
 
 Registers MCP tools for:
 - refresh_athlete_baseline
-- get_training_readiness
-- get_fitness_status
+- query_metrics (consolidated drill-down: fitness / intensity / daily /
+  readiness / personal_records — replaces the old get_fitness_status,
+  get_intensity_distribution, get_daily_metrics, get_training_readiness,
+  and get_personal_records tools; bodies moved to private impls)
 - refresh_fitness_history
-- get_intensity_distribution
 - get_onboarding_guide
 - get_athlete
 """
 
+from typing import Literal
+
 from fastmcp import Context
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
+from .data_tools import _daily_metrics, _personal_records
 from ..parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
 from ..planner import load_athlete, load_methodology, load_json_file, save_json_file
 from ..fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
@@ -68,7 +72,8 @@ def _auto_populate_athlete(garmin_profile: dict) -> None:
                      [k for k, v in field_map.items() if personal.get(k) is not None])
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
 async def refresh_athlete_baseline(ctx: Context) -> str:
     """
     Generates/refreshes athlete baseline from 6 months of Garmin history.
@@ -175,22 +180,12 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
-def get_training_readiness(for_date: str = None) -> str:
-    """
-    Fetches training readiness score and recovery metrics from Garmin.
+def _training_readiness(for_date: str = None) -> dict:
+    """Fetch training readiness score and recovery metrics from Garmin.
 
     Always fetches the dedicated HRV endpoint too — Garmin's training readiness
     often returns null for hrv_status even when the device tracks HRV. The HRV
     endpoint fills in last_night_avg, weekly_avg, baseline range, and feedback.
-
-    Args:
-        for_date: Date in YYYY-MM-DD format (defaults to today)
-
-    Returns:
-        JSON with: score (0-100), level (PRIME/HIGH/MODERATE/LOW),
-        sleep_score, recovery_time_hrs, hrv_status, hrv_last_night_avg,
-        hrv_weekly_avg, hrv_baseline_low/high, acute_load, feedback.
     """
     try:
         if for_date is None:
@@ -205,31 +200,21 @@ def get_training_readiness(for_date: str = None) -> str:
 
         parsed = parse_training_readiness(readiness_data, hrv_data=hrv_data)
 
-        return json.dumps(parsed, indent=2)
+        return parsed
 
     except Exception as e:
-        logger.exception("get_training_readiness failed")
-        return json.dumps({"error": str(e)})
+        logger.exception("query_metrics(kind='readiness') failed")
+        return {"error": str(e)}
 
 
-@mcp.tool()
-def get_fitness_status(days: int = 90) -> str:
-    """
-    Detailed fitness analysis: CTL, ATL, TSB, ACWR — overall and per-sport.
+def _fitness_status(days: int = 90) -> dict:
+    """Detailed fitness analysis: CTL, ATL, TSB, ACWR — overall and per-sport.
 
     CTL (fitness, 42d average), ATL (fatigue, 7d average), TSB (form = CTL - ATL),
     ACWR (injury risk). Positive TSB = fresh, negative = fatigued.
 
-    Includes per-sport breakdown (cycling, running, strength) to catch sport-specific
-    spikes. An athlete with zero running CTL attempting a run has dangerous running
-    ACWR even if overall ACWR is safe.
-
-    Args:
-        days: Number of days for trend analysis (default 90)
-
-    Returns:
-        JSON with overall + per-sport metrics, trend direction, data quality,
-        and contextual insights.
+    Includes per-sport breakdown (cycling, running, strength) to catch
+    sport-specific spikes.
     """
     try:
         # Load fitness history
@@ -237,11 +222,11 @@ def get_fitness_status(days: int = 90) -> str:
         daily_loads = history.get('daily_loads', {})
 
         if not daily_loads:
-            return json.dumps({
+            return {
                 'status': 'no_data',
                 'message': 'No fitness history. Run refresh_fitness_history() to backfill from Garmin.',
                 'action': 'Call refresh_fitness_history() first',
-            })
+            }
 
         # Calculate current overall metrics (extract flat total loads for v2)
         total_loads = _extract_total_loads(daily_loads)
@@ -316,7 +301,7 @@ def get_fitness_status(days: int = 90) -> str:
             insights.append(f"Fitness declining ({trend['ctl_change']} over {trend['period_days']} days)")
             recommendations.append("Consider if this is intentional (taper) or concerning")
 
-        return json.dumps({
+        return {
             'metrics': {
                 'overall': {
                     'ctl': metrics['ctl'],
@@ -350,14 +335,15 @@ def get_fitness_status(days: int = 90) -> str:
             },
             'insights': insights,
             'recommendations': recommendations,
-        }, indent=2)
+        }
 
     except Exception as e:
-        logger.exception("get_fitness_status failed")
-        return json.dumps({'error': str(e)})
+        logger.exception("query_metrics(kind='fitness') failed")
+        return {'error': str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
 def refresh_fitness_history(days: int = 180) -> str:
     """
     Refresh fitness history by fetching activities from Garmin.
@@ -407,7 +393,7 @@ def refresh_fitness_history(days: int = 180) -> str:
                 'acwr': metrics['acwr'],
                 'acwr_status': metrics['acwr_status'],
             },
-            'note': 'Fitness history updated. Use get_fitness_status() for detailed analysis.',
+            'note': "Fitness history updated. Use query_metrics(kind='fitness') for detailed analysis.",
         }, indent=2)
 
     except Exception as e:
@@ -415,26 +401,13 @@ def refresh_fitness_history(days: int = 180) -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
-def get_intensity_distribution(days: int = 28) -> str:
-    """
-    Analyze training intensity distribution over a period.
+def _intensity_distribution(days: int = 28) -> dict:
+    """Analyze training intensity distribution over a period.
 
     Checks compliance with the Norwegian 80/20 polarized model:
     - 80% low intensity (Zone 1-2: easy/aerobic)
     - 15% moderate intensity (Zone 3: tempo)
     - 5% high intensity (Zone 4-5: threshold/VO2max)
-
-    Args:
-        days: Number of days to analyze (default 28 for monthly view)
-
-    Returns:
-        JSON with zone distribution, polarization score, and recommendations.
-
-    Use this to:
-    - Check if training is properly polarized
-    - Identify if too much time in "gray zone" (moderate)
-    - Plan intensity for upcoming sessions
     """
     try:
         today = date.today()
@@ -444,11 +417,11 @@ def get_intensity_distribution(days: int = 28) -> str:
         raw_activities = garmin_api_call(lambda c: c.get_activities_by_date(start, today.isoformat()))
 
         if not raw_activities:
-            return json.dumps({
+            return {
                 'status': 'no_activities',
                 'message': f'No activities found in last {days} days',
                 'period': f'{start} to {today.isoformat()}',
-            })
+            }
 
         # Parse activities and enrich with per-activity HR zone data
         activities = parse_activities(raw_activities)
@@ -477,14 +450,71 @@ def get_intensity_distribution(days: int = 28) -> str:
         elif low_pct > 90 and days > 14:
             distribution['note'] = "Very conservative training - safe but may limit fitness gains"
 
-        return json.dumps(distribution, indent=2)
+        return distribution
 
     except Exception as e:
-        logger.exception("get_intensity_distribution failed")
-        return json.dumps({'error': str(e)})
+        logger.exception("query_metrics(kind='intensity') failed")
+        return {'error': str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
+def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
+                                'personal_records'],
+                  days: int = 30,
+                  for_date: str | None = None) -> dict:
+    """
+    Read-only metrics drill-down — one tool for the metric queries that used
+    to be separate tools (get_fitness_status, get_intensity_distribution,
+    get_daily_metrics, get_training_readiness, get_personal_records).
+
+    The coaching snapshot already carries the CURRENT ACWR/recovery/sleep
+    signals — use this tool for drill-downs: custom windows, historical
+    dates, or the full PR list.
+
+    When to use each kind:
+    - 'fitness': CTL/ATL/TSB/ACWR, overall + per-sport (cycling, running,
+      strength), from local fitness history (no Garmin call). `days` sets
+      the trend window (the old standalone defaulted to 90). Use for
+      custom-window ACWR checks and sport-specific spike detection.
+    - 'intensity': HR-zone distribution vs the 80/20 polarized model over
+      `days` (28 = monthly view). Fetches activities from Garmin. Use for
+      zone analysis and gray-zone detection.
+    - 'daily': today's recovery basics from Garmin — RHR, body battery,
+      sleep score. `days`/`for_date` are ignored (today only).
+    - 'readiness': Garmin training readiness + HRV overlay for `for_date`
+      (YYYY-MM-DD, default today). Use for historical readiness lookups —
+      score, level, sleep_score, hrv_last_night_avg, hrv_baseline_low/high.
+    - 'personal_records': all PBs from Garmin with dates and activity IDs.
+
+    Args:
+        kind: Which metric family to query (see above).
+        days: Analysis window for kind='fitness' / 'intensity' (default 30).
+        for_date: Date for kind='readiness' (defaults to today).
+
+    Returns:
+        A dict per kind; {'error': ...} on failure.
+    """
+    try:
+        if kind == 'fitness':
+            return _fitness_status(days)
+        if kind == 'intensity':
+            return _intensity_distribution(days)
+        if kind == 'daily':
+            return _daily_metrics()
+        if kind == 'readiness':
+            return _training_readiness(for_date)
+        if kind == 'personal_records':
+            return _personal_records()
+
+        return {'error': f"Unknown kind '{kind}'. Valid kinds: fitness, "
+                         "intensity, daily, readiness, personal_records"}
+
+    except Exception as e:
+        logger.exception("query_metrics(kind=%s) failed", kind)
+        return {'error': str(e)}
+
+
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_onboarding_guide() -> str:
     """
     Get the onboarding guide for setting up a new athlete.
@@ -582,7 +612,7 @@ def get_onboarding_guide() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_athlete() -> str:
     """
     Returns the complete athlete profile.

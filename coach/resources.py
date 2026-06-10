@@ -43,14 +43,43 @@ this resource carries the full operating doctrine.
    restrictions) + get_weekly_prescription() (volume + intensity targets) ->
    build the plan (every session must respect
    snapshot.injuries[*].restricted_activities, every non-rest session needs a
-   purpose) -> update_weekly_plan() -> push_plan_to_garmin().
-4. DRILL-DOWNS when the snapshot isn't enough -> get_fitness_status(days=N),
-   get_intensity_distribution(days=N), get_activities_range(start, end),
-   get_training_readiness(for_date).
+   purpose) -> update_weekly_plan(plan=...) -> push_plan_to_garmin().
+4. DRILL-DOWNS when the snapshot isn't enough -> snapshot sections (below) or
+   query_metrics(kind='fitness'|'intensity'|'daily'|'readiness'|
+   'personal_records', days=N, for_date=...) and
+   get_activities_range(start, end).
 5. MUTATIONS -> log_coaching_decision, record_athlete_response,
    propose_coaching_action -> approve_proposal / reject_proposal,
    update_athlete, set_ftp, set_threshold_pace, update_phase,
-   update_weekly_plan, update_injury_status.
+   update_weekly_plan, update_injury_status, races(action='add'|'update'),
+   remove_race (destructive, standalone).
+
+## Snapshot Sections (drill-down on request)
+
+get_coaching_snapshot() defaults to a compact CORE payload: time context,
+flags, week_grid, ACWR status (+ rolling shadow) and load hierarchy,
+injuries, plan_adherence, today/tomorrow plan, coaching memory (recent
+decisions, pending approvals, decisions due review), open planned-vs-actual
+anomalies, the compact sleep_gate signal, and data_quality. Request named
+sections for detail — e.g. sections=['sleep'] BEFORE any sleep-quality
+coaching (full per-night breakdown), sections=['recovery'] for HRV/readiness
+detail, sections=['plan'] for full plan days + per-session comparison,
+sections=['fitness','activities'] for zone/volume analysis — or
+sections=['full'] for everything. force_refresh=True bypasses the ~5-minute
+Garmin fetch cache. Note: the snapshot is intentionally NOT marked read-only
+— every call persists activity ingest + sleep/readiness data (clients gating
+auto-approval on readOnlyHint will prompt once per session).
+
+## Saving Plans (typed parameter + purpose gate)
+
+update_weekly_plan takes a structured `plan` dict (preferred); `plan_json`
+is a deprecated JSON-string alias — provide exactly one. The plan validates
+through pydantic (errors name the offending day/field). The response
+includes `purpose_warnings` listing non-rest sessions missing a purpose
+(warn-only today; Phase 3 makes it a gate) — fix these before pushing. For
+athlete-discretion days, keep the plan truthful: set intensity 'discretion'
+plus a `constraints` list (e.g. constraints: ['Z2 only', 'no running'])
+instead of inventing a session the athlete didn't commit to.
 
 ## Load Hierarchy (injury prevention — check in order)
 

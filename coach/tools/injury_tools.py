@@ -307,7 +307,8 @@ def _save_diagnosis_to_profile(body_region: str, location: str,
         return False
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': True})
 def diagnose_injury(location: str, answers: str = None) -> str:
     """
     Clinical assessment tool for sports injuries. Uses a two-phase approach.
@@ -489,7 +490,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def research_injury(injury_type: str, severity: str = "moderate", url: str = None) -> str:
     """
     Research treatment protocols and recovery timelines for a specific injury.
@@ -598,7 +599,8 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def update_injury_status(
     injury_date: str,
     new_status: str = None,

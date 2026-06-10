@@ -150,8 +150,8 @@ def create_training_config() -> dict:
         },
     }
 
-    print("\nYou can add races later using the add_race() tool or by editing")
-    print("data/training_config.json directly.")
+    print("\nYou can add races later using the races(action='add') tool or by")
+    print("editing data/training_config.json directly.")
 
     return config
 

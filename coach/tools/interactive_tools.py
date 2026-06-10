@@ -21,7 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def generate_smart_brief() -> str:
     """
     Gather structured data for a time-aware coaching brief.
@@ -115,7 +115,7 @@ def generate_smart_brief() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def interactive_check_in() -> str:
     """
     Return the check-in question set + context for the coach to ask conversationally.

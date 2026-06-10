@@ -1,4 +1,11 @@
-"""Data tools - Garmin data fetching (personal records, activities, daily metrics)."""
+"""Data tools - Garmin data fetching.
+
+Registers the standalone get_activities_range tool (explicit range semantics,
+pagination candidate). The old get_personal_records / get_daily_metrics tools
+were consolidated into query_metrics (fitness_tools.py) — their bodies live on
+as the private `_personal_records` / `_daily_metrics` functions here so the
+Garmin call sites stay in this module.
+"""
 
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call
@@ -12,26 +19,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
-def get_personal_records() -> str:
-    """
-    Fetches personal records (PBs) from Garmin.
+def _personal_records() -> dict:
+    """Fetch personal records (PBs) from Garmin.
 
-    Returns JSON array of records with: record_type, value, value_formatted,
-    unit, date, and activity_id.
+    Returns a dict with 'personal_records': list of records with record_type,
+    value, value_formatted, unit, date, and activity_id.
     """
     try:
         pr_data = garmin_api_call(lambda c: c.get_personal_record())
         parsed = parse_personal_records(pr_data)
 
-        return json.dumps(parsed, indent=2)
+        return {'personal_records': parsed, 'count': len(parsed)}
 
     except Exception as e:
-        logger.exception("get_personal_records failed")
-        return json.dumps({"error": str(e)})
+        logger.exception("query_metrics(kind='personal_records') failed")
+        return {"error": str(e)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def get_activities_range(start_date: str, end_date: str = None) -> str:
     """
     Fetches activities between two dates from Garmin.
@@ -69,12 +74,10 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
-def get_daily_metrics() -> str:
-    """
-    Fetches today's critical recovery metrics from Garmin.
+def _daily_metrics() -> dict:
+    """Fetch today's critical recovery metrics from Garmin.
 
-    Returns JSON with:
+    Returns a dict with:
         - date: Today's date
         - rhr: Resting heart rate in bpm
         - body_battery: Current body battery (0-100)
@@ -95,13 +98,13 @@ def get_daily_metrics() -> str:
         if sleep_score is None:
             sleep_score = 'N/A'
 
-        return json.dumps({
+        return {
             "date": today,
             "rhr": rhr,
             "body_battery": current_bb,
             "sleep_score": sleep_score
-        }, indent=2)
+        }
 
     except Exception as e:
-        logger.exception("get_daily_metrics failed")
-        return json.dumps({"error": str(e)})
+        logger.exception("query_metrics(kind='daily') failed")
+        return {"error": str(e)}

@@ -153,21 +153,21 @@ class TestUpdateWeeklyPlanValidation:
     def test_rejects_non_dict_plan(self, tmp_path, monkeypatch):
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
         from coach.tools.planning_tools import update_weekly_plan
-        result = json.loads(update_weekly_plan(json.dumps([1, 2, 3])))
+        result = update_weekly_plan(plan_json=json.dumps([1, 2, 3]))
         assert 'error' in result
         assert 'object' in result['error'].lower() or 'dict' in result['error'].lower()
 
     def test_rejects_plan_without_days(self, tmp_path, monkeypatch):
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
         from coach.tools.planning_tools import update_weekly_plan
-        result = json.loads(update_weekly_plan(json.dumps({'week_start': '2026-02-08'})))
+        result = update_weekly_plan(plan_json=json.dumps({'week_start': '2026-02-08'}))
         assert 'error' in result
         assert 'days' in result['error']
 
     def test_rejects_plan_with_non_dict_days(self, tmp_path, monkeypatch):
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
         from coach.tools.planning_tools import update_weekly_plan
-        result = json.loads(update_weekly_plan(json.dumps({'days': 'not a dict'})))
+        result = update_weekly_plan(plan_json=json.dumps({'days': 'not a dict'}))
         assert 'error' in result
         assert 'days' in result['error']
 
@@ -175,7 +175,7 @@ class TestUpdateWeeklyPlanValidation:
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
         from coach.tools.planning_tools import update_weekly_plan
         valid_plan = {'days': {'2026-02-08': {'planned': {'type': 'running'}}}}
-        result = json.loads(update_weekly_plan(json.dumps(valid_plan)))
+        result = update_weekly_plan(plan_json=json.dumps(valid_plan))
         assert result['status'] == 'success'
 
 

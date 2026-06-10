@@ -90,7 +90,8 @@ def _save_strength_baseline(baseline: dict) -> None:
 # MCP Tools
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': True})
 def sync_strength_session(activity_id: str = None) -> str:
     """
     Sync completed strength session from Garmin and update exercise baselines.
@@ -311,7 +312,7 @@ def sync_strength_session(activity_id: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def get_strength_baseline(exercise: str = None) -> str:
     """
     View current strength baselines for exercises.
@@ -391,7 +392,8 @@ def get_strength_baseline(exercise: str = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def approve_progression(exercise: str) -> str:
     """
     Approve a suggested weight progression for an exercise.
@@ -455,7 +457,8 @@ def approve_progression(exercise: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def set_exercise_preference(exercise_group: str, preferred_variation: str) -> str:
     """
     Set the preferred variation for an exercise group.
@@ -524,7 +527,7 @@ def set_exercise_preference(exercise_group: str, preferred_variation: str) -> st
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def generate_strength_workout(
     focus: str = "full_body",
     duration_mins: int = 45,
@@ -763,7 +766,8 @@ def generate_strength_workout(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def add_exercise(
     name: str,
     category: str,

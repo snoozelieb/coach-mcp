@@ -1,4 +1,14 @@
-"""Race tools - manage races/events and research race details."""
+"""Race tools - manage races/events and research race details.
+
+Phase 2 consolidation: the old list_races / add_race / update_race /
+research_race tools are now actions on the single `races` tool. Their
+implementations live on as the private `_list_races` / `_add_race` /
+`_update_race` / `_research_race` functions below (bodies moved, not
+rewritten). `remove_race` stays a standalone tool — destructive operations
+keep their own registration so destructiveHint applies per-tool.
+"""
+
+from typing import Literal
 
 from ..mcp_app import mcp
 from ..web_utils import fetch_page_text
@@ -16,23 +26,11 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
-def research_race(name: str = None, url: str = None) -> str:
-    """
-    Research a race/event to gather training-relevant context.
+def _research_race(name: str = None, url: str = None) -> dict:
+    """Research a race/event to gather training-relevant context.
 
     Fetches information like course profile, elevation, difficulty,
     typical conditions, and training recommendations.
-
-    Args:
-        name: Name of a configured race (will use its URL if available)
-        url: Direct URL to research (overrides name lookup)
-
-    Returns JSON with:
-        - course_info: Distance, elevation, terrain
-        - difficulty: Technical/physical demands
-        - conditions: Typical weather, altitude
-        - recommendations: Training focus areas
     """
     try:
         # Load config for race lookup and thresholds
@@ -51,15 +49,15 @@ def research_race(name: str = None, url: str = None) -> str:
                 if name_lower in event.get('name', '').lower():
                     url = event.get('url')
                     if not url:
-                        return json.dumps({
-                            'error': f"Race '{event['name']}' has no URL. Provide one or add it with update_race()."
-                        })
+                        return {
+                            'error': f"Race '{event['name']}' has no URL. Provide one or add it with races(action='update')."
+                        }
                     break
             else:
-                return json.dumps({'error': f"No race found matching '{name}'"})
+                return {'error': f"No race found matching '{name}'"}
 
         if not url:
-            return json.dumps({'error': 'Provide either a race name or URL'})
+            return {'error': 'Provide either a race name or URL'}
 
         # Fetch the page and extract text
         page_text = fetch_page_text(url)
@@ -116,24 +114,18 @@ def research_race(name: str = None, url: str = None) -> str:
         # Add general note
         research['note'] = 'Review raw_content_preview for additional context. Use this info to adjust training focus.'
 
-        return json.dumps(research, indent=2)
+        return research
 
     except requests.RequestException as e:
-        logger.exception("research_race failed")
-        return json.dumps({'error': f'Failed to fetch URL: {str(e)}'})
+        logger.exception("races(action='research') failed")
+        return {'error': f'Failed to fetch URL: {str(e)}'}
     except Exception as e:
-        logger.exception("research_race failed")
-        return json.dumps({'error': str(e)})
+        logger.exception("races(action='research') failed")
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def list_races() -> str:
-    """
-    Lists all configured races/events with priority and days until.
-
-    Returns JSON array of events sorted by date with:
-    - name, date, priority (A/B/C), type, distance, days_until
-    """
+def _list_races() -> dict:
+    """List all configured races/events with priority and days until."""
     try:
         config = load_training_config()
         events = config.get('events', [])
@@ -152,15 +144,14 @@ def list_races() -> str:
         # Sort by date
         result.sort(key=lambda e: e.get('date', ''))
 
-        return json.dumps(result, indent=2)
+        return {'races': result, 'count': len(result)}
 
     except Exception as e:
-        logger.exception("list_races failed")
-        return json.dumps({'error': str(e)})
+        logger.exception("races(action='list') failed")
+        return {'error': str(e)}
 
 
-@mcp.tool()
-def add_race(
+def _add_race(
     name: str,
     race_date: str,
     priority: str,
@@ -170,39 +161,24 @@ def add_race(
     target_time: str = None,
     url: str = None,
     notes: str = None
-) -> str:
-    """
-    Add a new race/event to the training calendar.
-
-    Args:
-        name: Event name (e.g., "Cape Town Cycle Tour")
-        race_date: Start date in YYYY-MM-DD format
-        priority: A (goal race), B (important), or C (training race)
-        race_type: Type of event (e.g., "road_cycling", "mtb", "running", "tournament")
-        distance_km: Distance in kilometers (if applicable)
-        duration_days: Number of days (default 1, use >1 for stage races/tournaments)
-        target_time: Target finish time (optional)
-        url: Event website URL (optional)
-        notes: Additional notes (optional)
-
-    Returns confirmation with updated event list.
-    """
+) -> dict:
+    """Add a new race/event to the training calendar."""
     try:
         config = load_training_config()
         events = config.get('events', [])
 
         # Validate priority
         if priority.upper() not in VALID_PRIORITIES:
-            return json.dumps({'error': 'Priority must be A, B, or C'})
+            return {'error': 'Priority must be A, B, or C'}
 
         # Check for duplicate priority (only 1 race per priority allowed)
         existing_with_priority = [e for e in events if e.get('priority') == priority.upper()]
         if existing_with_priority:
             existing_name = existing_with_priority[0].get('name', 'Unknown')
-            return json.dumps({
+            return {
                 'error': f"Priority {priority.upper()} already assigned to '{existing_name}'. "
                          f"Only one race per priority allowed. Update or remove the existing race first."
-            })
+            }
 
         # Build new event
         new_event = {
@@ -255,17 +231,183 @@ def add_race(
                     "Known types include: multi_day_mtb, road_cycling, mtb, trail_ultra, "
                     "marathon, half_marathon, 10k, 5k, triathlon, swimming, tournament."
                 )
-        return json.dumps(response, indent=2)
+        return response
 
     except Exception as e:
-        logger.exception("add_race failed")
-        return json.dumps({'error': str(e)})
+        logger.exception("races(action='add') failed")
+        return {'error': str(e)}
 
 
-@mcp.tool()
+def _update_race(
+    name: str,
+    new_date: str = None,
+    new_priority: str = None,
+    new_name: str = None,
+    target_time: str = None,
+    distance_km: float = None,
+    notes: str = None,
+    url: str = None
+) -> dict:
+    """Update any field of an existing race/event."""
+    try:
+        config = load_training_config()
+        events = config.get('events', [])
+
+        # Find matching event
+        name_lower = name.lower()
+        for event in events:
+            if name_lower in event.get('name', '').lower():
+                changes = []
+
+                if new_date:
+                    event['date'] = new_date
+                    changes.append(f"date -> {new_date}")
+                    # Update end_date if multi-day
+                    if event.get('duration_days', 1) > 1:
+                        start = date.fromisoformat(new_date)
+                        end = start + timedelta(days=event['duration_days'] - 1)
+                        event['end_date'] = end.isoformat()
+
+                if new_priority:
+                    if new_priority.upper() not in VALID_PRIORITIES:
+                        return {'error': 'Priority must be A, B, or C'}
+                    # Check for duplicate priority (only 1 race per priority allowed)
+                    # Exclude current event from check
+                    other_events = [e for e in events if e.get('name') != event.get('name')]
+                    existing_with_priority = [e for e in other_events if e.get('priority') == new_priority.upper()]
+                    if existing_with_priority:
+                        existing_name = existing_with_priority[0].get('name', 'Unknown')
+                        return {
+                            'error': f"Priority {new_priority.upper()} already assigned to '{existing_name}'. "
+                                     f"Only one race per priority allowed."
+                        }
+                    event['priority'] = new_priority.upper()
+                    changes.append(f"priority -> {new_priority.upper()}")
+
+                if new_name:
+                    event['name'] = new_name
+                    changes.append(f"name -> {new_name}")
+
+                if target_time:
+                    event['target_time'] = target_time
+                    changes.append(f"target_time -> {target_time}")
+
+                if distance_km:
+                    event['distance_km'] = distance_km
+                    changes.append(f"distance -> {distance_km}km")
+
+                if notes:
+                    event['notes'] = notes
+                    changes.append("notes updated")
+
+                if url:
+                    event['url'] = url
+                    changes.append("url updated")
+
+                if not changes:
+                    return {'error': 'No updates provided'}
+
+                # Re-sort by date
+                events.sort(key=lambda e: e.get('date', ''))
+
+                # Save back
+                config['events'] = events
+                save_json_file('training_config.json', config)
+
+                return {
+                    'status': 'success',
+                    'message': f"Updated {event['name']}: {', '.join(changes)}",
+                    'event': event
+                }
+
+        return {'error': f"No event found matching '{name}'"}
+
+    except Exception as e:
+        logger.exception("races(action='update') failed")
+        return {'error': str(e)}
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': False, 'openWorldHint': True})
+def races(
+    action: Literal['list', 'add', 'update', 'research'],
+    name: str = None,
+    race_date: str = None,
+    priority: str = None,
+    race_type: str = None,
+    distance_km: float = None,
+    duration_days: int = 1,
+    target_time: str = None,
+    url: str = None,
+    notes: str = None,
+    new_date: str = None,
+    new_priority: str = None,
+    new_name: str = None,
+) -> dict:
+    """
+    Manage races/events on the training calendar (replaces the old
+    list_races / add_race / update_race / research_race tools).
+
+    When to use each action:
+    - 'list': see all configured races with priority (A/B/C), type, and
+      days_until. Use before planning a block or answering "what's next?".
+    - 'add': register a new race. Requires name, race_date (YYYY-MM-DD),
+      and priority (A = goal race, B = important, C = training race; only
+      one race per priority). Optional: race_type, distance_km,
+      duration_days (>1 for stage races), target_time, url, notes.
+      NOTE: 'add' appends an event — calling it twice adds duplicates.
+    - 'update': change fields on an existing race. Requires name
+      (case-insensitive partial match). Optional: new_date, new_priority,
+      new_name, target_time, distance_km, notes, url.
+    - 'research': fetch the race's web page (open web) and extract
+      training-relevant context — distance, elevation, terrain, altitude.
+      Provide name (uses the configured race's URL) or a direct url.
+
+    Deleting a race stays on the standalone remove_race tool (destructive).
+
+    Returns a dict per action:
+    - list: {'races': [...], 'count': N} sorted by date with days_until
+    - add/update: {'status', 'message', 'event'} (+ 'sport'/'warning' on add)
+    - research: {'url', 'detected_info', 'training_relevance', ...}
+    """
+    try:
+        if action == 'list':
+            return _list_races()
+
+        if action == 'add':
+            missing = [arg for arg, val in (('name', name),
+                                            ('race_date', race_date),
+                                            ('priority', priority)) if not val]
+            if missing:
+                return {'error': f"action='add' requires: {', '.join(missing)}"}
+            return _add_race(name, race_date, priority, race_type, distance_km,
+                             duration_days, target_time, url, notes)
+
+        if action == 'update':
+            if not name:
+                return {'error': "action='update' requires: name"}
+            return _update_race(name, new_date, new_priority, new_name,
+                                target_time, distance_km, notes, url)
+
+        if action == 'research':
+            return _research_race(name, url)
+
+        return {'error': f"Unknown action '{action}'. "
+                         "Valid actions: list, add, update, research"}
+
+    except Exception as e:
+        logger.exception("races(action=%s) failed", action)
+        return {'error': str(e)}
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True,
+                       'idempotentHint': True, 'openWorldHint': False})
 def remove_race(name: str) -> str:
     """
     Remove a race/event from the training calendar.
+
+    Destructive — the event is deleted from training_config.json. Kept as a
+    standalone tool (not a `races` action) so clients see destructiveHint.
 
     Args:
         name: Name of the event to remove (case-insensitive partial match)
@@ -304,108 +446,4 @@ def remove_race(name: str) -> str:
 
     except Exception as e:
         logger.exception("remove_race failed")
-        return json.dumps({'error': str(e)})
-
-
-@mcp.tool()
-def update_race(
-    name: str,
-    new_date: str = None,
-    new_priority: str = None,
-    new_name: str = None,
-    target_time: str = None,
-    distance_km: float = None,
-    notes: str = None,
-    url: str = None
-) -> str:
-    """
-    Update any field of an existing race/event.
-
-    Args:
-        name: Name of the event to update (case-insensitive partial match)
-        new_date: New date in YYYY-MM-DD format (optional)
-        new_priority: New priority A/B/C (optional)
-        new_name: Rename the event (optional)
-        target_time: Target finish time (optional)
-        distance_km: Distance in km (optional)
-        notes: Updated notes (optional)
-        url: Event URL (optional)
-
-    Returns confirmation with updated event.
-    """
-    try:
-        config = load_training_config()
-        events = config.get('events', [])
-
-        # Find matching event
-        name_lower = name.lower()
-        for event in events:
-            if name_lower in event.get('name', '').lower():
-                changes = []
-
-                if new_date:
-                    event['date'] = new_date
-                    changes.append(f"date -> {new_date}")
-                    # Update end_date if multi-day
-                    if event.get('duration_days', 1) > 1:
-                        start = date.fromisoformat(new_date)
-                        end = start + timedelta(days=event['duration_days'] - 1)
-                        event['end_date'] = end.isoformat()
-
-                if new_priority:
-                    if new_priority.upper() not in VALID_PRIORITIES:
-                        return json.dumps({'error': 'Priority must be A, B, or C'})
-                    # Check for duplicate priority (only 1 race per priority allowed)
-                    # Exclude current event from check
-                    other_events = [e for e in events if e.get('name') != event.get('name')]
-                    existing_with_priority = [e for e in other_events if e.get('priority') == new_priority.upper()]
-                    if existing_with_priority:
-                        existing_name = existing_with_priority[0].get('name', 'Unknown')
-                        return json.dumps({
-                            'error': f"Priority {new_priority.upper()} already assigned to '{existing_name}'. "
-                                     f"Only one race per priority allowed."
-                        })
-                    event['priority'] = new_priority.upper()
-                    changes.append(f"priority -> {new_priority.upper()}")
-
-                if new_name:
-                    event['name'] = new_name
-                    changes.append(f"name -> {new_name}")
-
-                if target_time:
-                    event['target_time'] = target_time
-                    changes.append(f"target_time -> {target_time}")
-
-                if distance_km:
-                    event['distance_km'] = distance_km
-                    changes.append(f"distance -> {distance_km}km")
-
-                if notes:
-                    event['notes'] = notes
-                    changes.append("notes updated")
-
-                if url:
-                    event['url'] = url
-                    changes.append("url updated")
-
-                if not changes:
-                    return json.dumps({'error': 'No updates provided'})
-
-                # Re-sort by date
-                events.sort(key=lambda e: e.get('date', ''))
-
-                # Save back
-                config['events'] = events
-                save_json_file('training_config.json', config)
-
-                return json.dumps({
-                    'status': 'success',
-                    'message': f"Updated {event['name']}: {', '.join(changes)}",
-                    'event': event
-                }, indent=2)
-
-        return json.dumps({'error': f"No event found matching '{name}'"})
-
-    except Exception as e:
-        logger.exception("update_race failed")
         return json.dumps({'error': str(e)})

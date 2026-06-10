@@ -27,7 +27,7 @@ from coach.tools.athlete_tools import (
     update_methodology,
 )
 from coach.tools.strength_tools import get_strength_baseline, approve_progression
-from coach.tools.fitness_tools import get_fitness_status, get_athlete
+from coach.tools.fitness_tools import query_metrics, get_athlete
 from coach.tools.planning_tools import get_weekly_plan, push_plan_to_garmin
 from coach.tools.decision_tools import (
     log_coaching_decision,
@@ -119,17 +119,17 @@ class TestFileBasedToolsEmptyState:
         assert result['total_exercises_tracked'] == 0
         assert result['pending_progressions'] == []
 
-    def test_get_fitness_status_no_history(self, empty_install):
-        """get_fitness_status should report no_data with actionable message."""
-        result = json.loads(get_fitness_status())
+    def test_fitness_metrics_no_history(self, empty_install):
+        """query_metrics(kind='fitness') should report no_data with actionable message."""
+        result = query_metrics(kind='fitness')
 
         assert result['status'] == 'no_data'
         assert 'refresh_fitness_history' in result.get('message', '').lower() or \
                'refresh_fitness_history' in result.get('action', '').lower()
 
     def test_get_weekly_plan_no_plan(self, empty_install):
-        """get_weekly_plan should return a valid JSON structure."""
-        result = json.loads(get_weekly_plan())
+        """get_weekly_plan should return a structured dict (Phase 2)."""
+        result = get_weekly_plan()
 
         # Should be a valid dict (either empty template or {})
         assert isinstance(result, dict)
@@ -274,7 +274,7 @@ class TestSemanticCorrectnessEmptyState:
             raise Exception("No Garmin credentials")
         monkeypatch.setattr('coach.tools.planning_tools.garmin_api_call', _fail)
 
-        result = json.loads(push_plan_to_garmin())
+        result = push_plan_to_garmin()  # structured dict (Phase 2)
 
         assert 'error' in result
         # Should mention missing plan (not a Garmin error)

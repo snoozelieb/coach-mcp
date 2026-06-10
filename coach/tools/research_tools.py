@@ -12,7 +12,8 @@ import re
 logger = logging.getLogger(__name__)
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
 def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
     """
     Research proper form, cues, and common mistakes for an exercise.
@@ -209,7 +210,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
 def list_exercises(
     category: str = None,
     muscle: str = None,
@@ -316,7 +317,7 @@ def list_exercises(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def research_sport(sport_name: str, url: str = None) -> str:
     """
     Research training principles and methodology for a specific sport.

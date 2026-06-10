@@ -43,7 +43,7 @@ from coach.fitness import (
     update_fitness_history,
 )
 from coach.tools.coaching_tools import get_coaching_snapshot
-from coach.tools.fitness_tools import get_fitness_status
+from coach.tools.fitness_tools import query_metrics
 
 from scripts.acwr_shadow_report import (
     build_shadow_report,
@@ -348,7 +348,7 @@ class TestFitnessTrendDayMath:
 
 
 # ---------------------------------------------------------------------------
-# Shadow exposure — get_fitness_status tool + coaching snapshot
+# Shadow exposure — query_metrics(kind='fitness') tool + coaching snapshot
 # ---------------------------------------------------------------------------
 
 class TestShadowExposure:
@@ -367,11 +367,11 @@ class TestShadowExposure:
             'last_activity_ingest_date': TODAY.isoformat(),
         })
 
-    def test_get_fitness_status_exposes_shadow(self, tmp_path, monkeypatch):
+    def test_fitness_metrics_exposes_shadow(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
         self._seed_history(tmp_path)
 
-        result = json.loads(get_fitness_status())
+        result = query_metrics(kind='fitness')
 
         assert 'error' not in result
         overall = result['metrics']['overall']
