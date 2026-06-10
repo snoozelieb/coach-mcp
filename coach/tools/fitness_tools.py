@@ -328,6 +328,12 @@ def get_fitness_status(days: int = 90) -> str:
                     'acwr': metrics['acwr'],
                     'acwr_status': metrics['acwr_status'],
                     'acwr_label': 'Acute:Chronic Workload Ratio',
+                    'acwr_shadow': {
+                        'value': metrics.get('acwr_rolling'),
+                        'zone': metrics.get('acwr_rolling_status', {}).get('zone', 'unknown'),
+                        'safe': metrics.get('acwr_rolling_status', {}).get('safe'),
+                        'note': 'shadow model — comparison period running until cutover',
+                    },
                 },
                 'by_sport': by_sport,
             },

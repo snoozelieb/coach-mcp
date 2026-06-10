@@ -63,9 +63,8 @@ from ..config import (
     DEFAULT_EQUIVALENCE_GROUPS,
     RACE_TIME_WEIGHTS,
     RACE_TIME_WEIGHT_DEFAULT,
-    RACE_TYPE_SPORT_MAP,
-    get_sport_group,
 )
+from ..taxonomy import types_match, race_sport_for
 from datetime import date, datetime, timedelta
 import json
 import logging
@@ -161,7 +160,9 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
 
             match_idx = None
             for i, act in enumerate(unmatched_activities):
-                if act.get('type', '').lower() == planned_type.lower():
+                # Taxonomy-aware: plan 'strength' matches Garmin
+                # 'strength_training', 'long_ride' matches 'mountain_biking'.
+                if types_match(planned_type, act.get('type', '')):
                     match_idx = i
                     break
             if match_idx is None and unmatched_activities:
@@ -181,7 +182,7 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
                     'duration_actual': actual_duration,
                 }
 
-                if planned_type and actual_type and planned_type.lower() != actual_type.lower():
+                if planned_type and actual_type and not types_match(planned_type, actual_type):
                     detail['status'] = 'type_mismatch'
                     comparison['anomalies'].append({
                         'date': day_str,
@@ -794,21 +795,7 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
     """
     today = date.today()
 
-    # Map race types to sports (defined at function level for reuse)
-    sport_mapping = {
-        'multi_day_mtb': 'cycling',
-        'road_cycling': 'cycling',
-        'trail_ultra': 'running',
-        'marathon': 'running',
-        'half_marathon': 'running',
-        '10k': 'running',
-        '5k': 'running',
-        'triathlon': 'triathlon',
-        'swimming': 'swimming',
-        'tournament': 'multi_sport',
-    }
-
-    # Categorize events by sport type
+    # Categorize events by sport type (race-type -> sport via taxonomy)
     sports_analysis = {}
     for event in events:
         try:
@@ -821,7 +808,7 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
 
         sport_type = event.get('type', 'unknown')
         priority = event.get('priority', 'D')
-        sport = sport_mapping.get(sport_type, 'other')
+        sport = race_sport_for(sport_type) or 'other'
 
         # Calculate priority weight (closer + higher priority = more weight)
         priority_weights = {'A': 4, 'B': 3, 'C': 2, 'D': 1}
@@ -871,7 +858,7 @@ def _analyze_sport_priorities(events: list, current_block: dict, race_templates:
     # Get sport-specific key sessions from race templates
     sport_specific_sessions = {}
     for sport_type, template in race_templates.items():
-        sport = sport_mapping.get(sport_type, sport_type)
+        sport = race_sport_for(sport_type) or sport_type
         if sport not in sport_specific_sessions:
             sport_specific_sessions[sport] = []
         key_sessions = template.get('key_sessions', [])
@@ -1009,7 +996,7 @@ def _compute_coaching_score(
         target_ctl = CTL_TARGETS.get(race_type, CTL_TARGETS['default'])['ideal']
         progress_data['target_ctl'] = target_ctl
 
-        race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
+        race_sport = race_sport_for(race_type)
         if race_sport and daily_loads:
             sport_m = calculate_sport_fitness_metrics(daily_loads, race_sport)
             if sport_m.get('days_with_data', 0) > 0:
@@ -1377,12 +1364,22 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             overall_ctl = overall_metrics.get('ctl', 0)
             acwr_zone = overall_metrics.get('acwr_status', 'unknown')
 
+            # Shadow model: classic 7d:28d rolling ACWR computed alongside
+            # the EWMA value. Decisions still use acwr_status until cutover.
+            rolling_status = overall_metrics.get('acwr_rolling_status') or {}
+
             fitness_metrics = {
                 'overall': {k: v for k, v in overall_metrics.items()},
                 'acwr_status': {
                     'value': round(overall_acwr, 2),
                     'zone': acwr_zone,
                     'safe': acwr_zone in ('optimal', 'low'),
+                },
+                'acwr_shadow': {
+                    'value': rolling_status.get('value'),
+                    'zone': rolling_status.get('zone', 'unknown'),
+                    'safe': rolling_status.get('safe'),
+                    'note': 'shadow model — comparison period running until cutover',
                 },
                 'by_sport': sport_fitness,
                 'load_hierarchy': {
@@ -1617,7 +1614,7 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         a_race = next((e for e in events if e.get('priority') == 'A'), None)
         if a_race and overall_metrics and overall_metrics.get('ctl'):
             race_type = a_race.get('type', 'default')
-            race_sport = RACE_TYPE_SPORT_MAP.get(race_type)
+            race_sport = race_sport_for(race_type)
 
             # Sport-specific CTL for race readiness
             sport_ctl = None

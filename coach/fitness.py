@@ -84,6 +84,66 @@ def calculate_ewma(values: list[float], time_constant: int) -> float:
     return round(ewma, 1)
 
 
+# Classic rolling-average ACWR windows (Hulin/Gabbett 7d:28d methodology).
+# These are the windows the 0.8/1.3/1.5 thresholds were derived against.
+ACWR_ROLLING_ACUTE_DAYS = 7
+ACWR_ROLLING_CHRONIC_DAYS = 28
+
+
+def classify_acwr_zone(acwr: float) -> tuple[str, str]:
+    """Classify an ACWR value into a zone using the research thresholds.
+
+    Thresholds (config): < 0.8 low, 0.8-1.3 optimal, 1.3-1.5 elevated,
+    > 1.5 danger. NOTE: these thresholds come from classic 7d:28d
+    rolling-average research; applying them to the EWMA values is the
+    known mismatch the shadow model exists to quantify.
+
+    Returns:
+        (zone, risk_description) tuple.
+    """
+    if acwr < ACWR_LOW_THRESHOLD:
+        return "low", "Undertrained - fitness may be declining"
+    elif acwr <= ACWR_HIGH_THRESHOLD:
+        return "optimal", "Sweet spot - good balance of load and recovery"
+    elif acwr <= ACWR_DANGER_THRESHOLD:
+        return "elevated", "Elevated injury risk - consider reducing load"
+    else:
+        return "danger", "High injury risk - reduce load significantly"
+
+
+def calculate_rolling_acwr(loads_list: list[float]) -> float:
+    """Classic rolling-average ACWR (SHADOW model — not yet a decision input).
+
+    acute   = mean daily load over the last 7 days
+    chronic = mean daily load over the last 28 days (coupled windows: the
+              chronic window includes the acute week, per the original
+              Hulin/Gabbett 7d:28d methodology)
+
+    This is the model the 0.8/1.3/1.5 thresholds were actually derived
+    against. It runs IN SHADOW alongside the EWMA model until the 90-day
+    comparison report (scripts/acwr_shadow_report.py) has been reviewed;
+    cutover recalibrates every consumer constant in the same commit.
+
+    Args:
+        loads_list: Daily loads, oldest first. Rest days must be present
+            as 0.0. Histories shorter than 28 days use what is available.
+
+    Returns:
+        Rolling ACWR rounded to 2 decimals. With zero chronic load:
+        1.0 when acute is also zero (no data), else 2.0 — mirroring the
+        EWMA guard so the two models degrade identically.
+    """
+    if not loads_list:
+        return 1.0
+    acute_window = loads_list[-ACWR_ROLLING_ACUTE_DAYS:]
+    chronic_window = loads_list[-ACWR_ROLLING_CHRONIC_DAYS:]
+    acute = sum(acute_window) / len(acute_window)
+    chronic = sum(chronic_window) / len(chronic_window)
+    if chronic > 0:
+        return round(acute / chronic, 2)
+    return 1.0 if acute == 0 else 2.0
+
+
 def calculate_fitness_metrics(
     daily_loads: dict[str, float],
     as_of_date: date = None
@@ -91,12 +151,29 @@ def calculate_fitness_metrics(
     """
     Calculate CTL, ATL, TSB, and ACWR from daily training loads.
 
+    Two ACWR models are returned side by side:
+
+    - ``acwr`` / ``acwr_status`` (EWMA model — CURRENT decision model):
+      ATL/CTL where both are EWMAs with k = 2/(N+1) (N=7 acute, N=42
+      chronic). Audit note: k = 2/(N+1) decays roughly twice as fast as
+      the TrainingPeaks k = 1/N convention this module cites, and the
+      0.8/1.3/1.5 thresholds applied to it come from rolling-average
+      research. DO NOT silently change these numbers — cutover requires
+      recomputing historical snapshots and recalibrating every consumer
+      constant (CTL_TARGETS, volume steps, thresholds) in one commit.
+
+    - ``acwr_rolling`` / ``acwr_rolling_status`` (classic rolling model —
+      SHADOW): 7-day mean / 28-day mean daily load (coupled windows), the
+      model the thresholds were derived against. Shadow-only until the
+      90-day comparison report (scripts/acwr_shadow_report.py) is reviewed.
+
     Args:
         daily_loads: Dict mapping date strings to training load values
         as_of_date: Calculate metrics as of this date (default: today)
 
     Returns:
-        Dict with ctl, atl, tsb, acwr, and metadata
+        Dict with ctl, atl, tsb, acwr (EWMA), acwr_rolling (shadow),
+        acwr_rolling_status, and metadata
     """
     if as_of_date is None:
         as_of_date = date.today()
@@ -123,25 +200,19 @@ def calculate_fitness_metrics(
     # Calculate TSB (form) = CTL - ATL
     tsb = round(ctl - atl, 1)
 
-    # Calculate ACWR (Acute:Chronic Workload Ratio)
+    # Calculate ACWR (Acute:Chronic Workload Ratio) — EWMA model (current)
     if ctl > 0:
         acwr = round(atl / ctl, 2)
     else:
         acwr = 1.0 if atl == 0 else 2.0  # No chronic fitness = high ratio
 
     # Determine ACWR status
-    if acwr < ACWR_LOW_THRESHOLD:
-        acwr_status = "low"
-        acwr_risk = "Undertrained - fitness may be declining"
-    elif acwr <= ACWR_HIGH_THRESHOLD:
-        acwr_status = "optimal"
-        acwr_risk = "Sweet spot - good balance of load and recovery"
-    elif acwr <= ACWR_DANGER_THRESHOLD:
-        acwr_status = "elevated"
-        acwr_risk = "Elevated injury risk - consider reducing load"
-    else:
-        acwr_status = "danger"
-        acwr_risk = "High injury risk - reduce load significantly"
+    acwr_status, acwr_risk = classify_acwr_zone(acwr)
+
+    # SHADOW MODEL: classic 7d:28d rolling-average ACWR, computed alongside
+    # the EWMA value for the comparison period (see calculate_rolling_acwr).
+    acwr_rolling = calculate_rolling_acwr(loads_list)
+    rolling_zone, _rolling_risk = classify_acwr_zone(acwr_rolling)
 
     # Count days with data
     days_with_data = sum(1 for d in daily_loads.values() if d > 0)
@@ -153,6 +224,12 @@ def calculate_fitness_metrics(
         'acwr': acwr,
         'acwr_status': acwr_status,
         'acwr_risk': acwr_risk,
+        'acwr_rolling': acwr_rolling,
+        'acwr_rolling_status': {
+            'value': acwr_rolling,
+            'zone': rolling_zone,
+            'safe': rolling_zone in ('optimal', 'low'),
+        },
         'days_analyzed': len(loads_list),
         'days_with_data': days_with_data,
         'data_sufficient': days_with_data >= MIN_DAYS_FOR_CTL,
@@ -483,13 +560,14 @@ def load_fitness_history() -> dict[str, Any]:
 
 
 def save_fitness_history(history: dict[str, Any]) -> None:
-    """Save fitness history to file (atomic write)."""
-    history_path = DATA_DIR / FITNESS_HISTORY_FILE
+    """Save fitness history to file (atomic write).
+
+    Delegates to coach.storage: atomic write, utf-8, cross-process locked.
+    DATA_DIR is read at call time so tests can monkeypatch it on this module.
+    """
+    from . import storage  # function-local: avoids module-level import cycle
     history['last_updated'] = date.today().isoformat()
-    tmp_path = history_path.with_suffix('.tmp')
-    with open(tmp_path, 'w') as f:
-        json.dump(history, f, indent=2)
-    tmp_path.replace(history_path)
+    storage.write_json(FITNESS_HISTORY_FILE, history, data_dir=DATA_DIR)
 
 
 def update_fitness_history(
@@ -571,9 +649,17 @@ def update_fitness_history(
     }
     snapshot.update(sport_metrics)
 
-    # Keep last 90 days of snapshots
-    snapshots = history.get('snapshots', [])
+    # Upsert by date — re-running on the same day must REPLACE that day's
+    # snapshot, not append a duplicate. Same-date duplicates corrupt trend
+    # math (get_fitness_trend treats entries as data points over time).
+    snapshots = [
+        s for s in history.get('snapshots', [])
+        if s.get('date') != snapshot['date']
+    ]
     snapshots.append(snapshot)
+    snapshots.sort(key=lambda s: s.get('date', ''))
+
+    # Keep last 90 days of snapshots
     cutoff = (date.today() - timedelta(days=90)).isoformat()
     snapshots = [s for s in snapshots if s['date'] >= cutoff]
     history['snapshots'] = snapshots
@@ -1143,6 +1229,14 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
     history = load_fitness_history()
     snapshots = history.get('snapshots', [])
 
+    # Legacy histories may contain same-date duplicates (pre-upsert bug).
+    # Keep the LAST write per date so trend math sees one point per day.
+    by_date: dict[str, dict] = {}
+    for s in snapshots:
+        if s.get('date'):
+            by_date[s['date']] = s
+    snapshots = [by_date[d] for d in sorted(by_date)]
+
     if len(snapshots) < 2:
         return {
             'trend': 'unknown',
@@ -1183,9 +1277,17 @@ def get_fitness_trend(days: int = 28) -> dict[str, Any]:
         trend = 'maintaining'
         trend_note = 'Fitness is stable'
 
-    # Project future CTL if trend continues
-    days_in_period = len(recent_snapshots)
-    daily_change = ctl_change / days_in_period if days_in_period > 0 else 0
+    # Project future CTL if trend continues. Divide by the ACTUAL day span
+    # between first and last snapshot — snapshot COUNT is not days (gaps
+    # between snapshots made the old per-"day" rate wildly overstated).
+    try:
+        span_days = (
+            date.fromisoformat(recent_snapshots[-1]['date'])
+            - date.fromisoformat(recent_snapshots[0]['date'])
+        ).days
+    except (KeyError, TypeError, ValueError):
+        span_days = 0
+    daily_change = ctl_change / span_days if span_days > 0 else 0
     projected_30_day = round(last_ctl + (daily_change * 30), 1)
 
     return {
