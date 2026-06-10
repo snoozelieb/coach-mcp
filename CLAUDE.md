@@ -210,6 +210,9 @@ Coaching decisions persist across sessions via `coaching_log.json`:
    → get_weekly_prescription() — volume + intensity targets
    → Build plan — every session must respect snapshot.injuries[*].restricted_activities
    → update_weekly_plan() → push_plan_to_garmin()
+   → Both tools CODE-ENFORCE the injury gate: sessions matching an active/improving
+     injury's restricted_activities are rejected (override_injury_gate=True bypasses
+     with logged rationale — use only with athlete consent)
 
 4. DRILL-DOWNS (when snapshot data isn't enough)
    → get_fitness_status(days=N) — custom-window CTL/ACWR
@@ -245,23 +248,29 @@ COACH_TRANSPORT=http python server.py         # Run with HTTP transport
 COACH_CODE_MODE=1 python server.py            # Run with Code Mode (search/execute)
 python -m pytest -v                           # Run all tests
 python -m pytest tests/test_rules.py -v       # Run specific module tests
-python scripts/daily_loop.py                  # Morning audit (standalone)
-python scripts/daily_loop.py --llm            # Morning audit with LLM
-python scripts/garmin_browser_login.py        # Manual Garmin token refresh via browser
+python scripts/daily_loop.py                  # Morning audit (standalone; scheduled daily 06:30 via Task Scheduler "CoachMCP Morning Audit")
+python scripts/daily_loop.py --llm            # Morning audit with LLM (model via COACH_LLM_MODEL, default claude-sonnet-4-6)
+python scripts/garmin_login.py                # Manual Garmin token recovery (garminconnect native auth + MFA)
 ```
+
+> `scripts/garmin_browser_login.py` (the old garth/Playwright flow) is BROKEN — garminconnect 0.3.x
+> dropped garth. It is kept only until the Phase 1 auth rebuild (see docs/UPGRADE_ROADMAP.md).
 
 ## MCP Framework
 
-Uses **standalone FastMCP v3.1.1** (`from fastmcp import FastMCP`), not the bundled v1 in the `mcp` SDK.
+Uses **standalone FastMCP v3.2.x** (`from fastmcp import FastMCP`), not the bundled v1 in the `mcp` SDK.
+
+> **2KB limit:** Claude Code truncates MCP server instructions at 2KB. `SERVER_INSTRUCTIONS` is kept
+> under 1,900 chars (test-enforced); the long-form doctrine lives in the `coach://coaching/doctrine` resource.
 
 | Feature | Status | Details |
 |---------|--------|---------|
 | **Tools** | 54 tools | `@mcp.tool()` — sync and async |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
-| **Resources** | 5 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now |
+| **Resources** | 6 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now, coach://coaching/doctrine |
 | **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
 | **Sampling** | (removed) | `ctx.sample()` unsupported by Claude Code — `generate_smart_brief` now returns structured data for the coach to render |
-| **Elicitation** | (removed) | `ctx.elicit()` unsupported by Claude Code — `interactive_check_in` returns a question set for the coach to ask conversationally |
+| **Elicitation** | (removed) | Claude Code NOW supports elicitation (it didn't when this was removed) — re-adding `ctx.elicit()` flows is planned for Phase 2 of docs/UPGRADE_ROADMAP.md; `interactive_check_in` currently returns a question set |
 | **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces tools with search/schema/execute meta-tools |
 | **Transport** | stdio (default) | `COACH_TRANSPORT=http|sse|streamable-http` for remote deployment |
 
@@ -354,20 +363,24 @@ Optional environment variables:
 
 ### Garmin Authentication
 
-Garmin's SSO uses Cloudflare protection that blocks Python library-based logins (429 errors).
-The server handles this automatically with a Playwright browser fallback:
+garminconnect 0.3.x rewrote auth around a vendored DI-token client with native Cloudflare
+bypass (curl_cffi TLS impersonation) and **dropped garth entirely**.
 
-1. **Normal flow**: Loads saved OAuth tokens from `.garth/` → works silently
-2. **Token expired**: Tries garth SSO login → if 429, opens a Chromium window for browser-based login
-3. **MFA**: If Garmin prompts for MFA, enter the code in the browser window (120s timeout)
-4. **Manual refresh**: Run `python scripts/garmin_browser_login.py` to refresh tokens without starting the server
-
-Requires: `pip install playwright && playwright install chromium`
+1. **Normal flow**: Loads saved tokens from `.garth/garmin_tokens.json` → works silently
+2. **Token expired**: Run `python scripts/garmin_login.py` — native login + MFA prompt, persists
+   the tokenstore the server reads
+3. **Broken legacy path**: the garth/Playwright fallback (`coach/playwright_auth.py`,
+   `scripts/garmin_browser_login.py`, the 429 branch in `garmin_client.py`) crashes with
+   `ModuleNotFoundError: garth` and is slated for deletion in the Phase 1 auth rebuild
+   (docs/UPGRADE_ROADMAP.md)
 
 ## Testing
 
-557 tests across 16 test files. Tests use real API responses captured in `test_fixtures.json` (gitignored).
-Async tools tested with `pytest-asyncio` (auto mode) and `mock_ctx` fixture from `conftest.py`.
+718 tests across 21 test files (CI: GitHub Actions on push/PR + weekly cron to catch date-rot tests).
+Some tests use real API responses captured in `test_fixtures.json` (gitignored; those tests skip when
+it's absent, so clean checkouts stay green). Async tools tested with `pytest-asyncio` (auto mode) and
+`mock_ctx` fixture from `conftest.py`. Use relative dates (`date.today() + timedelta(...)`) in tests —
+hardcoded dates rot.
 
 Pattern for new tools:
 1. Create parsing function (pure, no I/O) in `coach/parsers.py`
