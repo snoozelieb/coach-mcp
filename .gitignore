@@ -2,6 +2,9 @@
 .env
 .garth/
 
+# Local data backups (personal health data)
+data-backups/
+
 # Personal data files (created by setup wizard)
 data/athlete.json
 data/athlete_baseline.json
@@ -12,6 +15,7 @@ data/coaching_log.json
 data/fitness_history.json
 data/exercise_library.json
 data/exercises.json
+data/plan_history.json
 
 # Investigation output (large JSON files)
 data/investigation/
