@@ -4,22 +4,41 @@ Pure parsing functions for Garmin API responses.
 These functions have zero MCP dependency and transform raw Garmin data
 into structured formats used by the coaching tools.
 """
+import shutil
+import sys
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Any, Union
 
-from .config import DATA_DIR
+from .config import DATA_DIR, DEFAULTS_DIR, METHODOLOGY_FILE
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+def bootstrap_data_dir() -> None:
+    """Create the resolved data dir and seed packaged defaults (idempotent).
+
+    Only methodology.json ships as a packaged default (coach/defaults/) —
+    personal files come from the setup wizard / first tool calls. Existing
+    files are NEVER overwritten.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    target = DATA_DIR / METHODOLOGY_FILE
+    default = DEFAULTS_DIR / METHODOLOGY_FILE
+    if not target.exists() and default.exists():
+        shutil.copyfile(default, target)
+        logger.info("Seeded default %s into %s", METHODOLOGY_FILE, DATA_DIR)
+
+
 def check_setup() -> bool:
     """
-    Check if required data files exist.
+    Check if required data files exist (bootstrapping defaults first).
 
     Returns True if setup is complete, False if setup wizard needs to run.
     """
+    bootstrap_data_dir()
+
     required_files = [
         ("athlete.json", "Athlete profile"),
         ("training_config.json", "Training configuration"),
@@ -31,15 +50,17 @@ def check_setup() -> bool:
             missing.append(f"  - {filename} ({description})")
 
     if missing:
-        print("\n" + "=" * 50)
-        print("  Setup Required")
-        print("=" * 50)
-        print("\nMissing data files:")
-        print("\n".join(missing))
-        print("\nRun the setup wizard to create them:")
-        print("  python scripts/setup_wizard.py")
-        print("\nOr create them manually in the data/ folder.")
-        print("=" * 50 + "\n")
+        print("\n" + "=" * 50, file=sys.stderr)
+        print("  Setup Required", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        print(f"\nData directory: {DATA_DIR}", file=sys.stderr)
+        print("\nMissing data files:", file=sys.stderr)
+        print("\n".join(missing), file=sys.stderr)
+        print("\nRun the setup wizard to create them:", file=sys.stderr)
+        print("  python scripts/setup_wizard.py", file=sys.stderr)
+        print("\nOr create them manually in the data directory above.",
+              file=sys.stderr)
+        print("=" * 50 + "\n", file=sys.stderr)
         return False
 
     return True

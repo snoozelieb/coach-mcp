@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.snoozelieb/coach-mcp",
+  "description": "Adaptive AI training coach MCP server backed by Garmin Connect",
+  "repository": {
+    "url": "https://github.com/snoozelieb/coach-mcp",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "coach-mcp",
+      "version": "1.0.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "GARMIN_EMAIL",
+          "description": "Garmin Connect account email",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "GARMIN_PASSWORD",
+          "description": "Garmin Connect account password",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "COACH_DATA_DIR",
+          "description": "Directory for athlete data files (defaults to the git-checkout data/ dir when run from a checkout, otherwise a per-user data directory)",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

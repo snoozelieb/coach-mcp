@@ -5,10 +5,15 @@ Creates personal data files with user-provided info.
 Run this before starting the server for the first time.
 """
 import json
+import sys
 from pathlib import Path
 from datetime import date
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+# Repo-root import shim so `python scripts/setup_wizard.py` works directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Resolved data dir: COACH_DATA_DIR > git checkout data/ > per-user dir.
+from coach.config import DATA_DIR  # noqa: E402
 
 
 def get_input(prompt: str, default: str = None) -> str:
@@ -151,7 +156,7 @@ def create_training_config() -> dict:
     }
 
     print("\nYou can add races later using the races(action='add') tool or by")
-    print("editing data/training_config.json directly.")
+    print(f"editing {DATA_DIR / 'training_config.json'} directly.")
 
     return config
 
@@ -194,7 +199,7 @@ def run_setup():
     print("  AI Training Coach - First Run Setup")
     print("=" * 50)
 
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # Check what's already there
     athlete_exists = (DATA_DIR / "athlete.json").exists()

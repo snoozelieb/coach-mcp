@@ -301,7 +301,9 @@ snapshot; math matches `snapshot.compliance`.
 ## Commands
 
 ```bash
-python server.py                              # Run the MCP server (stdio)
+python server.py                              # Run the MCP server (stdio, from a checkout)
+coach-mcp                                     # Same server via the console entry point (pip/uvx install)
+COACH_DATA_DIR=/path/to/data coach-mcp        # Point the server at an explicit data directory
 COACH_TRANSPORT=http python server.py         # Run with HTTP transport
 COACH_CODE_MODE=1 python server.py            # Run with Code Mode (search/execute)
 python -m pytest -v                           # Run all tests
@@ -411,12 +413,28 @@ This data is saved under the `garmin_profile` key in `athlete_baseline.json` (se
 
 ## Environment
 
-Requires `.env` with `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and `ANTHROPIC_API_KEY`.
+Requires `GARMIN_EMAIL` and `GARMIN_PASSWORD` (via `.env` in a checkout, or the MCP
+client's `env` block for installed copies). `ANTHROPIC_API_KEY` is optional — only
+`scripts/daily_loop.py --llm` uses it.
 
 Optional environment variables:
+- `COACH_DATA_DIR` — explicit data directory override (see resolution order below)
 - `COACH_TRANSPORT` — MCP transport: `stdio` (default), `http`, `streamable-http`, `sse`
 - `COACH_CODE_MODE` — Set to `1` to enable Code Mode transform
 - `FASTMCP_HOST` / `FASTMCP_PORT` — HTTP bind address (default: 127.0.0.1:5000)
+
+### Data directory resolution
+
+The data directory resolves in this order (packaging-era behavior — installed copies
+must never write into site-packages):
+
+1. `COACH_DATA_DIR` env var, if set — always wins
+2. `data/` next to a source checkout (the run-from-checkout default; keeps existing
+   setups and the test sandbox working unchanged)
+3. A per-user data directory, created on first run (the pip/uvx install path)
+
+`methodology.json` is the only data file shipped with the package; all personal files
+are created in the resolved data directory.
 
 > **Upgrading fastmcp:** an existing env on fastmcp <3.3 must `pip uninstall fastmcp fastmcp-slim`
 > and then fresh-install (`pip install -r requirements.txt`) — the 3.3 distribution split

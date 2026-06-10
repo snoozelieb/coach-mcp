@@ -1,0 +1,1078 @@
+{
+  "default_pillar_templates": {
+    "_note": "Legacy format - used as fallback if athlete has no training_pillars",
+    "strength_sessions_per_week": 2,
+    "mobility_minutes_per_week": 90,
+    "long_effort_per_week": 1,
+    "long_effort_min_duration_mins": 60
+  },
+  "personas": {
+    "_description": "Starting templates for different athlete types. LLM uses these as suggestions, then personalizes via conversation.",
+    "endurance_athlete": {
+      "description": "Runner, cyclist, triathlete, swimmer - focused on aerobic events and distance",
+      "suggested_pillars": [
+        {
+          "name": "endurance",
+          "target_hours_per_week": 4,
+          "target_type": "hours",
+          "types": [
+            "running",
+            "cycling",
+            "swimming",
+            "trail_running"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training",
+            "functional_strength"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 60,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "pilates",
+            "stretching"
+          ]
+        }
+      ],
+      "typical_weekly_hours": "6-10",
+      "key_focus": "Aerobic base, injury prevention, event-specific preparation"
+    },
+    "strength_athlete": {
+      "description": "Powerlifter, bodybuilder, CrossFitter - focused on strength and muscle",
+      "suggested_pillars": [
+        {
+          "name": "strength",
+          "target_sessions_per_week": 4,
+          "target_type": "sessions",
+          "types": [
+            "strength_training",
+            "powerlifting",
+            "bodybuilding"
+          ]
+        },
+        {
+          "name": "conditioning",
+          "target_mins_per_week": 60,
+          "target_type": "minutes",
+          "types": [
+            "rowing",
+            "cycling",
+            "walking"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 45,
+          "target_type": "minutes",
+          "types": [
+            "stretching",
+            "foam_rolling"
+          ]
+        }
+      ],
+      "typical_weekly_hours": "5-8",
+      "key_focus": "Progressive overload, recovery, nutrition timing"
+    },
+    "recreational": {
+      "description": "General fitness, health maintenance, stress relief - no specific events",
+      "suggested_pillars": [
+        {
+          "name": "cardio",
+          "target_mins_per_week": 150,
+          "target_type": "minutes",
+          "types": [
+            "any_cardio"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        },
+        {
+          "name": "flexibility",
+          "target_mins_per_week": 30,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "stretching"
+          ]
+        }
+      ],
+      "typical_weekly_hours": "3-5",
+      "key_focus": "Consistency, enjoyment, sustainable habits"
+    },
+    "return_from_injury": {
+      "description": "Recovering from injury - conservative progression, focus on rehab",
+      "suggested_pillars": [
+        {
+          "name": "rehab",
+          "target_sessions_per_week": 3,
+          "target_type": "sessions",
+          "types": [
+            "physio_exercises",
+            "mobility"
+          ]
+        },
+        {
+          "name": "low_impact_cardio",
+          "target_mins_per_week": 90,
+          "target_type": "minutes",
+          "types": [
+            "swimming",
+            "cycling",
+            "walking"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 1,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        }
+      ],
+      "typical_weekly_hours": "3-4",
+      "key_focus": "Safe progression, pain-free movement, building back capacity"
+    },
+    "multi_sport": {
+      "description": "Multiple sports/activities - balancing competing demands",
+      "suggested_pillars": [
+        {
+          "name": "primary_sport",
+          "target_hours_per_week": 3,
+          "target_type": "hours",
+          "types": [
+            "ask_athlete"
+          ]
+        },
+        {
+          "name": "secondary_sport",
+          "target_hours_per_week": 2,
+          "target_type": "hours",
+          "types": [
+            "ask_athlete"
+          ]
+        },
+        {
+          "name": "strength",
+          "target_sessions_per_week": 2,
+          "target_type": "sessions",
+          "types": [
+            "strength_training"
+          ]
+        },
+        {
+          "name": "mobility",
+          "target_mins_per_week": 45,
+          "target_type": "minutes",
+          "types": [
+            "yoga",
+            "stretching"
+          ]
+        }
+      ],
+      "typical_weekly_hours": "6-10",
+      "key_focus": "Balance, avoiding overtraining, sport-specific strength"
+    }
+  },
+  "safety_constraints": {
+    "max_consecutive_hard_days": 2,
+    "mandatory_rest_after_race_days": 1,
+    "max_weekly_volume_increase_percent": 10
+  },
+  "race_templates": {
+    "trail_ultra": {
+      "description": "Ultra-distance trail running (50km+). Demands time on feet, climbing strength, and mental resilience.",
+      "key_sessions": [
+        {
+          "type": "long_trail_run",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build to 3-4 hours by peak. Mimic race terrain - technical trails, elevation"
+        },
+        {
+          "type": "back_to_back_long",
+          "frequency": "monthly",
+          "priority": "high",
+          "notes": "Long Saturday + medium-long Sunday. Teaches running on tired legs"
+        },
+        {
+          "type": "vertical_work",
+          "frequency": "weekly",
+          "priority": "high",
+          "notes": "Hill repeats, stair climbing, or sustained climbs. Build climbing economy"
+        },
+        {
+          "type": "strength",
+          "frequency": "2x/week",
+          "priority": "critical",
+          "notes": "Single-leg work, eccentric loading for downhills, core stability"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Focus on aerobic volume. Easy long runs building duration. Strength foundation.",
+        "build": "Add vertical gain. Increase long run terrain difficulty. Back-to-back weekends.",
+        "peak": "Race-simulation efforts. Nutrition/hydration practice. Course-specific prep.",
+        "taper": "Reduce volume 40-60%. Keep short sharp efforts. Rest legs for race day."
+      }
+    },
+    "multi_day_mtb": {
+      "description": "Multi-day mountain bike stage race. Requires endurance, bike handling, and recovery between stages.",
+      "key_sessions": [
+        {
+          "type": "long_mtb_ride",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build to 3-4 hours. Include climbs and technical sections"
+        },
+        {
+          "type": "back_to_back_rides",
+          "frequency": "monthly",
+          "priority": "high",
+          "notes": "Consecutive day riding to simulate stage race fatigue"
+        },
+        {
+          "type": "tempo_climbs",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Sustained climbing at race pace. Build climbing endurance"
+        },
+        {
+          "type": "indoor_technique",
+          "frequency": "1-2x/week in base",
+          "priority": "medium",
+          "notes": "Wattbike technique drills (if available). Pedaling efficiency gains compound over multi-day racing."
+        },
+        {
+          "type": "strength",
+          "frequency": "2x/week",
+          "priority": "high",
+          "notes": "Core, lower back, shoulders for bike position. Single-leg power"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build saddle time. Easy long rides. Strength and mobility focus. Add technique work if indoor bike with analytics available.",
+        "build": "Add intensity on climbs. Increase ride duration. Technical skills. Continue technique 1x/week.",
+        "peak": "Race-pace efforts. Equipment dialed. Practice nutrition strategy.",
+        "taper": "Short sharp rides. Keep legs fresh. Mental preparation."
+      }
+    },
+    "road_cycling": {
+      "description": "Road cycling events. Sustained aerobic effort with group dynamics.",
+      "key_sessions": [
+        {
+          "type": "long_ride",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Build endurance base. Include varied terrain"
+        },
+        {
+          "type": "tempo_intervals",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Sustained efforts at race pace"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build aerobic base with volume. Easy spinning.",
+        "build": "Add tempo and threshold work. Group rides.",
+        "peak": "Race-specific intensity. Sharpen.",
+        "taper": "Reduce volume, maintain intensity."
+      }
+    },
+    "tournament": {
+      "description": "Multi-game tournament (Ultimate, Padel). High intensity with short recovery between games.",
+      "key_sessions": [
+        {
+          "type": "interval_training",
+          "frequency": "2x/week",
+          "priority": "high",
+          "notes": "Short sharp efforts mimicking game demands"
+        },
+        {
+          "type": "agility_work",
+          "frequency": "weekly",
+          "priority": "medium",
+          "notes": "Change of direction, acceleration, deceleration"
+        }
+      ],
+      "phase_guidance": {
+        "base": "Build aerobic base to support repeated efforts.",
+        "build": "Add game-specific intervals. Practice skills.",
+        "peak": "Sharpen speed. Team tactics.",
+        "taper": "Fresh legs. Light technical work only."
+      }
+    }
+  },
+  "activity_classification": {
+    "strength_types": [
+      "strength_training",
+      "indoor_cardio",
+      "functional_strength"
+    ],
+    "mobility_types": [
+      "yoga",
+      "pilates",
+      "stretching",
+      "breathwork"
+    ],
+    "cardio_types": [
+      "running",
+      "cycling",
+      "swimming",
+      "trail_running",
+      "open_water_swimming"
+    ],
+    "high_intensity_types": [
+      "ultimate_disc",
+      "hiit",
+      "interval_training",
+      "track_running"
+    ]
+  },
+  "recovery_protocols": {
+    "pre_sleep_stretching": {
+      "description": "10-15 min targeted stretching before bed after long efforts. Focus: parasympathetic activation for better sleep quality.",
+      "principles": [
+        "Slow, gentle holds (30-60 secs) - no bouncing",
+        "Deep diaphragmatic breathing throughout",
+        "Avoid stimulating stretches (deep backbends, inversions)",
+        "Dim lights, quiet environment"
+      ],
+      "by_activity": {
+        "cycling": {
+          "duration_mins": 12,
+          "target_areas": [
+            "hip_flexors",
+            "quads",
+            "lower_back",
+            "thoracic_spine",
+            "neck"
+          ],
+          "suggested_sequence": [
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side - hip external rotators"
+            },
+            {
+              "name": "Kneeling hip flexor stretch",
+              "duration_secs": 60,
+              "notes": "Each side - counteract cycling position"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side - thoracic mobility"
+            },
+            {
+              "name": "Cat-cow",
+              "duration_secs": 90,
+              "notes": "Slow, breath-led - lower back release"
+            },
+            {
+              "name": "Child's pose with reach",
+              "duration_secs": 90,
+              "notes": "Extended arms - lat and shoulder release"
+            },
+            {
+              "name": "Neck rolls",
+              "duration_secs": 60,
+              "notes": "Gentle - release from aero position"
+            }
+          ],
+          "rationale": "Cycling creates hip flexor tightness, thoracic kyphosis, and neck strain. Focus on opening front body and releasing spine."
+        },
+        "running": {
+          "duration_mins": 12,
+          "target_areas": [
+            "calves",
+            "hamstrings",
+            "hip_flexors",
+            "glutes",
+            "lower_back"
+          ],
+          "suggested_sequence": [
+            {
+              "name": "Supine hamstring stretch",
+              "duration_secs": 60,
+              "notes": "Each leg - use strap if needed"
+            },
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side - piriformis release"
+            },
+            {
+              "name": "Kneeling hip flexor stretch",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Wall calf stretch",
+              "duration_secs": 60,
+              "notes": "Each leg - gastroc and soleus"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Legs up the wall",
+              "duration_secs": 120,
+              "notes": "Passive recovery - venous return"
+            }
+          ],
+          "rationale": "Running impacts posterior chain and hip flexors. Focus on calves, hamstrings, and hip opening."
+        },
+        "high_intensity": {
+          "duration_mins": 15,
+          "target_areas": [
+            "full_body",
+            "nervous_system"
+          ],
+          "suggested_sequence": [
+            {
+              "name": "Child's pose",
+              "duration_secs": 90,
+              "notes": "With deep breathing - nervous system reset"
+            },
+            {
+              "name": "Supine figure-4",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Supine hamstring stretch",
+              "duration_secs": 60,
+              "notes": "Each leg"
+            },
+            {
+              "name": "Supine spinal twist",
+              "duration_secs": 60,
+              "notes": "Each side"
+            },
+            {
+              "name": "Happy baby",
+              "duration_secs": 60,
+              "notes": "Gentle rocking - hip release"
+            },
+            {
+              "name": "Savasana with 4-7-8 breathing",
+              "duration_secs": 180,
+              "notes": "Inhale 4, hold 7, exhale 8 - parasympathetic activation"
+            }
+          ],
+          "rationale": "High-intensity creates systemic stress. Focus on calming nervous system with longer holds and breathing."
+        }
+      },
+      "ask_athlete": [
+        "Any specific areas feeling tight tonight?",
+        "How intense was the session (RPE)?",
+        "Any areas to avoid due to injury?"
+      ]
+    }
+  },
+  "training_protocols": {
+    "cycling_technique": {
+      "description": "Indoor cycling technique work using Wattbike analytics (Polar View, PES, L/R balance). Best done during base phase when volume allows for skill development.",
+      "when_to_use": [
+        "Base building phase (time for skill work)",
+        "Athlete has indoor bike with analytics (Wattbike, Stages, etc.)",
+        "Identified pedaling inefficiencies",
+        "Preparing for long events (efficiency gains compound over hours)"
+      ],
+      "key_metrics": {
+        "pes": {
+          "name": "Pedaling Effectiveness Score",
+          "description": "Wattbike metric measuring power application through pedal stroke",
+          "target_beginner": 60,
+          "target_intermediate": 70,
+          "target_advanced": 75,
+          "notes": "Higher PES = less wasted energy, smoother power delivery"
+        },
+        "lr_balance": {
+          "name": "Left/Right Power Balance",
+          "description": "Percentage of power from each leg",
+          "target": "48-52%",
+          "notes": "Perfect balance is rare. Focus on consistency, not perfection."
+        },
+        "polar_view": {
+          "name": "Polar View Display",
+          "description": "Visual representation of power through pedal stroke",
+          "target": "Smooth peanut shape without flat spots or spikes",
+          "notes": "Real-time feedback for technique correction"
+        }
+      },
+      "drill_library": {
+        "single_leg_drills": {
+          "purpose": "Identify and correct dead spots, build neuromuscular patterns",
+          "execution": "Unclip one foot, pedal with single leg. Focus on pulling through bottom of stroke.",
+          "cadence": [
+            55,
+            65
+          ],
+          "duration": "1-2 min per leg",
+          "sets": "4-6 per leg with rest between",
+          "progression": "Start 4x1min, build to 4x2min each leg",
+          "watch_for": "Clunking at top/bottom = dead spots. Smooth = good."
+        },
+        "cadence_pyramids": {
+          "purpose": "Build high-cadence efficiency without bouncing",
+          "execution": "Progressive cadence increase then decrease. Stay seated, quiet upper body.",
+          "cadence_sequence": [
+            95,
+            100,
+            105,
+            110,
+            115,
+            120,
+            115,
+            110,
+            105,
+            100,
+            95
+          ],
+          "interval_duration_mins": 2,
+          "power": "60-65% FTP (maintain steady power throughout)",
+          "watch_for": "Bouncing in saddle, grip tightening, shoulder tension = too fast"
+        },
+        "spin_ups": {
+          "purpose": "Maximum smooth cadence development",
+          "execution": "Gradually increase cadence to max smooth RPM, hold briefly, recover",
+          "target_cadence": [
+            120,
+            140
+          ],
+          "duration_secs": 30,
+          "sets": 3,
+          "recovery_secs": 60,
+          "watch_for": "Find the point where smooth becomes choppy - that's your current limit"
+        },
+        "polar_view_focus": {
+          "purpose": "Real-time technique feedback under moderate load",
+          "execution": "Watch Polar View display, adjust technique to maintain smooth shape",
+          "power": "65-75% FTP",
+          "cadence": [
+            85,
+            95
+          ],
+          "duration_mins": "5-10",
+          "watch_for": "Spikes = power surges. Flat spots = dead spots. Asymmetry = L/R imbalance"
+        }
+      },
+      "session_templates": {
+        "technique_focus": {
+          "description": "Pure technique session - low intensity, high focus",
+          "duration_mins": 60,
+          "tss_estimate": 40,
+          "structure": [
+            {
+              "phase": "warmup",
+              "mins": 10,
+              "notes": "Easy spin, watch Polar View"
+            },
+            {
+              "phase": "single_leg_drills",
+              "mins": 16,
+              "notes": "4x1min each leg with 1min recovery"
+            },
+            {
+              "phase": "recovery",
+              "mins": 3
+            },
+            {
+              "phase": "cadence_pyramid",
+              "mins": 22,
+              "notes": "Full pyramid up and down"
+            },
+            {
+              "phase": "polar_view_focus",
+              "mins": 5,
+              "notes": "Steady power, watch display"
+            },
+            {
+              "phase": "cooldown",
+              "mins": 4
+            }
+          ]
+        },
+        "technique_plus_sweetspot": {
+          "description": "Technique work + quality aerobic training",
+          "duration_mins": 90,
+          "tss_estimate": 85,
+          "structure": [
+            {
+              "phase": "warmup",
+              "mins": 10
+            },
+            {
+              "phase": "activation",
+              "mins": 3,
+              "notes": "Openers at tempo"
+            },
+            {
+              "phase": "sweetspot_intervals",
+              "mins": 36,
+              "notes": "3x12min at 88-93% FTP"
+            },
+            {
+              "phase": "recovery",
+              "mins": 5
+            },
+            {
+              "phase": "technique_drills",
+              "mins": 20,
+              "notes": "Single leg or spin-ups"
+            },
+            {
+              "phase": "cooldown",
+              "mins": 10
+            }
+          ]
+        }
+      },
+      "block_structure": {
+        "duration_weeks": "4-6",
+        "frequency": "2x per week",
+        "progression": [
+          "Week 1-2: Focus on drills, establish baseline PES/balance",
+          "Week 3-4: Add cadence work, track improvements",
+          "Week 5-6: Integrate with intensity, measure technique under load"
+        ],
+        "success_criteria": [
+          "PES improvement of 5+ points",
+          "L/R balance within 2% of target",
+          "Smooth cadence up to 110+ RPM without bouncing"
+        ]
+      }
+    }
+  },
+  "pillars": {
+    "strength_sessions_per_week": 4,
+    "strength_program": "6 Week Lean & Mean - 4 sessions/week. W1+W3 posterior chain, W2+W4 anterior chain. Progressive overload: Wk1-2 form, Wk3-4 add reps/tempo, Wk5-6 add weight/sets. Ankle mods until March 4 doc visit: walking lunges \u2192 reverse lunges BW, Bulgarians BW only, step-ups BW only."
+  },
+  "strength_programs": {
+    "lean_and_mean_6wk": {
+      "name": "6 Week Lean & Mean",
+      "duration_weeks": 6,
+      "structure": "posterior/anterior alternating",
+      "schedule": {
+        "day_1": "workout_1",
+        "day_2": "workout_2",
+        "day_3": "rest",
+        "day_4": "workout_3",
+        "day_5": "workout_4",
+        "day_6": "rest",
+        "day_7": "rest"
+      },
+      "progressive_overload": {
+        "weeks_1_2": "Pick weight for target reps with perfect form",
+        "weeks_3_4": "Add 1-2 reps per set OR slow down tempo (3s lowering)",
+        "weeks_5_6": "Increase weight slightly OR add an extra set to main lifts"
+      },
+      "step_targets": {
+        "weeks_1_2": 6000,
+        "weeks_3_4": 8000,
+        "weeks_5_6": 10000
+      },
+      "workouts": {
+        "workout_1": {
+          "name": "Posterior Chain",
+          "focus": "posterior_chain",
+          "exercises": [
+            {
+              "name": "Barbell Hip Thrust",
+              "sets": 4,
+              "reps": "10-12"
+            },
+            {
+              "name": "Lat Pulldown",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Romanian Deadlift",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Seated Row (Cable)",
+              "sets": 3,
+              "reps": "12-15"
+            },
+            {
+              "name": "Glute Kickback (Cable)",
+              "sets": 3,
+              "reps": "15 each"
+            }
+          ],
+          "core_finisher": {
+            "format": "30s per move, 2 rounds",
+            "exercises": [
+              "Plank",
+              "Dead Bug",
+              "Side Plank L",
+              "Side Plank R"
+            ]
+          }
+        },
+        "workout_2": {
+          "name": "Anterior Chain",
+          "focus": "anterior_chain",
+          "exercises": [
+            {
+              "name": "Barbell Back Squat",
+              "sets": 4,
+              "reps": "8-10"
+            },
+            {
+              "name": "Incline Dumbbell Press",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Walking Lunges",
+              "sets": 3,
+              "reps": "12 each leg"
+            },
+            {
+              "name": "Overhead Press (Dumbbell)",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Leg Extension",
+              "sets": 3,
+              "reps": "12-15"
+            }
+          ],
+          "core_finisher": {
+            "format": "10 reps per move, 2 rounds",
+            "exercises": [
+              "Reverse Crunch",
+              "Russian Twist",
+              "Hollow Hold (20s)"
+            ]
+          }
+        },
+        "workout_3": {
+          "name": "Posterior Chain Heavy",
+          "focus": "posterior_chain_heavy",
+          "exercises": [
+            {
+              "name": "Deadlift (Trap Bar or Barbell)",
+              "sets": 4,
+              "reps": "6-8"
+            },
+            {
+              "name": "Pull-Up or Assisted Pull-Up",
+              "sets": 3,
+              "reps": "Max Reps"
+            },
+            {
+              "name": "Bulgarian Split Squat",
+              "sets": 3,
+              "reps": "10 each leg"
+            },
+            {
+              "name": "Face Pulls",
+              "sets": 3,
+              "reps": "12-15"
+            },
+            {
+              "name": "Hamstring Curl (Machine)",
+              "sets": 3,
+              "reps": "12-15"
+            }
+          ],
+          "core_finisher": {
+            "format": "30s per move, 2 rounds",
+            "exercises": [
+              "Mountain Climbers",
+              "Side Plank Hip Dips L",
+              "Side Plank Hip Dips R"
+            ]
+          }
+        },
+        "workout_4": {
+          "name": "Anterior Chain Heavy",
+          "focus": "anterior_chain_heavy",
+          "exercises": [
+            {
+              "name": "Front Squat",
+              "sets": 4,
+              "reps": "8-10"
+            },
+            {
+              "name": "Push-Up",
+              "sets": 3,
+              "reps": "Max Reps"
+            },
+            {
+              "name": "Step-Ups (Weighted)",
+              "sets": 3,
+              "reps": "12 each leg"
+            },
+            {
+              "name": "Arnold Press",
+              "sets": 3,
+              "reps": "10-12"
+            },
+            {
+              "name": "Leg Press",
+              "sets": 3,
+              "reps": "12-15"
+            }
+          ],
+          "core_finisher": {
+            "format": "10 reps per move, 2 rounds",
+            "exercises": [
+              "V-Up",
+              "Plank Shoulder Tap",
+              "Flutter Kick (20s)"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "session_guidelines": {
+    "_description": "Phase-appropriate session parameters. The LLM uses these as starting points, then adapts based on athlete context (CTL, compliance, injuries).",
+    "long_ride": {
+      "base": {
+        "duration_range": [
+          90,
+          150
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Aerobic base. Scale duration to current CTL."
+      },
+      "build": {
+        "duration_range": [
+          120,
+          180
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Sustained endurance. Include tempo blocks if CTL > 40."
+      },
+      "peak": {
+        "duration_range": [
+          150,
+          240
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Race-specific duration. Practice nutrition strategy."
+      },
+      "taper": {
+        "duration_range": [
+          60,
+          90
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Maintain feel. Reduce volume 40-60%."
+      }
+    },
+    "long_run": {
+      "base": {
+        "duration_range": [
+          60,
+          90
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Time on feet. Walk breaks OK for beginners."
+      },
+      "build": {
+        "duration_range": [
+          75,
+          120
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Progressive distance. Last 20min at goal pace if feeling good."
+      },
+      "peak": {
+        "duration_range": [
+          90,
+          150
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z2-Z3",
+        "principle": "Race-specific terrain and nutrition practice."
+      },
+      "taper": {
+        "duration_range": [
+          40,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z2",
+        "principle": "Short, easy. Maintain neuromuscular feel."
+      }
+    },
+    "intervals": {
+      "base": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z3-Z4",
+        "principle": "Tempo only in base. No VO2max work."
+      },
+      "build": {
+        "duration_range": [
+          45,
+          75
+        ],
+        "intensity": "hard",
+        "hr_zone": "Z4-Z5",
+        "principle": "VO2max stimulus. Beginner: 3x3min. Experienced: 5x5min."
+      },
+      "peak": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "hard",
+        "hr_zone": "Z4-Z5",
+        "principle": "Race-specific intensity. Reduce interval volume, maintain intensity."
+      },
+      "taper": {
+        "duration_range": [
+          30,
+          40
+        ],
+        "intensity": "moderate",
+        "hr_zone": "Z3-Z4",
+        "principle": "Short openers only. 3-4 short efforts to keep sharpness."
+      }
+    },
+    "strength": {
+      "base": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "moderate",
+        "principle": "Foundation. Compound lifts, moderate load, good form."
+      },
+      "build": {
+        "duration_range": [
+          45,
+          60
+        ],
+        "intensity": "moderate",
+        "principle": "Sport-specific. Heavier loads, fewer reps, explosive movements."
+      },
+      "peak": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "moderate",
+        "principle": "Maintenance only. Reduce volume 50%, keep intensity."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Light activation. Bodyweight or very light loads."
+      }
+    },
+    "mobility": {
+      "base": {
+        "duration_range": [
+          20,
+          45
+        ],
+        "intensity": "easy",
+        "principle": "Address limitations. Focus on hip/ankle/thoracic mobility."
+      },
+      "build": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Maintenance. Pre/post workout routines."
+      },
+      "peak": {
+        "duration_range": [
+          15,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Recovery-focused. Gentle stretching and foam rolling."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "principle": "Daily mobility. Reduce stiffness from reduced training."
+      }
+    },
+    "recovery_ride": {
+      "base": {
+        "duration_range": [
+          30,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Active recovery. Keep HR below Z2."
+      },
+      "build": {
+        "duration_range": [
+          30,
+          60
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Flush legs after hard sessions."
+      },
+      "peak": {
+        "duration_range": [
+          30,
+          45
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Very easy. Mental recovery as much as physical."
+      },
+      "taper": {
+        "duration_range": [
+          20,
+          30
+        ],
+        "intensity": "easy",
+        "hr_zone": "Z1",
+        "principle": "Optional. Only if legs feel heavy."
+      }
+    }
+  },
+  "schema_version": 1
+}

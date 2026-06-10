@@ -1,237 +1,277 @@
-# AI Training Coach
+# coach-mcp
 
-An MCP server that connects to Garmin Connect and acts as your personal training coach — with persistent memory, science-based load management, and race periodization. Built for Claude.
+<!-- mcp-name: io.github.snoozelieb/coach-mcp -->
 
-## Quick Start
+[![CI](https://github.com/snoozelieb/coach-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/snoozelieb/coach-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-### Prerequisites
+An opinionated AI training coach as an MCP server. It pulls your real data from
+Garmin Connect and **prescribes with authority** — science-based load management
+(ACWR), **code-enforced injury gates** (the server rejects plans that violate an
+active injury restriction, no matter what the LLM says), and **persistent
+coaching memory** so decisions, rationale, and your adaptation patterns survive
+between conversations. It will tell you "no" when your enthusiasm exceeds your
+capacity.
 
-- **Python 3.10+**
-- A **Garmin Connect** account (free)
-- **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
+All health data and credentials stay on your machine — see
+[Security & Privacy](#security--privacy).
 
-### 1. Clone and install
+## Quickstart
+
+You need Python 3.12+, a free Garmin Connect account, and an MCP client
+(Claude Code, Claude Desktop, or Cursor).
+
+### Option A: uvx (after PyPI release)
+
+No install step — your MCP client runs the server on demand:
+
+```bash
+uvx coach-mcp
+```
+
+Jump to [Connect your MCP client](#connect-your-mcp-client) and use `uvx` as
+the command.
+
+### Option B: from source
 
 ```bash
 git clone https://github.com/snoozelieb/coach-mcp.git
 cd coach-mcp
 
 python -m venv .venv
-
 # Linux/macOS:
 source .venv/bin/activate
 # Windows:
 .venv\Scripts\activate
 
 pip install -r requirements.txt
+cp .env.example .env   # then edit: GARMIN_EMAIL, GARMIN_PASSWORD
+python server.py
 ```
 
-### 2. Add your Garmin credentials
+## Connect your MCP client
+
+The server needs two environment variables: `GARMIN_EMAIL` and
+`GARMIN_PASSWORD`. Optional: `COACH_DATA_DIR` (where your coaching data lives)
+and `ANTHROPIC_API_KEY` (only for the standalone `daily_loop.py --llm` script).
+From a source checkout, a `.env` file works too.
+
+### Claude Code
 
 ```bash
-cp .env.example .env
+claude mcp add coach-mcp \
+  --env GARMIN_EMAIL=you@example.com \
+  --env GARMIN_PASSWORD=your_garmin_password \
+  -- uvx coach-mcp
 ```
 
-Edit `.env`:
+Or in `.mcp.json`:
 
-```env
-GARMIN_EMAIL=your@email.com
-GARMIN_PASSWORD=your_garmin_password
+```json
+{
+  "mcpServers": {
+    "coach-mcp": {
+      "command": "uvx",
+      "args": ["coach-mcp"],
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your_garmin_password",
+        "COACH_DATA_DIR": "/path/to/your/coach-data"
+      }
+    }
+  }
+}
 ```
 
-### 3. Run the setup wizard
+Running from source instead: `claude mcp add coach-mcp -- python /full/path/to/coach-mcp/server.py`
 
-```bash
-python scripts/setup_wizard.py
+### Claude Desktop
+
+In `claude_desktop_config.json` (Settings → Developer → Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "coach-mcp": {
+      "command": "uvx",
+      "args": ["coach-mcp"],
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your_garmin_password",
+        "COACH_DATA_DIR": "/path/to/your/coach-data"
+      }
+    }
+  }
+}
 ```
 
-This creates your personal data files in `data/` — athlete profile, training config, empty plan, and coaching memory. The server requires these files to start.
+### Cursor
 
-> **Minimal setup:** If you want to skip the wizard and get going fast, create the two required files manually:
-> ```bash
-> mkdir -p data
-> echo '{"personal":{"name":null},"injury_history":[],"life_constraints":{}}' > data/athlete.json
-> echo '{"events":[],"current_block":{"phase":"base"}}' > data/training_config.json
-> ```
-> Then let the coach fill in your profile via conversation.
+In `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
 
-### 4. Connect to Claude
-
-From the project directory:
-
-```bash
-claude mcp add coach-mcp -- python server.py
+```json
+{
+  "mcpServers": {
+    "coach-mcp": {
+      "command": "uvx",
+      "args": ["coach-mcp"],
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your_garmin_password",
+        "COACH_DATA_DIR": "/path/to/your/coach-data"
+      }
+    }
+  }
+}
 ```
 
-Or with an explicit path (works from anywhere):
+If you installed with `pip install coach-mcp` instead of uvx, use
+`"command": "coach-mcp"` with no args in any of the blocks above.
 
-```bash
-claude mcp add coach-mcp -- python /full/path/to/coach-mcp/server.py
-```
+## First run
 
-This registers the MCP server with Claude Code. The server runs locally via stdio — your Garmin data never leaves your machine.
+1. **Create your profile.** From a source checkout, run the interactive wizard:
 
-### 5. Start coaching
+   ```bash
+   python scripts/setup_wizard.py
+   ```
 
-Open Claude Code and say:
+   It creates your athlete profile, training config, and empty plan/memory
+   files in the data directory. Alternatively, create the two required files
+   by hand and let the coach fill in the rest via conversation:
 
-> "I'd like to set up my training. I'm preparing for [your race/goal] on [date]."
+   ```bash
+   echo '{"personal":{"name":null},"injury_history":[],"life_constraints":{}}' > data/athlete.json
+   echo '{"events":[],"current_block":{"phase":"base"}}' > data/training_config.json
+   ```
 
-The coach will pull your Garmin data, learn about your goals and constraints, and prescribe a training plan. It remembers decisions between sessions and adapts as you progress.
+2. **Pull your Garmin baseline.** In your MCP client, say:
 
-## How It Works
+   > "Run refresh_athlete_baseline and set up my training."
 
-The coach operates like a real coach:
+   The coach pulls your name, weight, age, HR data, and training capacity from
+   Garmin, then starts the onboarding conversation — goals, constraints,
+   injury history, race calendar.
 
-1. **Understands you first** — pulls Garmin history, asks about goals, constraints, injuries
-2. **Prescribes with authority** — tells you what to do and why, doesn't offer menus
-3. **Tracks compliance** — compares planned vs actual, flags anomalies
-4. **Adapts over time** — learns your response patterns, adjusts load accordingly
-5. **Remembers everything** — decisions, rationale, and patterns persist between sessions
+3. **Garmin MFA / expired session.** Garmin logins are token-cached. If tools
+   start returning `AUTH_REQUIRED`, recover with:
 
-### What the coach uses
+   ```bash
+   python scripts/garmin_login.py
+   ```
 
-| Data Source | What It Provides |
-|-------------|------------------|
-| **Garmin Connect** | Activities, HR zones, training load (EPOC), readiness, sleep, body battery, personal records |
-| **Your profile** (`athlete.json`) | Goals, constraints, injury history, preferences |
-| **Training config** (`training_config.json`) | Race calendar, current phase, periodization |
-| **Coaching memory** (`coaching_log.json`) | Past decisions, adaptation patterns, approval history |
+   It does a fresh credential login, prompts for the MFA code if Garmin asks,
+   and saves new tokens. Restart the MCP server afterwards.
 
-### Load management
+## How it works
 
-The coach uses a three-level safety hierarchy before prescribing any training:
+1. **Snapshot first** — every coaching conversation starts from
+   `get_coaching_snapshot()`: current time context, 7-day week grid (rest days
+   explicit), fitness metrics, plan adherence, open anomalies, injuries, sleep
+   gate.
+2. **Load hierarchy before prescribing** — overall ACWR (injury gate, 0.8–1.3
+   sweet spot), then sport-specific ACWR (spike detection), then
+   sport-specific CTL (race readiness).
+3. **Hard gates are code, not vibes** — `update_weekly_plan` and
+   `push_plan_to_garmin` reject sessions that violate an active injury's
+   restricted activities, and every non-rest session must carry a `purpose` or
+   the save is refused.
+4. **Curiosity with memory** — planned-vs-actual anomalies (missed session,
+   type mismatch, activity on a rest day) register once with a lifecycle
+   (open → asked → resolved); the coach asks you what happened instead of
+   silently assuming.
+5. **Everything persists** — decisions, approvals, adaptation patterns, and
+   season lifecycle (race debriefs, phase transitions) live in local JSON and
+   carry across sessions.
 
-1. **Overall ACWR** — total body injury gate (must be < 1.3)
-2. **Sport-specific ACWR** — catches spikes (e.g., no running for 4 weeks then a long run)
-3. **Sport-specific CTL** — race readiness (build toward target without violating levels 1-2)
+## MCP surface
 
-## MCP Server Capabilities
+48 tools — you don't call them directly; the coach uses them during
+conversation:
 
-### Tools
-
-| Category | Examples |
-|----------|---------|
-| **Coaching** | `get_coaching_snapshot` (canonical context), `get_compliance_report`, `get_coaching_score` |
-| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status` |
-| **Garmin Data** | `query_metrics` (kind=daily/readiness/fitness/intensity/personal_records), `get_activities_range` |
-| **Fitness** | `refresh_athlete_baseline`, `refresh_fitness_history` |
-| **Athlete** | `update_athlete`, `set_ftp`, `set_threshold_pace` |
+| Category | Tools |
+|----------|-------|
+| **Coaching core** | `get_coaching_snapshot` (canonical, sectioned), `get_compliance_report`, `get_coaching_score` |
+| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status`, `update_phase` |
+| **Garmin data** | `query_metrics` (kind=fitness/intensity/daily/readiness/personal_records), `get_activities_range` |
+| **Athlete** | `get_athlete`, `update_athlete`, `set_ftp`, `set_threshold_pace`, `analyze_ftp_test`, `refresh_athlete_baseline`, `refresh_fitness_history`, `get_onboarding_guide` |
+| **Methodology** | `get_methodology`, `update_methodology` |
 | **Races** | `races` (action=list/add/update/research), `remove_race` |
-| **Strength** | `sync_strength_session`, `generate_strength_workout` |
+| **Strength** | `sync_strength_session`, `get_strength_baseline`, `approve_progression`, `set_exercise_preference`, `generate_strength_workout`, `add_exercise` |
 | **Injuries** | `diagnose_injury`, `research_injury`, `update_injury_status` |
-| **Research** | `research_exercise`, `research_sport` |
-| **Decisions** | `log_coaching_decision`, `record_athlete_response`, `propose_coaching_action`, `approve_proposal`, `reject_proposal` |
-| **Interactive** | `generate_smart_brief` (sampling), `interactive_check_in` (elicitation) |
+| **Research** | `research_exercise`, `list_exercises`, `research_sport` |
+| **Memory** | `log_coaching_decision`, `get_active_decisions`, `update_decision_status`, `record_athlete_response`, `get_response_patterns`, `resolve_anomaly` |
+| **Approvals** | `propose_coaching_action`, `list_pending_approvals`, `approve_proposal`, `reject_proposal` |
+| **Interactive** | `generate_smart_brief`, `interactive_check_in` |
 
-You don't call these directly — the coach uses them during conversation.
+Every tool carries MCP annotations (read-only / destructive / idempotent /
+open-world), enforced by tests.
 
-### 5 Prompt Templates
+**5 prompts**: `weekly_planning`, `morning_brief`, `injury_assessment`,
+`week_review`, `onboarding`.
 
-Pre-built coaching workflows that Claude can invoke:
+**6 resources**: `coach://athlete/profile`, `coach://plan/current`,
+`coach://config/training`, `coach://coaching/decisions`, `coach://context/now`,
+`coach://coaching/doctrine` (the long-form coaching doctrine).
 
-| Prompt | Use |
-|--------|-----|
-| `weekly_planning` | Build next week's plan with full context |
-| `morning_brief` | Daily check-in: yesterday, today, readiness |
-| `injury_assessment` | Structured injury diagnosis workflow |
-| `week_review` | End-of-week review and adaptation |
-| `onboarding` | New athlete setup conversation |
+## Security & Privacy
 
-### 4 Resources
+Everything stays on your machine:
 
-Read-only data endpoints for context:
+- **Credentials**: `GARMIN_EMAIL`/`GARMIN_PASSWORD` live in your MCP client
+  config or a local `.env`. Garmin OAuth tokens are cached in a local token
+  store (`.garth/garmin_tokens.json`).
+- **Health data**: all coaching data (profile, plans, fitness history, sleep,
+  coaching memory) is local JSON in your data directory. There is no backend,
+  no telemetry, no analytics.
+- **What leaves your machine**: requests to Garmin's own API (your
+  credentials/tokens, sent only to Garmin); whatever your MCP client sends to
+  its LLM as part of the conversation; optional public web-page fetches when
+  the coach researches a race, injury, or exercise; and, only if you run
+  `daily_loop.py --llm`, one request to the Anthropic API.
+- **Single athlete per data directory** by design. For multiple athletes, run
+  separate server instances with separate `COACH_DATA_DIR`s.
 
-| Resource | URI |
-|----------|-----|
-| Athlete profile | `coach://athlete/profile` |
-| Weekly plan | `coach://plan/current` |
-| Training config | `coach://config/training` |
-| Coaching decisions | `coach://coaching/decisions` |
+See [SECURITY.md](SECURITY.md) for details and how to report issues.
 
-## Your First Conversation
+### Data directory
 
-After setup, start with one of these:
-
-**New to coaching:**
-> "I'm new here. Help me set up my training."
-
-The coach will walk you through onboarding — asking about your background, goals, and constraints before prescribing a training approach.
-
-**Have a race coming up:**
-> "I have [race name] on [date]. It's a [distance/type]. Can you build me a plan?"
-
-The coach will pull your Garmin data, assess your current fitness, and build a periodized plan working back from race day.
-
-**Ongoing coaching:**
-> "Good morning, how should I train today?"
-
-The coach checks your readiness, sleep, compliance, and adapts today's session accordingly.
-
-**Something hurts:**
-> "My [body part] has been bothering me since [when]."
-
-The coach runs a clinical assessment, researches the condition, and modifies your plan.
-
-## Data Files
-
-All personal data stays on your machine (gitignored):
-
-| File | Purpose | Created By |
-|------|---------|------------|
-| `data/athlete.json` | Profile, HR zones, constraints, injuries | Setup wizard or coach |
-| `data/athlete_baseline.json` | Garmin-derived training capacity | `refresh_athlete_baseline()` |
-| `data/training_config.json` | Race calendar, current phase | Setup wizard or coach |
-| `data/weekly_plan.json` | Rolling 7-day plan with session PURPOSE | Coach |
-| `data/coaching_log.json` | Coaching memory (decisions, patterns) | Coach |
-| `data/fitness_history.json` | Daily loads, CTL/ATL, sleep history | Auto-updated |
-| `data/exercise_library.json` | Cached exercise form cues | `research_exercise()` |
-
-Shared (committed):
-
-| File | Purpose |
-|------|---------|
-| `data/methodology.json` | Safety rules, race templates, personas |
+Resolution order: `COACH_DATA_DIR` env var → `data/` in a source checkout → a
+per-user data directory (created on first run for installed packages). The
+only file shipped with the package is `methodology.json` (safety rules, race
+templates, personas); everything personal is created locally and never
+committed.
 
 ## Advanced
 
-### Transport options
-
-By default the server uses stdio (for Claude Code). For remote deployment:
-
 ```bash
-# HTTP (streamable)
-COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 python server.py
+# HTTP / SSE transport instead of stdio
+COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 coach-mcp
 
-# SSE
-COACH_TRANSPORT=sse python server.py
-```
-
-### Code Mode
-
-For clients that support it, Code Mode replaces all 61 tools with search/execute meta-tools, reducing token overhead:
-
-```bash
+# Code Mode (search/execute meta-tools instead of 48 individual tools)
 pip install fastmcp[code-mode]
-COACH_CODE_MODE=1 python server.py
-```
+COACH_CODE_MODE=1 coach-mcp
 
-### Morning audit (standalone)
+# Standalone morning audit
+python scripts/daily_loop.py          # template-based brief
+python scripts/daily_loop.py --llm    # LLM brief (needs ANTHROPIC_API_KEY)
 
-```bash
-python scripts/daily_loop.py             # Template-based brief
-python scripts/daily_loop.py --llm       # LLM-powered brief (needs ANTHROPIC_API_KEY)
-```
-
-### Running tests
-
-```bash
+# Tests (1,260 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
-python -m pytest -v
+python -m pytest -q
 ```
 
-557 tests across 16 test files.
+## Architecture
+
+`server.py` registers tools from the `coach/` package (11 tool modules, pure
+parsers, a typed pydantic storage layer, CTL/ATL/ACWR fitness math, a Garmin
+client with token-first auth, and a workout builder that pushes structured
+workouts to your watch). The project went through a five-phase modernization —
+auth rebuild, schema layer, hard gates, sectioned snapshot, packaging — whose
+full history and rationale live in
+[docs/UPGRADE_ROADMAP.md](docs/UPGRADE_ROADMAP.md). Development conventions
+are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

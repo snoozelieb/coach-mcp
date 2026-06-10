@@ -4,7 +4,11 @@ Shared configuration and constants for coach-mcp.
 Centralizes paths, thresholds, and magic numbers to avoid duplication
 and make the codebase easier to maintain.
 """
+import os
+import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from .taxonomy import (
     RACE_TYPE_TO_SPORT,
@@ -12,9 +16,79 @@ from .taxonomy import (
     sport_group_for,
 )
 
+# ---------------------------------------------------------------------------
+# Path resolution (packaging-aware)
+#
+# Precedence for the data dir:
+#   1. COACH_DATA_DIR env var (explicit override)
+#   2. a data/ dir next to the package parent — i.e. running from a git
+#      checkout (repo layout: <repo>/coach/ + <repo>/data/)
+#   3. a per-user data dir (pip/uvx installs), no third-party deps
+#
+# DATA_DIR / TOKEN_DIR stay module-level bindings: tests monkeypatch them
+# per module (see tests/conftest.py sandbox_data_dir).
+# ---------------------------------------------------------------------------
+
+_CHECKOUT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+# Packaged default data files (shipped inside the wheel; see
+# coach/parsers.py bootstrap_data_dir which seeds a fresh data dir from here)
+DEFAULTS_DIR = Path(__file__).resolve().parent / "defaults"
+
+
+def user_data_dir(app_name: str = "coach-mcp") -> Path:
+    """Per-user application data dir without third-party dependencies.
+
+    Windows: %LOCALAPPDATA%/coach-mcp
+    macOS:   ~/Library/Application Support/coach-mcp
+    Linux:   $XDG_DATA_HOME/coach-mcp or ~/.local/share/coach-mcp
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(
+            Path.home() / "AppData" / "Local")
+        return Path(base) / app_name
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / app_name
+    base = os.environ.get("XDG_DATA_HOME") or str(
+        Path.home() / ".local" / "share")
+    return Path(base) / app_name
+
+
+def resolve_data_dir() -> Path:
+    """Resolve the data dir: COACH_DATA_DIR > git checkout > per-user dir."""
+    env = os.environ.get("COACH_DATA_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if _CHECKOUT_DATA_DIR.is_dir():
+        return _CHECKOUT_DATA_DIR
+    return user_data_dir()
+
+
+def resolve_token_dir(data_dir: Path | None = None) -> str:
+    """Resolve the Garmin token store dir (str for garth compatibility).
+
+    COACH_TOKEN_DIR wins; otherwise <repo>/.garth when the data dir resolved
+    to a git checkout, else <user-dir>/garmin-tokens.
+    """
+    env = os.environ.get("COACH_TOKEN_DIR", "").strip()
+    if env:
+        return str(Path(env).expanduser())
+    if data_dir is None:
+        data_dir = resolve_data_dir()
+    if data_dir == _CHECKOUT_DATA_DIR:
+        return str(_CHECKOUT_DATA_DIR.parent / ".garth")
+    return str(user_data_dir() / "garmin-tokens")
+
+
 # Paths
-DATA_DIR = Path(__file__).parent.parent / "data"
-TOKEN_DIR = str(Path(__file__).parent.parent / ".garth")  # String for garth compatibility
+DATA_DIR = resolve_data_dir()
+TOKEN_DIR = resolve_token_dir(DATA_DIR)  # String for garth compatibility
+
+# .env loading: current working dir / project tree first (highest precedence —
+# load_dotenv never overrides already-set values), then the resolved data dir
+# as a fallback for installed (pip/uvx) deployments.
+load_dotenv()
+load_dotenv(DATA_DIR / ".env")
 
 # Data file names
 ATHLETE_FILE = "athlete.json"
