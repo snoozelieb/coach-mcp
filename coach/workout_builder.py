@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import DATA_DIR, ATHLETE_FILE
 from .fitness import get_athlete_hr_zones
+from .taxonomy import types_in_family, workout_family_for
 from garminconnect.workout import (
     CyclingWorkout,
     RunningWorkout,
@@ -92,26 +93,30 @@ TARGET_CADENCE = {"workoutTargetTypeId": 3, "workoutTargetTypeKey": "cadence.zon
 TARGET_HR = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 4}
 TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 
-# Session types that map to cycling
-CYCLING_TYPES = {"long_ride", "easy_ride", "cycling", "ride", "mtb", "road_ride", "ftp_test", "indoor_cycling", "wattbike", "trainer", "tempo_ride"}
+# Session types that map to cycling — derived from the canonical taxonomy
+# (coach/taxonomy.py) so Garmin types like "mountain_biking" and
+# "gravel_cycling" dispatch to the cycling builder instead of being skipped
+# as unknown when pushing plans to Garmin.
+CYCLING_TYPES = set(types_in_family("cycling"))
 
 # Indoor cycling types - use power targets (athlete has Wattbike indoors)
-INDOOR_CYCLING_TYPES = {"indoor_cycling", "wattbike", "trainer", "ftp_test"}
+INDOOR_CYCLING_TYPES = {"indoor_cycling", "wattbike", "trainer", "turbo_trainer",
+                        "ftp_test", "threshold_test", "indoor_technique"}
 
 # Long outdoor ride types - skip warmup section (messes with lap timing)
 LONG_OUTDOOR_RIDE_TYPES = {"long_ride", "long_mtb_ride"}
 
 # Session types that map to running
-RUNNING_TYPES = {"run", "long_run", "easy_run", "running", "trail_run", "interval_run"}
+RUNNING_TYPES = set(types_in_family("running"))
 
-# Session types that map to yoga/pilates
-YOGA_TYPES = {"yoga", "mobility", "stretching"}
+# Session types that map to yoga (includes mobility/stretching plan aliases)
+YOGA_TYPES = set(types_in_family("yoga"))
 
 # Session types that map to pilates (used for rehab/mobility work)
-PILATES_TYPES = {"pilates", "rehab", "rehabilitation"}
+PILATES_TYPES = set(types_in_family("pilates"))
 
 # Session types that map to strength
-STRENGTH_TYPES = {"strength", "strength_training", "gym", "weights", "strength_plus_rehab"}
+STRENGTH_TYPES = set(types_in_family("strength"))
 
 # Garmin workout API accepts all 35 FIT SDK strength categories (verified by upload test).
 # Using native categories preserves exerciseName + watch animations.
@@ -202,13 +207,13 @@ def _smart_truncate(text: str, max_len: int) -> str:
 
 
 # Session types that map to swimming
-SWIMMING_TYPES = {"swim", "swimming", "pool"}
+SWIMMING_TYPES = set(types_in_family("swimming"))
 
 # Session types that map to padel
-PADEL_TYPES = {"padel", "paddelball", "paddle"}
+PADEL_TYPES = set(types_in_family("padel"))
 
 # Session types to skip (not pushable to Garmin)
-SKIP_TYPES = {"rest", "rest_or_easy"}
+SKIP_TYPES = set(types_in_family("rest"))
 
 # Test session types (special handling)
 TEST_TYPES = {"ftp_test", "threshold_test"}
@@ -462,22 +467,25 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
     if session_type in SKIP_TYPES or duration_mins == 0:
         return None
 
-    # Determine sport and build appropriate workout
+    # Determine sport via taxonomy workout family (substring fallbacks keep
+    # free-form plan types like "morning_run" working)
+    family = workout_family_for(session_type)
+
     if session_type in TEST_TYPES or "ftp_test" in session_type:
         return build_ftp_test_workout(session, date)
-    elif session_type in CYCLING_TYPES or "ride" in session_type or "cycling" in session_type:
+    elif family == "cycling" or "ride" in session_type or "cycling" in session_type:
         return build_cycling_workout(session, date)
-    elif session_type in RUNNING_TYPES or "run" in session_type:
+    elif family == "running" or "run" in session_type:
         return build_running_workout(session, date)
-    elif session_type in SWIMMING_TYPES:
+    elif family == "swimming":
         return build_swimming_workout(session, date)
-    elif session_type in YOGA_TYPES:
+    elif family == "yoga":
         return build_yoga_workout(session, date)
-    elif session_type in PILATES_TYPES:
+    elif family == "pilates":
         return build_pilates_workout(session, date)
-    elif session_type in STRENGTH_TYPES:
+    elif family == "strength":
         return build_strength_workout(session, date)
-    elif session_type in PADEL_TYPES:
+    elif family == "padel":
         return build_padel_workout(session, date)
 
     return None
@@ -1716,6 +1724,12 @@ def build_strength_workout(session: dict, date: str) -> dict:
         if category not in VALID_WORKOUT_CATEGORIES:
             garmin_exercise_name = ""
             category = "CARDIO"
+        elif not exercise_db:
+            # No exercise DB on this install (data/exercises.json is a
+            # gitignored cache) — trust the caller's (name, category) pair.
+            # Garmin strips invalid combos server-side; blanking here would
+            # guarantee the name is lost even when valid.
+            garmin_exercise_name = ex_name
         else:
             db_entry = exercise_db.get(ex_name, {})
             is_custom = db_entry.get("custom", False)
@@ -1826,20 +1840,15 @@ def get_workout_type_name(session: dict) -> str:
     """Get human-readable workout type name."""
     session_type = session.get("type", "").lower()
 
-    if session_type in CYCLING_TYPES or "ride" in session_type:
-        return "cycling"
-    elif session_type in RUNNING_TYPES or "run" in session_type:
-        return "running"
-    elif session_type in SWIMMING_TYPES:
-        return "swimming"
-    elif session_type in YOGA_TYPES:
-        return "yoga"
-    elif session_type in PILATES_TYPES:
-        return "pilates"
-    elif session_type in STRENGTH_TYPES:
-        return "strength"
-    elif session_type in PADEL_TYPES:
-        return "padel"
-    elif session_type in SKIP_TYPES:
+    if session_type in SKIP_TYPES:
         return "skipped"
+
+    family = workout_family_for(session_type)
+
+    if family == "cycling" or "ride" in session_type:
+        return "cycling"
+    elif family == "running" or "run" in session_type:
+        return "running"
+    elif family in ("swimming", "yoga", "pilates", "strength", "padel"):
+        return family
     return "unknown"

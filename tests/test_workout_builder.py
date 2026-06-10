@@ -737,9 +737,11 @@ class TestBuildStrengthWorkout:
         assert repeat_group["type"] == "RepeatGroupDTO"
         assert repeat_group["numberOfIterations"] == 4
 
+    @patch("coach.workout_builder.load_exercise_db",
+           return_value={"BENCH_PRESS": {"category": "BENCH_PRESS", "custom": False}})
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_repeat_group_contains_exercise_and_rest(self, mock_baseline, mock_library):
+    def test_repeat_group_contains_exercise_and_rest(self, mock_baseline, mock_library, mock_db):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -863,9 +865,14 @@ class TestBuildStrengthWorkout:
         ex2 = steps[3]["workoutSteps"][0]
         assert ex2["category"] == "CALF_RAISE"
 
+    @patch("coach.workout_builder.load_exercise_db",
+           return_value={
+               "FACE_PULL": {"category": "SUSPENSION", "custom": False},
+               "LYING_LEG_CURL": {"category": "HAMSTRING_CURL", "custom": False},
+           })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_native_category_preserves_exercise_name(self, mock_baseline, mock_library):
+    def test_native_category_preserves_exercise_name(self, mock_baseline, mock_library, mock_db):
         """Native DB category is used, preserving exerciseName for non-custom exercises."""
         session = {
             "type": "strength",
@@ -883,11 +890,33 @@ class TestBuildStrengthWorkout:
         assert face_pull["category"] == "SUSPENSION"
         assert face_pull["exerciseName"] == "FACE_PULL"
 
-        # HAMSTRING_CURL not valid → remapped to LEG_CURL, custom exercise → name cleared
+        # HAMSTRING_CURL not valid → remapped to LEG_CURL; DB category no longer
+        # matches the step category → name cleared
         leg_curl = steps[3]["workoutSteps"][0]
         assert leg_curl["category"] == "LEG_CURL"
         assert leg_curl["exerciseName"] == ""
         assert "Lying Leg Curl" in leg_curl["description"]
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    @patch("coach.workout_builder.load_strength_baseline", return_value={})
+    def test_missing_exercise_db_preserves_names(self, mock_baseline, mock_library, mock_db):
+        """Clean install (no data/exercises.json cache): trust the caller's
+        (name, category) pair instead of blanking every exercise name.
+        Regression for the first-ever CI run failure on clean checkout."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "BENCH_PRESS", "category": "BENCH_PRESS", "sets": 3, "reps": 12},
+                {"name": "FACE_PULL", "category": "SUSPENSION", "sets": 3, "reps": 15},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        steps = result["workoutSegments"][0]["workoutSteps"]
+
+        assert steps[2]["workoutSteps"][0]["exerciseName"] == "BENCH_PRESS"
+        assert steps[3]["workoutSteps"][0]["exerciseName"] == "FACE_PULL"
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "BARBELL_SQUAT": {"category": "SQUAT", "custom": False}
@@ -908,11 +937,13 @@ class TestBuildStrengthWorkout:
         assert ex["category"] == "SQUAT"
         assert ex["exerciseName"] == "BARBELL_SQUAT"
 
-    @patch("coach.workout_builder.load_exercise_db", return_value={})
+    @patch("coach.workout_builder.load_exercise_db",
+           return_value={"SQUAT": {"category": "SQUAT", "custom": False}})
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     @patch("coach.workout_builder.load_strength_baseline", return_value={})
     def test_unknown_exercise_clears_name(self, mock_baseline, mock_library, mock_db):
-        """Exercise not in DB has exerciseName cleared and shown in description."""
+        """Exercise missing from a PRESENT DB has exerciseName cleared and shown in
+        description (an empty/absent DB now means trust-the-caller instead)."""
         session = {
             "type": "strength",
             "duration_mins": 45,
