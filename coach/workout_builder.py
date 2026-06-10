@@ -1696,6 +1696,7 @@ def build_strength_workout(session: dict, date: str) -> dict:
         # Name-based overrides fix worst cases where Garmin's exercise DB
         # mis-categorizes common movements (e.g. CRUNCH under SUSPENSION).
         name_override = _get_name_override(ex_name)
+        fabricated_category = False
         if name_override:
             category = name_override
         elif original_category in VALID_WORKOUT_CATEGORIES:
@@ -1711,6 +1712,7 @@ def build_strength_workout(session: dict, date: str) -> dict:
                 ex_name, original_category
             )
             category = "CARDIO"
+            fabricated_category = True
         sets = exercise.get("sets", 3)
         reps = exercise.get("reps", 10)
         # rest_secs is for time ESTIMATION only - actual rest uses lap button
@@ -1728,8 +1730,9 @@ def build_strength_workout(session: dict, date: str) -> dict:
             # No exercise DB on this install (data/exercises.json is a
             # gitignored cache) — trust the caller's (name, category) pair.
             # Garmin strips invalid combos server-side; blanking here would
-            # guarantee the name is lost even when valid.
-            garmin_exercise_name = ex_name
+            # guarantee the name is lost even when valid. A fabricated
+            # CARDIO fallback category is NOT the caller's pair — blank it.
+            garmin_exercise_name = "" if fabricated_category else ex_name
         else:
             db_entry = exercise_db.get(ex_name, {})
             is_custom = db_entry.get("custom", False)
