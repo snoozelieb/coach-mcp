@@ -117,6 +117,8 @@ def garmin_fixtures():
     test_fixtures.json lives in the project root (gitignored).
     """
     fixtures_path = Path(__file__).parent.parent / "test_fixtures.json"
+    if not fixtures_path.exists():
+        pytest.skip("test_fixtures.json not present (personal health data, gitignored)")
     with open(fixtures_path) as f:
         return json.load(f)
 

@@ -460,7 +460,9 @@ class TestDerivedFields:
 
 class TestAnalyzeSportPriorities:
     def test_single_cycling_event(self):
-        events = [{'name': 'sani2c', 'date': '2026-06-01', 'priority': 'A', 'type': 'multi_day_mtb'}]
+        # Relative date so the test isn't date-dependent
+        event_date = (date.today() + timedelta(days=45)).isoformat()
+        events = [{'name': 'sani2c', 'date': event_date, 'priority': 'A', 'type': 'multi_day_mtb'}]
         result = _analyze_sport_priorities(events, {}, {})
 
         assert 'cycling' in result['sports']
@@ -482,9 +484,12 @@ class TestAnalyzeSportPriorities:
         assert abs(total_pct - 100.0) < 0.5
 
     def test_past_events_filtered(self):
+        # Relative dates so the test isn't date-dependent
+        past_date = (date.today() - timedelta(days=120)).isoformat()
+        future_date = (date.today() + timedelta(days=45)).isoformat()
         events = [
-            {'name': 'past_race', 'date': '2025-01-01', 'priority': 'A', 'type': 'road_cycling'},
-            {'name': 'future_race', 'date': '2026-06-01', 'priority': 'B', 'type': 'trail_ultra'},
+            {'name': 'past_race', 'date': past_date, 'priority': 'A', 'type': 'road_cycling'},
+            {'name': 'future_race', 'date': future_date, 'priority': 'B', 'type': 'trail_ultra'},
         ]
         result = _analyze_sport_priorities(events, {}, {})
 

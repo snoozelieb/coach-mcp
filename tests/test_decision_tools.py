@@ -185,11 +185,13 @@ class TestProposeCoachingAction:
 class TestListPendingApprovals:
     def test_filters_expired(self, decision_dir):
         log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        # Relative expiry so the test isn't date-dependent
+        valid_expires = (date.today() + timedelta(days=365)).isoformat()
         log['pending_approvals'] = [
             {'id': 'p_expired', 'proposed_date': '2025-01-01', 'type': 'test',
              'proposal': 'old', 'rationale': 'r', 'expires': '2025-01-04'},
-            {'id': 'p_valid', 'proposed_date': '2026-02-01', 'type': 'test',
-             'proposal': 'new', 'rationale': 'r', 'expires': '2027-02-04'},
+            {'id': 'p_valid', 'proposed_date': date.today().isoformat(), 'type': 'test',
+             'proposal': 'new', 'rationale': 'r', 'expires': valid_expires},
         ]
         (decision_dir / 'coaching_log.json').write_text(json.dumps(log))
 

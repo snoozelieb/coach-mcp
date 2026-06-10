@@ -679,19 +679,23 @@ class TestGetDayContext:
 
 class TestPersistReadinessData:
     def test_adds_new_record(self):
+        # Relative date — persist_readiness_data prunes records older than 60 days
+        rec_date = (date.today() - timedelta(days=1)).isoformat()
         history = {'readiness_history': []}
-        rec = {'date': '2026-03-14', 'score': 72, 'level': 'MODERATE', 'hrv_status': 'BALANCED', 'body_battery': 55}
+        rec = {'date': rec_date, 'score': 72, 'level': 'MODERATE', 'hrv_status': 'BALANCED', 'body_battery': 55}
         result = persist_readiness_data(rec, history)
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['score'] == 72
 
     def test_deduplicates_by_date(self):
+        # Relative date — persist_readiness_data prunes records older than 60 days
+        rec_date = (date.today() - timedelta(days=1)).isoformat()
         history = {
             'readiness_history': [
-                {'date': '2026-03-14', 'score': 72},
+                {'date': rec_date, 'score': 72},
             ],
         }
-        rec = {'date': '2026-03-14', 'score': 75}
+        rec = {'date': rec_date, 'score': 75}
         result = persist_readiness_data(rec, history)
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['score'] == 72  # Original preserved

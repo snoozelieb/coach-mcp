@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly Monday run catches date-rot: tests whose hardcoded or relative
+    # dates drift into the past even when no code changes.
+    - cron: '0 5 * * 1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches local dev (3.14); all pinned deps support it.
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Test deps are not in requirements.txt (runtime-only file)
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        # test_fixtures.json is gitignored (personal health data), so this is
+        # the clean-checkout path: fixture-dependent tests skip via conftest.
+        run: python -m pytest -q
