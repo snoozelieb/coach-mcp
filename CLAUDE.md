@@ -253,9 +253,6 @@ python scripts/daily_loop.py --llm            # Morning audit with LLM (model vi
 python scripts/garmin_login.py                # Manual Garmin token recovery (garminconnect native auth + MFA)
 ```
 
-> `scripts/garmin_browser_login.py` (the old garth/Playwright flow) is BROKEN — garminconnect 0.3.x
-> dropped garth. It is kept only until the Phase 1 auth rebuild (see docs/UPGRADE_ROADMAP.md).
-
 ## MCP Framework
 
 Uses **standalone FastMCP v3.2.x** (`from fastmcp import FastMCP`), not the bundled v1 in the `mcp` SDK.
@@ -363,16 +360,25 @@ Optional environment variables:
 
 ### Garmin Authentication
 
-garminconnect 0.3.x rewrote auth around a vendored DI-token client with native Cloudflare
-bypass (curl_cffi TLS impersonation) and **dropped garth entirely**.
+Native garminconnect **0.3.5** auth (vendored DI-token client, curl_cffi TLS impersonation
+for Cloudflare). No garth, no Playwright, no browser — the old fallback stack is deleted.
 
-1. **Normal flow**: Loads saved tokens from `.garth/garmin_tokens.json` → works silently
-2. **Token expired**: Run `python scripts/garmin_login.py` — native login + MFA prompt, persists
-   the tokenstore the server reads
-3. **Broken legacy path**: the garth/Playwright fallback (`coach/playwright_auth.py`,
-   `scripts/garmin_browser_login.py`, the 429 branch in `garmin_client.py`) crashes with
-   `ModuleNotFoundError: garth` and is slated for deletion in the Phase 1 auth rebuild
-   (docs/UPGRADE_ROADMAP.md)
+1. **Normal flow** (token-first): `coach/garmin_client.py` restores the saved session from
+   `.garth/garmin_tokens.json` via a credential-less `Garmin().login(tokenstore=...)` — silent
+2. **Token failure**: ONE non-interactive credential login (`return_on_mfa=True`). If Garmin
+   asks for MFA, the server cannot answer headlessly — it never blocks on input
+3. **Auth failure**: tools raise `GarminAuthRequiredError`, whose `str()` is exactly
+   `AUTH_REQUIRED: Garmin session expired or needs MFA. Run: python scripts/garmin_login.py`
+   so every tool's `{'error': str(e)}` is actionable. A process-level latch then makes
+   subsequent `get_garmin_client()` calls fail fast for ~10 minutes (one expired session
+   never triggers N login attempts during a snapshot)
+4. **Recovery**: `python scripts/garmin_login.py` — interactive credential login + MFA prompt,
+   persists tokens to the same tokenstore. Restart the MCP server afterwards (clears the latch
+   and the cached dead client)
+
+`tests/test_garmin_contract.py` pins every garminconnect method/attribute/call-shape the
+codebase uses, so a dependency rename (like the 0.2→0.3 `.garth` → `.client` break) fails CI
+loudly instead of failing silently in production.
 
 ## Testing
 

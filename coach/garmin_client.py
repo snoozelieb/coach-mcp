@@ -1,13 +1,34 @@
-import os
+"""
+Garmin Connect client management (garminconnect 0.3.5, native auth).
+
+Auth flow — no garth, no playwright, no browser:
+
+1. **Token-first**: restore the saved session from ``TOKEN_DIR``
+   (``Garmin().login(tokenstore=...)``). This is the only path that should
+   run in steady state and needs no credentials.
+2. **On token failure**: ONE non-interactive credential login
+   (``return_on_mfa=True``). If Garmin asks for MFA there is nobody to type
+   the code, so it is treated as auth-required — never block on input.
+3. **Any credential-login failure** raises :class:`GarminAuthRequiredError`
+   (its ``str()`` is the exact remediation message every tool surfaces via
+   ``{'error': str(e)}``) and arms a process-level latch: for
+   ``AUTH_LATCH_SECS`` every further ``get_garmin_client()`` call fails fast
+   instead of hammering Garmin's SSO. One expired session must not trigger
+   N login attempts during a snapshot.
+
+Recovery: ``python scripts/garmin_login.py`` — interactive credential login
+with MFA prompt; persists tokens to the same ``TOKEN_DIR`` this module reads.
+"""
 import logging
+import os
 import time
-from datetime import date
+
+from dotenv import load_dotenv
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
     GarminConnectTooManyRequestsError,
 )
-from dotenv import load_dotenv
 
 from .config import TOKEN_DIR, GARMIN_RATE_LIMIT_WAIT_SECS
 
@@ -16,77 +37,168 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+AUTH_REQUIRED_MESSAGE = (
+    "AUTH_REQUIRED: Garmin session expired or needs MFA. "
+    "Run: python scripts/garmin_login.py"
+)
+
+# After a failed credential login, fail fast for this long instead of
+# re-attempting a fresh login on every tool call.
+AUTH_LATCH_SECS = 600
+
+
+class GarminAuthRequiredError(Exception):
+    """Garmin auth needs human intervention (fresh login and/or MFA).
+
+    ``str()`` of this error is the exact actionable message that every
+    tool's ``{'error': str(e)}`` surfaces to the athlete/coach.
+    """
+
+    def __init__(self, message: str = AUTH_REQUIRED_MESSAGE) -> None:
+        super().__init__(message)
+
+
 # Cache the client instance to avoid repeated logins
-_cached_client: Garmin = None
+_cached_client: Garmin | None = None
+
+# Monotonic timestamp of the last failed credential login (auth latch).
+_auth_failed_at: float | None = None
+
+
+def _auth_latch_active() -> bool:
+    """True while the post-failure fail-fast window is in effect."""
+    return (
+        _auth_failed_at is not None
+        and (time.monotonic() - _auth_failed_at) < AUTH_LATCH_SECS
+    )
+
+
+def _arm_auth_latch() -> None:
+    global _auth_failed_at
+    _auth_failed_at = time.monotonic()
+
+
+def _clear_auth_latch() -> None:
+    global _auth_failed_at
+    _auth_failed_at = None
+
+
+def _try_token_login() -> Garmin | None:
+    """Restore a session from saved tokens. Returns None on any failure.
+
+    Uses a credential-less ``Garmin()`` so this phase can ONLY load tokens —
+    garminconnect's internal token-failure fallback to a credential login
+    cannot fire without a username/password, which keeps the token phase and
+    the single credential attempt strictly separated.
+    """
+    if not os.path.exists(TOKEN_DIR):
+        logger.info("No saved Garmin session at %s", TOKEN_DIR)
+        return None
+    client = Garmin()
+    try:
+        logger.info("Loading saved Garmin session...")
+        client.login(tokenstore=TOKEN_DIR)
+    except Exception as e:
+        logger.warning("Saved Garmin session invalid or expired: %s", e)
+        return None
+    logger.info("Garmin session restored from saved tokens.")
+    return client
+
+
+def _populate_profile(client: Garmin) -> None:
+    """Populate display_name/full_name/unit_system after a headless login.
+
+    ``Garmin.login()`` loads these itself, but the ``return_on_mfa=True``
+    credential path returns early and skips them — and several library
+    methods interpolate ``display_name`` into request URLs. The profile
+    fetch doubles as token verification: if it raises, the new token is
+    unusable and the caller treats the login as failed.
+    """
+    prof = client.connectapi("/userprofile-service/socialProfile")
+    if isinstance(prof, dict):
+        client.display_name = prof.get("displayName")
+        client.full_name = prof.get("fullName", "")
+    try:
+        settings = client.connectapi(client.garmin_connect_user_settings_url)
+        if isinstance(settings, dict) and "userData" in settings:
+            client.unit_system = settings["userData"].get("measurementSystem")
+    except Exception:
+        # Unit system is cosmetic — never fail a login over it.
+        logger.warning("Could not load Garmin user settings after login",
+                       exc_info=True)
+
+
+def _credential_login(email: str, password: str) -> Garmin:
+    """ONE non-interactive credential login.
+
+    Raises GarminAuthRequiredError if Garmin requires MFA (headless process
+    cannot answer the prompt). Any other failure propagates to the caller,
+    which wraps it. On success, persists tokens to TOKEN_DIR.
+    """
+    logger.info("Attempting fresh Garmin credential login (non-interactive)...")
+    client = Garmin(email, password, return_on_mfa=True)
+    mfa_status, _ = client.client.login(email, password, return_on_mfa=True)
+    if mfa_status == "needs_mfa":
+        logger.warning("Garmin requires MFA — cannot continue non-interactively.")
+        raise GarminAuthRequiredError()
+    client.client.dump(TOKEN_DIR)
+    _populate_profile(client)
+    logger.info("Fresh Garmin login succeeded; tokens saved to %s", TOKEN_DIR)
+    return client
 
 
 def get_garmin_client(force_refresh: bool = False) -> Garmin:
     """
-    Authenticates with Garmin using the new 'Garth' backend.
-    Returns an authenticated Garmin client.
+    Return an authenticated Garmin client (token-first, native 0.3.5 auth).
 
     Uses a cached instance to avoid repeated logins within the same session.
 
     Args:
-        force_refresh: If True, forces a fresh login even if cached.
+        force_refresh: If True, ignores the cached client and re-authenticates.
+
+    Raises:
+        GarminAuthRequiredError: When authentication needs human intervention
+            (expired session + failed/MFA-gated credential login), or while
+            the auth latch from a recent failure is active.
     """
     global _cached_client
 
-    # Return cached client if available and not forcing refresh
     if _cached_client is not None and not force_refresh:
         return _cached_client
 
+    if _auth_latch_active():
+        raise GarminAuthRequiredError()
+
+    # Drop any stale instance while re-authenticating so a failed refresh
+    # can't leave a dead client in the cache.
+    _cached_client = None
+
+    # 1. Token-first
+    client = _try_token_login()
+    if client is not None:
+        _clear_auth_latch()
+        _cached_client = client
+        return client
+
+    # 2. ONE non-interactive credential login
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
+    if not email or not password:
+        logger.error("GARMIN_EMAIL/GARMIN_PASSWORD not set — cannot log in.")
+        _arm_auth_latch()
+        raise GarminAuthRequiredError()
 
-    client = Garmin(email, password)
-
-    # 1. Try to load saved tokens from the directory
     try:
-        if os.path.exists(TOKEN_DIR):
-            logger.info("Loading saved session...")
-            client.login(tokenstore=TOKEN_DIR)
-            logger.info("Session loaded successfully!")
-            _cached_client = client
-            return client
+        client = _credential_login(email, password)
+    except GarminAuthRequiredError:
+        _arm_auth_latch()
+        raise
     except Exception as e:
-        logger.warning(f"Session invalid or expired: {e}. Logging in fresh...")
+        logger.exception("Garmin credential login failed")
+        _arm_auth_latch()
+        raise GarminAuthRequiredError() from e
 
-    # 2. If load failed (or no tokens), perform a full login
-    try:
-        client.login()
-    except Exception as e:
-        if "429" in str(e):
-            logger.warning("Garmin SSO blocked (429). Falling back to browser login...")
-            from .playwright_auth import playwright_sso_login
-            oauth1, oauth2 = playwright_sso_login(client.client)
-            client.client.oauth1_token = oauth1
-            client.client.oauth2_token = oauth2
-            # Populate display_name and settings (normally done inside client.login)
-            try:
-                prof = client.client.connectapi(
-                    "/userprofile-service/userprofile/profile"
-                )
-                client.display_name = prof.get("displayName")
-                client.full_name = prof.get("fullName")
-                settings = client.client.connectapi(
-                    client.garmin_connect_user_settings_url
-                )
-                if settings and isinstance(settings, dict) and "userData" in settings:
-                    client.unit_system = settings["userData"].get("measurementSystem")
-            except Exception as profile_err:
-                logger.warning(f"Could not load profile after browser login: {profile_err}")
-        else:
-            logger.error(f"Login failed! Check credentials. Error: {e}")
-            raise
-
-    # 3. Save the new tokens for next time
-    if not os.path.exists(TOKEN_DIR):
-        os.makedirs(TOKEN_DIR)
-
-    client.client.dump(TOKEN_DIR)
-    logger.info("New session saved.")
-
+    _clear_auth_latch()
     _cached_client = client
     return client
 
@@ -99,7 +211,9 @@ def garmin_api_call(fn, *args, **kwargs):
     On GarminConnectAuthenticationError (expired session), invalidates the
     cached client and retries once with a fresh login.
     On GarminConnectTooManyRequestsError (429), waits and retries once.
-    All other exceptions propagate immediately.
+    All other exceptions propagate immediately — including
+    GarminAuthRequiredError when re-authentication needs the human-driven
+    recovery script.
 
     Args:
         fn: Callable that receives a Garmin client as first arg, e.g.

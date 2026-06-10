@@ -1,13 +1,16 @@
 """
 Manual Garmin token recovery via native garminconnect login.
 
-This is the manual recovery path when MCP tools start returning Garmin
-auth errors (expired or invalid tokens). It performs a fresh credential
-login using the installed garminconnect library (no garth, no
-playwright/browser), handles MFA interactively, and persists new tokens
-to the same token store the server reads (coach.config.TOKEN_DIR, i.e.
-.garth/garmin_tokens.json — loaded by coach/garmin_client.py via
-client.login(tokenstore=TOKEN_DIR)).
+This is the recovery path referenced by GarminAuthRequiredError — when MCP
+tools start returning "AUTH_REQUIRED: Garmin session expired or needs MFA",
+run this script. It performs a fresh credential login using the installed
+garminconnect library (no garth, no playwright/browser), handles MFA
+interactively, and persists new tokens to the same token store the server
+reads (coach.config.TOKEN_DIR, i.e. .garth/garmin_tokens.json — loaded by
+coach/garmin_client.py via Garmin().login(tokenstore=TOKEN_DIR)).
+
+After recovery, restart the MCP server: a running server arms a fail-fast
+auth latch (~10 min) after a failed login and also caches the dead client.
 
 Usage: python scripts/garmin_login.py
 """
@@ -64,7 +67,9 @@ def main() -> None:
 
     print(f"Login verified for: {name}")
     print(f"Tokens saved to {TOKEN_DIR}")
-    print("You can now restart the MCP server — it will use these tokens.")
+    print("Now restart the MCP server — it will use these tokens.")
+    print("(A running server may fail fast for up to 10 minutes after a "
+          "failed login; restarting clears that latch.)")
 
 
 if __name__ == "__main__":

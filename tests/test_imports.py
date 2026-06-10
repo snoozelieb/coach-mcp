@@ -17,19 +17,10 @@ COACH_DIR = Path(__file__).parent.parent / "coach"
 
 # Modules with a KNOWN import failure today. Each maps to the reason it is
 # skipped (only skipped when the import actually fails — if the dependency
-# gets fixed, the test passes and the entry can be removed).
-#
-# coach.playwright_auth: imports garth at module level, but garminconnect
-# 0.3.2 dropped garth and it is no longer installed. The whole auth fallback
-# stack is slated for replacement in the Phase 1 Garmin auth rebuild
-# (see docs/UPGRADE_ROADMAP.md, Phase 1.1) — until then we skip rather than
-# fail so this file still guards every other module.
-KNOWN_BROKEN = {
-    "coach.playwright_auth": (
-        "module-level garth import fails (garth not installed; dropped by "
-        "garminconnect 0.3.2) — pending Phase 1 auth rebuild"
-    ),
-}
+# gets fixed, the test passes and the entry can be removed). Currently empty:
+# the Phase 1 Garmin auth rebuild removed the last broken module
+# (coach.playwright_auth, which imported the dropped garth library).
+KNOWN_BROKEN: dict[str, str] = {}
 
 
 def _discover_coach_modules() -> list[str]:
