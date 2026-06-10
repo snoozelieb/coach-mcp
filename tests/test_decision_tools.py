@@ -65,9 +65,11 @@ class TestLogCoachingDecision:
 class TestGetActiveDecisions:
     def test_filters_active(self, decision_dir):
         log = json.loads((decision_dir / 'coaching_log.json').read_text())
+        # Future review_date so the needs_review auto-transition doesn't fire
+        future_review = (date.today() + timedelta(days=30)).isoformat()
         log['decisions'] = [
             {'id': 'd1', 'date': '2026-01-01', 'status': 'active', 'type': 'load_adjustment',
-             'decision': 'd1', 'rationale': 'r1', 'review_date': '2026-02-01'},
+             'decision': 'd1', 'rationale': 'r1', 'review_date': future_review},
             {'id': 'd2', 'date': '2026-01-02', 'status': 'completed', 'type': 'load_adjustment',
              'decision': 'd2', 'rationale': 'r2', 'review_date': '2026-02-01'},
         ]

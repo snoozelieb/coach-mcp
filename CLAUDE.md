@@ -59,6 +59,8 @@ An **adaptive AI training coach** MCP server that:
 
 The snapshot flags these automatically as anomalies in the planned-vs-actual comparison. **Never silently resolve an anomaly** — always check with the athlete first. A coach who assumes is worse than one who asks.
 
+**Anomalies are persistent (curiosity with memory).** Each detected anomaly registers once in `coaching_log.json` under `anomalies` with a stable id (`<date>:<type>:<slug>`) and an `open -> asked -> resolved` lifecycle. The snapshot surfaces only open/asked entries — each carrying any prior `athlete_explanation`. After the athlete explains one, call `resolve_anomaly(anomaly_id, explanation, status='resolved')`; use `status='asked'` when the question was raised but not fully answered (it keeps surfacing with the partial explanation attached). Resolved anomalies never resurface or re-register.
+
 ## Science-Based Coaching Model
 
 The coach operates at multiple timeframes:
@@ -99,7 +101,7 @@ DAY                       <- What should today look like?
 
 **Sleep: `sleep_gate` is in the core payload; `sleep.nights` needs `sections=['sleep']` or `['full']`.** The default payload carries the compact `sleep_gate`: `avg_hours`, `deficit` (bool), `status`, `acute_status`, `last_night_score`/`last_night_hrs`, `nights_analyzed`. The full `sleep` section adds the last 7 nights with per-night detail (`bedtime`, `wake_time`, `duration_hrs`, `score`, `deep_mins`/`deep_pct`, `rem_mins`/`rem_pct`, `light_mins`/`light_pct`, `awake_mins`, `avg_hr`, `respiration`, `sleep_stress`) plus `sleep.bedtime_drift` (14-day window; "later"/"earlier"/"stable" + `drift_mins_per_wk` — a meaningful overtraining signal when bedtime drifts >15 min/wk later). Nights are fetched from Garmin only when missing from `fitness_history.sleep_history`. Request `sections=['sleep']` before any sleep-quality coaching.
 
-Check `data_quality` in the snapshot — it flags missing critical data (weight, age, name), unavailable recovery/sleep, and stale fitness history. The LLM should surface these to the athlete and recommend running `refresh_athlete_baseline()` to auto-populate from Garmin.
+Check `data_quality` in the snapshot — it flags missing critical data (weight, age, name), unavailable recovery/sleep, and stale fitness history. The LLM should surface these to the athlete and recommend running `refresh_athlete_baseline()` to auto-populate from Garmin. It also carries **season-layer flags** (flag-only, never auto-fixed — surface them to the athlete): `block_dates_invalid` (block end before start, or `target_transition` before `phase_start`), `a_race_in_past` (`{name, date, days_ago}` — debrief + re-plan), `no_upcoming_events`, and `phase_overdue` (`{target_transition, days_overdue}`).
 
 ### Load Hierarchy (Injury Prevention)
 
@@ -147,6 +149,8 @@ Check `adaptation_patterns` before load decisions. These are learned from `recor
 - `recovers_quickly` -> shorter rest between hard sessions
 - `needs_extra_rest_after_intensity` -> add recovery day after intervals
 
+Pattern labels are **canonical**: `record_athlete_response()` normalizes its `pattern` argument against `config.ADAPTATION_PATTERN_REGISTRY` (case/space tolerant + unique substring match), so counts aggregate by canonical key and can actually trigger coaching behavior. Unknown patterns are still stored but the tool response flags `unrecognized_pattern` and returns the registry list — prefer a canonical key. `get_response_patterns()` and the snapshot's `adaptation_patterns` count by canonical key (`pattern_counts`, with `unrecognized_patterns` listed separately).
+
 New athlete with empty patterns? Start conservative. Log responses after every week.
 
 ### Coaching Score
@@ -175,6 +179,17 @@ Coaching decisions persist across sessions via `coaching_log.json`:
 3. **Significant choices**: Call `log_coaching_decision()` to persist rationale
 4. **Changes needing approval** (phase transition, >15% volume change, pillar tweak): Use `propose_coaching_action(action_type, proposal, rationale, impact='major')` — athlete must `approve_proposal` or `reject_proposal`
 5. **After completed sessions**: Call `record_athlete_response()` to track patterns
+
+**Decision review lifecycle**: loading decisions (`get_active_decisions()` or the snapshot's `coaching_memory`) auto-transitions any active decision whose `review_date` has passed to `needs_review` (persisted once — idempotent). The snapshot's `coaching_memory.decisions_due_review` carries the actual summaries (`id`, decision excerpt, `review_date`, `status`), not just a count. Discuss overdue decisions with the athlete, then `update_decision_status()` them to `active` (rolls the review window forward), `completed`, or `superseded`.
+
+### Season Lifecycle (auto-proposals)
+
+The snapshot also watches the season layer and **auto-creates pending approvals** through the normal proposal machinery (they appear in `coaching_memory.pending_approvals` like any other proposal; the athlete resolves them via `approve_proposal`/`reject_proposal`):
+
+1. **Race passed without a debrief**: an A/B-priority event whose date has passed with no `race_review` decision mentioning it → ONE `action_type='season_replan'` proposal ("X completed — debrief and re-plan the season", impact major). C/D/life_event entries never trigger this. After the debrief conversation, log it with `log_coaching_decision(decision_type='race_review', ...)` naming the event.
+2. **Phase transition overdue**: `periodization.target_transition` passed more than 7 days ago with no `phase_transition` decision since → ONE `action_type='phase_transition'` proposal. Resolve by `update_phase()` (which logs the decision) or by pushing `target_transition` out with a logged rationale.
+
+Both are **idempotent by event tag** (`event_tag` in the proposal payload + a tag registry in `coaching_log.json`): open, approved AND rejected proposals all block re-creation, so the snapshot can run the detection every call without nagging. The matching `data_quality` season flags (`a_race_in_past`, `phase_overdue`) keep surfacing until the underlying config is fixed.
 
 ### Tool Selection Quick Reference
 
@@ -216,11 +231,19 @@ Coaching decisions persist across sessions via `coaching_log.json`:
    → Build plan — every session must respect snapshot.injuries[*].restricted_activities
    → update_weekly_plan(plan=...) → push_plan_to_garmin()
    → Both tools CODE-ENFORCE the injury gate: sessions matching an active/improving
-     injury's restricted_activities are rejected (override_injury_gate=True bypasses
-     with logged rationale — use only with athlete consent)
-   → update_weekly_plan responses include `purpose_warnings` listing non-rest
-     sessions missing a purpose (warn-only; Phase 3 makes it a gate) — fix
-     these BEFORE pushing to Garmin
+     injury's restricted_activities are rejected, taxonomy-aware — 'long_ride' is
+     caught by a 'cycling' restriction; free-text restrictions ('no high-impact')
+     match by substring (override_injury_gate=True bypasses with logged rationale —
+     use only with athlete consent)
+   → update_weekly_plan CODE-ENFORCES the purpose gate: any non-rest session
+     without a non-empty `purpose` REJECTS the save (error 'purpose_gate'; nested
+     session lists checked at the leaf level, rest days exempt).
+     override_purpose_gate=True bypasses with a logged response note — a session
+     you can't explain shouldn't be on the plan. A plan failing purpose AND injury
+     reports both in one error. Pushing needs no purpose gate — plans are gated at save
+   → update_weekly_plan also DATE-VALIDATES: plans entirely in the past are
+     rejected ('plan is entirely historical — build a current week') and any day
+     key more than 21 days in the future is rejected (fat-finger guard)
 
 4. DRILL-DOWNS (when snapshot data isn't enough)
    → get_coaching_snapshot(sections=[...]) — plan / activities / fitness /
@@ -238,7 +261,9 @@ Coaching decisions persist across sessions via `coaching_log.json`:
      + web research; remove_race stays standalone (destructive)
 
 6. MUTATIONS
-   → Coaching memory: log_coaching_decision, record_athlete_response
+   → Coaching memory: log_coaching_decision, record_athlete_response,
+     resolve_anomaly (athlete explained an anomaly), update_decision_status
+     (resolve needs_review decisions)
    → Approvals: propose_coaching_action → approve_proposal / reject_proposal
    → Athlete profile: update_athlete, set_ftp, set_threshold_pace
    → Plan: update_weekly_plan, push_plan_to_garmin, update_phase
@@ -295,8 +320,8 @@ Uses **standalone FastMCP v3.4.x** (`from fastmcp import FastMCP`, pinned `fastm
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| **Tools** | 47 tools | `@mcp.tool()` — sync and async |
-| **Annotations** | All 47 tools | readOnlyHint/destructiveHint/idempotentHint/openWorldHint on every tool — `tests/test_annotations.py` is the contract (explicit inventories; unclassified tools fail the suite) |
+| **Tools** | 48 tools | `@mcp.tool()` — sync and async |
+| **Annotations** | All 48 tools | readOnlyHint/destructiveHint/idempotentHint/openWorldHint on every tool — `tests/test_annotations.py` is the contract (explicit inventories; unclassified tools fail the suite) |
 | **Structured output** | Planning tools | The 7 planning tools return structured dicts (not JSON strings); `update_weekly_plan` takes a typed `plan` dict (`plan_json` is a deprecated alias) |
 | **Prompts** | 5 prompts | `coach/prompts.py` — weekly_planning, morning_brief, injury_assessment, week_review, onboarding |
 | **Resources** | 6 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now, coach://coaching/doctrine |
@@ -324,7 +349,7 @@ coach-mcp/
 │   ├── rules.py             # Compliance checker, safety rules, classify_activity
 │   ├── web_utils.py         # HTML stripping + page fetching
 │   ├── workout_builder.py   # Converts plan sessions to Garmin workouts
-│   └── tools/               # 47 MCP tools across 11 modules
+│   └── tools/               # 48 MCP tools across 11 modules
 │       ├── data_tools.py      (1) # get_activities_range (+ private daily-metrics/PR impls behind query_metrics)
 │       ├── fitness_tools.py   (5) # refresh_athlete_baseline, query_metrics (kind=fitness/intensity/daily/readiness/personal_records), refresh_fitness_history, get_onboarding_guide, get_athlete
 │       ├── athlete_tools.py   (6) # update_athlete, set_threshold_pace, set_ftp, analyze_ftp_test, get_methodology, update_methodology
@@ -333,7 +358,7 @@ coach-mcp/
 │       ├── strength_tools.py  (6) # sync_strength_session, get_strength_baseline, approve_progression, set_exercise_preference, generate_strength_workout, add_exercise
 │       ├── injury_tools.py    (3) # diagnose_injury, research_injury, update_injury_status
 │       ├── research_tools.py  (3) # research_exercise, list_exercises, research_sport
-│       ├── decision_tools.py  (9) # log_coaching_decision, get_active_decisions, update_decision_status, propose_coaching_action, list_pending_approvals, approve_proposal, reject_proposal, record_athlete_response, get_response_patterns
+│       ├── decision_tools.py  (10) # log_coaching_decision, get_active_decisions, update_decision_status, propose_coaching_action, list_pending_approvals, approve_proposal, reject_proposal, record_athlete_response, get_response_patterns, resolve_anomaly
 │       ├── race_tools.py      (2) # races (action=list/add/update/research), remove_race (standalone, destructive)
 │       └── interactive_tools.py (2) # generate_smart_brief (data shape for brief), interactive_check_in (question set)
 ├── scripts/

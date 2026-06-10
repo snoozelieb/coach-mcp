@@ -1,12 +1,325 @@
-"""Coaching decision tools - log decisions, manage approvals, track athlete responses."""
+"""Coaching decision tools - log decisions, manage approvals, track athlete responses.
+
+Also owns the Phase 3 memory lifecycles:
+- Anomaly persistence (curiosity with memory): planned-vs-actual anomalies are
+  registered once in coaching_log.json under 'anomalies' and carry an
+  open -> asked -> resolved lifecycle via resolve_anomaly().
+- Adaptation-pattern normalization against config.ADAPTATION_PATTERN_REGISTRY
+  so recorded patterns aggregate by canonical key.
+- Decision review lifecycle: active decisions past their review_date
+  auto-transition to 'needs_review' whenever decisions are loaded.
+- Tagged auto-proposal machinery (season lifecycle): ensure_tagged_proposal
+  routes through propose_coaching_action and an event-tag registry so each
+  real-world trigger (race passed, phase overdue) only ever generates ONE
+  proposal — open, approved and rejected proposals all block re-creation.
+"""
 
 from ..mcp_app import mcp
 from ..planner import load_coaching_log, save_coaching_log
+from ..config import ADAPTATION_PATTERN_REGISTRY
 from datetime import date, timedelta
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Adaptation-pattern normalization (canonical registry in coach/config.py)
+# ---------------------------------------------------------------------------
+
+def normalize_adaptation_pattern(pattern) -> tuple[str | None, bool]:
+    """Normalize a free-form pattern label against ADAPTATION_PATTERN_REGISTRY.
+
+    Returns (canonical_or_normalized, recognized). Matching is case/space/
+    punctuation tolerant; a UNIQUE substring match in either direction counts
+    as recognized (fuzzy contains-match). Ambiguous or unknown labels return
+    the normalized form with recognized=False — they are still storable, just
+    flagged so the coach prefers a canonical key next time.
+    """
+    if pattern is None or not str(pattern).strip():
+        return None, False
+    norm = re.sub(r'[^a-z0-9]+', '_', str(pattern).strip().lower()).strip('_')
+    if norm in ADAPTATION_PATTERN_REGISTRY:
+        return norm, True
+    matches = [k for k in ADAPTATION_PATTERN_REGISTRY if norm in k or k in norm]
+    if len(matches) == 1:
+        return matches[0], True
+    return norm, False
+
+
+# ---------------------------------------------------------------------------
+# Anomaly persistence (curiosity with memory)
+# ---------------------------------------------------------------------------
+
+ANOMALY_ACTIVE_STATUSES = ('open', 'asked')
+ANOMALY_RESOLVE_STATUSES = ('resolved', 'asked')
+MAX_ANOMALY_ENTRIES = 200      # registry cap in coaching_log.json
+MAX_SURFACED_ANOMALIES = 20    # cap on the open/asked view in the snapshot
+
+
+def _slugify(value) -> str:
+    return re.sub(r'[^a-z0-9]+', '_', str(value).strip().lower()).strip('_')
+
+
+def anomaly_id_for(anomaly: dict) -> str:
+    """Stable identity for a detected planned-vs-actual anomaly.
+
+    Format '<date>:<type>:<slug>'. Built from the plan-side fields (stable
+    across snapshot calls) plus the actual type, so the same real-world
+    anomaly always maps to the same id — that key is what makes registration
+    idempotent and lets resolved anomalies never re-register.
+    """
+    a_date = anomaly.get('date') or 'unknown'
+    a_type = anomaly.get('flag') or anomaly.get('type') or 'unknown'
+    parts = [
+        anomaly.get('planned_type'),
+        anomaly.get('actual_type') or anomaly.get('activity_type'),
+        anomaly.get('planned_mins'),
+    ]
+    if a_type == 'unplanned':
+        parts.append(anomaly.get('duration_mins'))
+    slug = '_'.join(_slugify(p) for p in parts if p is not None)
+    return f"{a_date}:{a_type}:{slug or a_type}"
+
+
+def _anomaly_summary(anomaly: dict) -> str:
+    """One-line human-readable summary stored at registration time."""
+    a_type = anomaly.get('flag', 'unknown')
+    if a_type == 'missing':
+        return (f"Planned {anomaly.get('planned_type')} "
+                f"({anomaly.get('planned_mins')}min) has no matching activity")
+    if a_type == 'type_mismatch':
+        return (f"Planned {anomaly.get('planned_type')}, "
+                f"actual was {anomaly.get('actual_type')}")
+    if a_type == 'duration_delta':
+        return (f"{anomaly.get('planned_mins')}min planned vs "
+                f"{anomaly.get('actual_mins')}min actual "
+                f"({anomaly.get('delta_pct')}%)")
+    if a_type == 'unplanned':
+        return (f"Unplanned {anomaly.get('activity_type')} "
+                f"({anomaly.get('duration_mins')}min) on a rest day")
+    return f"{a_type} on {anomaly.get('date')}"
+
+
+def register_detected_anomalies(detected: list | None) -> list:
+    """Persist freshly detected anomalies; return the open/asked view.
+
+    Curiosity with memory: each detected anomaly is registered ONCE
+    (idempotent by id) as status 'open' under coaching_log.json['anomalies'].
+    resolve_anomaly() moves entries to 'asked' (keeps surfacing, with the
+    athlete's partial explanation attached) or 'resolved' (stops surfacing —
+    and because the id stays in the registry, it can never re-register).
+
+    The returned list is every open/asked registry entry, newest date first:
+    lifecycle fields (id, status, summary, athlete_explanation) merged with
+    the fresh detection detail when the anomaly is still being detected.
+    """
+    log = load_coaching_log()
+    registry = log.get('anomalies', [])
+    by_id = {entry.get('id') for entry in registry}
+    today_iso = date.today().isoformat()
+    changed = False
+
+    fresh_by_id = {}
+    for anomaly in detected or []:
+        aid = anomaly_id_for(anomaly)
+        fresh_by_id[aid] = anomaly
+        if aid in by_id:
+            continue  # already registered (open, asked OR resolved) — never duplicate
+        registry.append({
+            'id': aid,
+            'date': anomaly.get('date'),
+            'type': anomaly.get('flag', 'unknown'),
+            'summary': _anomaly_summary(anomaly),
+            'status': 'open',
+            'athlete_explanation': None,
+            'created': today_iso,
+            'updated': today_iso,
+        })
+        by_id.add(aid)
+        changed = True
+
+    if len(registry) > MAX_ANOMALY_ENTRIES:
+        registry = registry[-MAX_ANOMALY_ENTRIES:]
+        changed = True
+
+    if changed:
+        log['anomalies'] = registry
+        save_coaching_log(log)
+
+    surfaced = []
+    for entry in registry:
+        if entry.get('status') not in ANOMALY_ACTIVE_STATUSES:
+            continue
+        view = {k: v for k, v in entry.items() if v is not None}
+        fresh = fresh_by_id.get(entry.get('id'))
+        if fresh:
+            for key, value in fresh.items():
+                view.setdefault(key, value)
+        surfaced.append(view)
+    surfaced.sort(key=lambda a: a.get('date') or '', reverse=True)
+    return surfaced[:MAX_SURFACED_ANOMALIES]
+
+
+# ---------------------------------------------------------------------------
+# Tagged auto-proposals (season lifecycle)
+# ---------------------------------------------------------------------------
+# The snapshot auto-generates season-lifecycle proposals (race passed without
+# a debrief, phase transition overdue). They go through the SAME approval
+# machinery as any other proposal — the athlete approve_proposal /
+# reject_proposal — but carry an event_tag so re-running the detection can
+# never duplicate one. approve_proposal drops the proposal payload when it
+# mints the decision, so creation is also recorded in an auto_proposal_tags
+# registry that outlives the proposal itself (approved/expired included).
+
+AUTO_PROPOSAL_TAGS_KEY = 'auto_proposal_tags'
+
+
+def find_tagged_proposal(log: dict, event_tag: str) -> str | None:
+    """Has a proposal carrying this event_tag ever been created?
+
+    Returns where the tag was found — 'pending' (open proposal), 'rejected'
+    (athlete said no), or 'recorded' (tag registry: covers approved and
+    expired proposals whose payload no longer carries the tag) — or None.
+    """
+    for p in log.get('pending_approvals') or []:
+        if isinstance(p, dict) and p.get('event_tag') == event_tag:
+            return 'pending'
+    for p in log.get('rejected_proposals') or []:
+        if isinstance(p, dict) and p.get('event_tag') == event_tag:
+            return 'rejected'
+    if event_tag in (log.get(AUTO_PROPOSAL_TAGS_KEY) or {}):
+        return 'recorded'
+    return None
+
+
+def ensure_tagged_proposal(event_tag: str, action_type: str, proposal: str,
+                           rationale: str, impact: str = 'major',
+                           expires_days: int = 14) -> dict:
+    """Create ONE pending approval tagged event_tag — idempotent forever.
+
+    Routes through propose_coaching_action (the canonical approval flow),
+    then stamps the proposal with the tag and records it in the
+    auto_proposal_tags registry. A tag that already exists anywhere
+    (open, approved, rejected, expired) blocks re-creation, so detection
+    can run on every snapshot without nagging.
+
+    Returns {'created': bool, 'event_tag': ..., 'proposal_id'|'existing': ...}.
+    """
+    log = load_coaching_log()
+    existing = find_tagged_proposal(log, event_tag)
+    if existing:
+        return {'created': False, 'existing': existing, 'event_tag': event_tag}
+
+    result = json.loads(propose_coaching_action(
+        action_type=action_type, proposal=proposal, rationale=rationale,
+        impact=impact, expires_days=expires_days))
+    if 'error' in result:
+        return {'created': False, 'error': result['error'],
+                'event_tag': event_tag}
+
+    proposal_id = result.get('proposal_id')
+    log = load_coaching_log()
+    for p in log.get('pending_approvals', []):
+        if isinstance(p, dict) and p.get('id') == proposal_id:
+            p['event_tag'] = event_tag
+            p['auto_generated'] = True
+            break
+    log.setdefault(AUTO_PROPOSAL_TAGS_KEY, {})[event_tag] = {
+        'proposal_id': proposal_id,
+        'action_type': action_type,
+        'created': date.today().isoformat(),
+    }
+    save_coaching_log(log)
+    logger.info("Auto-created %s proposal %s (tag=%s)",
+                action_type, proposal_id, event_tag)
+    return {'created': True, 'proposal_id': proposal_id,
+            'event_tag': event_tag}
+
+
+# ---------------------------------------------------------------------------
+# Decision review lifecycle
+# ---------------------------------------------------------------------------
+
+def auto_transition_due_decisions(today: date | None = None) -> tuple[dict, list]:
+    """Flip active decisions past their review_date to 'needs_review'.
+
+    Runs whenever decisions are loaded (get_active_decisions, the snapshot's
+    coaching_memory). Each transition is persisted and logged once — the
+    status flip itself makes re-runs naturally idempotent. Decisions without
+    a review_date are left active (legacy entries; the due-review summary
+    still surfaces them by age).
+
+    Returns (coaching_log, transitioned_decisions).
+    """
+    today = today or date.today()
+    log = load_coaching_log()
+    transitioned = []
+    for d in log.get('decisions', []):
+        if d.get('status') != 'active':
+            continue
+        review_date = d.get('review_date')
+        if not review_date:
+            continue
+        try:
+            overdue = date.fromisoformat(review_date) < today
+        except (ValueError, TypeError):
+            continue
+        if overdue:
+            d['status'] = 'needs_review'
+            d['needs_review_since'] = today.isoformat()
+            transitioned.append(d)
+    if transitioned:
+        save_coaching_log(log)
+        logger.info(
+            "Auto-transitioned %d overdue decision(s) to needs_review: %s",
+            len(transitioned), [d.get('id') for d in transitioned])
+    return log, transitioned
+
+
+def summarize_decisions_due_review(decisions: list | None,
+                                   today: date | None = None,
+                                   review_after_days: int = 7) -> list:
+    """Compact summaries (id, decision excerpt, review_date, status) of
+    decisions due a review conversation.
+
+    Includes: status 'needs_review' (auto-transitioned past review_date),
+    active decisions whose review_date is today, and — legacy heuristic for
+    entries without a review_date — active decisions logged more than
+    review_after_days ago.
+    """
+    today = today or date.today()
+    due = []
+    for d in decisions or []:
+        status = d.get('status')
+        include = False
+        if status == 'needs_review':
+            include = True
+        elif status == 'active':
+            review_date = d.get('review_date')
+            if review_date:
+                try:
+                    include = date.fromisoformat(review_date) <= today
+                except (ValueError, TypeError):
+                    include = False
+            else:
+                d_date = d.get('date')
+                try:
+                    include = bool(d_date) and (
+                        today - date.fromisoformat(d_date)).days > review_after_days
+                except (ValueError, TypeError):
+                    include = False
+        if include:
+            due.append({
+                'id': d.get('id'),
+                'decision': (d.get('decision') or '')[:120],
+                'review_date': d.get('review_date'),
+                'status': status,
+            })
+    due.sort(key=lambda s: s.get('review_date') or '9999-12-31')
+    return due
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
@@ -73,43 +386,55 @@ def log_coaching_decision(
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
 def get_active_decisions() -> str:
     """
-    Get all active coaching decisions.
+    Get all active coaching decisions (and those overdue for review).
 
     Returns decisions that are currently influencing training plans.
     Use this at the start of planning to maintain continuity.
 
+    Loading decisions also runs the review lifecycle: any active decision
+    whose review_date has passed auto-transitions to 'needs_review'
+    (persisted once). Discuss those with the athlete, then
+    update_decision_status() them to active, completed or superseded.
+
     Returns:
-        List of active decisions with their rationale and review dates.
+        Active decisions, needs_review decisions, and ids due for review.
     """
     try:
-        log = load_coaching_log()
+        log, transitioned = auto_transition_due_decisions()
         decisions = log.get('decisions', [])
-
-        # Filter for active decisions
-        active = [d for d in decisions if d.get('status') == 'active']
-
-        # Also get decisions due for review
         today = date.today()
-        due_for_review = []
+
+        active = [d for d in decisions if d.get('status') == 'active']
+        needs_review = [d for d in decisions if d.get('status') == 'needs_review']
+
+        due_for_review = [d['id'] for d in needs_review if d.get('id')]
         for d in active:
             review_date = d.get('review_date')
             if review_date:
                 try:
-                    review = date.fromisoformat(review_date)
-                    if review <= today:
+                    if date.fromisoformat(review_date) <= today:
                         due_for_review.append(d['id'])
                 except ValueError:
                     pass
 
-        return json.dumps({
+        result = {
             'active_decisions': active,
             'count': len(active),
+            'needs_review': needs_review,
             'due_for_review': due_for_review,
-            'note': 'These decisions should influence current planning'
-        }, indent=2)
+            'note': ('These decisions should influence current planning. '
+                     'needs_review entries are past their review_date — '
+                     'discuss with the athlete, then update_decision_status '
+                     'to active, completed or superseded.'),
+        }
+        if transitioned:
+            result['auto_transitioned_to_needs_review'] = [
+                d.get('id') for d in transitioned]
+        return json.dumps(result, indent=2)
 
     except Exception as e:
         logger.exception("get_active_decisions failed")
@@ -126,9 +451,14 @@ def update_decision_status(
     """
     Update the status of a coaching decision.
 
+    Resolves needs_review decisions too: after discussing an overdue decision
+    with the athlete, move it back to 'active' (still applies), or to
+    'completed' / 'superseded'.
+
     Args:
         decision_id: ID of the decision to update
-        new_status: New status (active, completed, superseded, cancelled)
+        new_status: New status (active, completed, superseded, cancelled,
+                    needs_review)
         outcome: Optional outcome note (what happened as a result)
 
     Returns:
@@ -138,7 +468,8 @@ def update_decision_status(
         log = load_coaching_log()
         decisions = log.get('decisions', [])
 
-        valid_statuses = ['active', 'completed', 'superseded', 'cancelled']
+        valid_statuses = ['active', 'completed', 'superseded', 'cancelled',
+                          'needs_review']
         if new_status not in valid_statuses:
             return json.dumps({'error': f'Invalid status. Must be one of: {valid_statuses}'})
 
@@ -149,11 +480,27 @@ def update_decision_status(
                     d['outcome'] = outcome
                 d['status_updated'] = date.today().isoformat()
 
+                # Reactivating a decision whose review_date already passed
+                # would auto-transition it straight back to needs_review on
+                # the next load — roll the review window forward instead.
+                if new_status == 'active':
+                    review_date = d.get('review_date')
+                    try:
+                        overdue = (review_date is not None and
+                                   date.fromisoformat(review_date) <= date.today())
+                    except (ValueError, TypeError):
+                        overdue = True
+                    if overdue:
+                        d['review_date'] = (
+                            date.today() + timedelta(days=7)).isoformat()
+                    d.pop('needs_review_since', None)
+
                 save_coaching_log(log)
                 return json.dumps({
                     'status': 'updated',
                     'decision_id': decision_id,
                     'new_status': new_status,
+                    'review_date': d.get('review_date'),
                     'outcome': outcome
                 }, indent=2)
 
@@ -406,10 +753,17 @@ def record_athlete_response(
     Include numeric fields when available — they enable quantified
     adaptation thresholds over time.
 
+    The pattern is normalized against the canonical registry
+    (config.ADAPTATION_PATTERN_REGISTRY: handles_volume_well,
+    recovers_quickly, needs_extra_rest_after_intensity,
+    responds_well_to_intensity, struggles_with_early_sessions, ...) so
+    counts aggregate by canonical key. Unknown patterns are still stored but
+    flagged 'unrecognized_pattern' in the response with the registry list.
+
     Args:
         stimulus: What training was done (e.g., "Long ride 2.5hrs Z2")
         response: How athlete responded (e.g., "Training Readiness 72 next day")
-        pattern: Optional pattern identified (e.g., "Responds well to long Z2")
+        pattern: Optional pattern identified (e.g., "handles_volume_well")
         load_change_pct: Week-over-week load change % when this stimulus occurred
         compliance_result: Did the athlete complete the prescribed session?
         readiness_delta: Change in readiness score (next day - day before)
@@ -432,8 +786,10 @@ def record_athlete_response(
             'stimulus': stimulus,
             'response': response
         }
+        stored_pattern, recognized = (None, True)
         if pattern:
-            new_response['pattern'] = pattern
+            stored_pattern, recognized = normalize_adaptation_pattern(pattern)
+            new_response['pattern'] = stored_pattern or pattern
 
         # Numeric fields for quantified adaptation (optional)
         if load_change_pct is not None:
@@ -454,11 +810,18 @@ def record_athlete_response(
 
         save_coaching_log(log)
 
-        return json.dumps({
+        result = {
             'status': 'recorded',
             'message': f'Response recorded: {response}',
-            'pattern': pattern
-        }, indent=2)
+            'pattern': new_response.get('pattern')
+        }
+        if pattern and not recognized:
+            result['unrecognized_pattern'] = True
+            result['known_patterns'] = sorted(ADAPTATION_PATTERN_REGISTRY)
+            result['note'] = ('Pattern stored as given but is not a canonical '
+                              'registry key — prefer a canonical key so the '
+                              'pattern can trigger coaching behavior.')
+        return json.dumps(result, indent=2)
 
     except Exception as e:
         logger.exception("record_athlete_response failed")
@@ -470,25 +833,34 @@ def get_response_patterns() -> str:
     """
     Get identified athlete response patterns.
 
-    Returns patterns from recorded responses to inform planning.
+    Returns patterns from recorded responses to inform planning. Stored
+    pattern labels are normalized against the canonical registry
+    (config.ADAPTATION_PATTERN_REGISTRY) so counts aggregate by canonical
+    key; non-canonical labels are counted under their normalized form and
+    marked recognized=false.
 
     Returns:
-        List of patterns and recent responses.
+        Pattern counts by canonical key, the registry, and recent responses.
     """
     try:
         log = load_coaching_log()
         responses = log.get('athlete_responses', [])
 
-        # Extract patterns
+        # Aggregate by canonical pattern key
         patterns = {}
         for r in responses:
-            pattern = r.get('pattern')
-            if pattern:
-                if pattern not in patterns:
-                    patterns[pattern] = {'count': 0, 'last_seen': r['date']}
-                patterns[pattern]['count'] += 1
-                if r['date'] > patterns[pattern]['last_seen']:
-                    patterns[pattern]['last_seen'] = r['date']
+            raw = r.get('pattern')
+            if not raw:
+                continue
+            canonical, recognized = normalize_adaptation_pattern(raw)
+            entry = patterns.setdefault(canonical, {
+                'count': 0,
+                'last_seen': r.get('date', ''),
+                'recognized': recognized,
+            })
+            entry['count'] += 1
+            if r.get('date', '') > entry['last_seen']:
+                entry['last_seen'] = r['date']
 
         # Get recent responses (last 10)
         recent = responses[-10:] if responses else []
@@ -496,10 +868,71 @@ def get_response_patterns() -> str:
         return json.dumps({
             'patterns': patterns,
             'pattern_count': len(patterns),
+            'canonical_registry': ADAPTATION_PATTERN_REGISTRY,
             'recent_responses': recent,
             'note': 'Use these patterns to inform training decisions'
         }, indent=2)
 
     except Exception as e:
         logger.exception("get_response_patterns failed")
+        return json.dumps({'error': str(e)})
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
+def resolve_anomaly(anomaly_id: str, explanation: str,
+                    status: str = 'resolved') -> str:
+    """
+    Record the athlete's explanation for a planned-vs-actual anomaly.
+
+    Anomalies surfaced by get_coaching_snapshot() carry persistent ids
+    ('<date>:<type>:<slug>') and live in coaching memory until explained.
+    After asking the athlete about one (Curiosity Protocol), persist their
+    answer here:
+    - status='resolved' (default): question answered — the anomaly stops
+      surfacing and never re-registers.
+    - status='asked': question raised but not fully answered — the anomaly
+      keeps surfacing WITH the partial explanation attached.
+
+    Args:
+        anomaly_id: id from snapshot planned_vs_actual.anomalies[*].id
+        explanation: The athlete's explanation (their words, or a summary)
+        status: 'resolved' (default) or 'asked'
+
+    Returns:
+        Confirmation with the updated anomaly entry.
+    """
+    try:
+        if status not in ANOMALY_RESOLVE_STATUSES:
+            return json.dumps({
+                'error': (f"Invalid status '{status}'. "
+                          f"Must be one of: {list(ANOMALY_RESOLVE_STATUSES)}")
+            })
+        if not explanation or not str(explanation).strip():
+            return json.dumps({'error': 'explanation is required — record what the athlete said'})
+
+        log = load_coaching_log()
+        registry = log.get('anomalies', [])
+        entry = next((a for a in registry if a.get('id') == anomaly_id), None)
+        if entry is None:
+            open_ids = [a.get('id') for a in registry
+                        if a.get('status') in ANOMALY_ACTIVE_STATUSES]
+            return json.dumps({
+                'error': f'Anomaly {anomaly_id} not found',
+                'open_anomaly_ids': open_ids,
+            })
+
+        entry['status'] = status
+        entry['athlete_explanation'] = str(explanation).strip()
+        entry['updated'] = date.today().isoformat()
+        save_coaching_log(log)
+
+        return json.dumps({
+            'status': 'updated',
+            'anomaly': entry,
+            'message': (f"Anomaly {status}: {entry.get('summary')}"),
+        }, indent=2)
+
+    except Exception as e:
+        logger.exception("resolve_anomaly failed")
         return json.dumps({'error': str(e)})

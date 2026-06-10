@@ -6,12 +6,13 @@ from ..parsers import parse_activities, parse_training_readiness
 from ..planner import (get_current_plan, save_weekly_plan,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
-                     get_week_constraints as _get_week_constraints)
+                     get_week_constraints as _get_week_constraints,
+                     PLAN_RETENTION_DAYS)
 from ..rules import (load_training_config, check_weekly_compliance,
                    pillars_as_name_dict, normalize_injury)
 from ..fitness import load_fitness_history, calculate_fitness_metrics, _extract_total_loads
 from ..schemas import WeeklyPlan as WeeklyPlanSchema
-from ..taxonomy import workout_family_for
+from ..taxonomy import workout_family_for, types_match
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
 from pydantic import ValidationError
@@ -20,16 +21,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Fat-finger guard: reject plan day keys further out than this.
+PLAN_MAX_FUTURE_DAYS = 21
+
+
+def _norm_type(value) -> str:
+    """Lowercase + underscore normalization (matches taxonomy lookups)."""
+    return str(value or '').strip().lower().replace(' ', '_').replace('-', '_')
+
 
 def _activity_matches_restriction(session_type: str, restriction: str) -> bool:
-    """Case-insensitive substring/alias match between session type and restriction.
+    """True when a planned session type violates an injury restriction.
 
-    'run' matches 'running' and 'trail_running'; 'running' matches 'run'.
+    Two passes:
+    1. Taxonomy: types_match() catches alias spellings a substring check
+       misses — 'long_ride' vs restricted 'cycling', 'run' vs 'trail_running'.
+    2. Substring fallback (normalized) so free-text restrictions still catch —
+       'no running' matches 'running', 'no high-impact' matches 'high_impact'.
     """
-    s = str(session_type or '').lower().strip()
-    r = str(restriction or '').lower().strip()
+    s = _norm_type(session_type)
+    r = _norm_type(restriction)
     if not s or not r:
         return False
+    if types_match(s, r):
+        return True
     return s in r or r in s
 
 
@@ -69,7 +84,8 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
     for day_str, day_data in (plan_days or {}).items():
         for session in _iter_plan_sessions(day_data):
             session_type = str(session.get('type', '')).lower()
-            if not session_type or 'rest' in session_type:
+            if (not session_type or 'rest' in session_type
+                    or workout_family_for(session_type) == 'rest'):
                 continue
             for injury in gating:
                 matched = [
@@ -141,9 +157,11 @@ def _format_plan_validation_errors(exc: ValidationError) -> list[dict]:
 def _missing_purpose_sessions(plan_days: dict) -> list[dict]:
     """Non-rest sessions whose 'purpose' is missing or blank.
 
-    Warn-only for now (Phase 3 makes this a gate): every non-rest session
-    should say WHY it exists. Wrapper sessions that just hold a nested
-    'sessions' list are skipped — their leaf sessions are checked instead.
+    This is the PURPOSE GATE (Phase 3): update_weekly_plan rejects the save
+    when this list is non-empty, unless override_purpose_gate=True. Every
+    non-rest session must say WHY it exists. Wrapper sessions that just hold
+    a nested 'sessions' list are skipped — their leaf sessions are checked
+    instead.
     """
     warnings = []
     for day_str, day_data in sorted((plan_days or {}).items()):
@@ -163,6 +181,44 @@ def _missing_purpose_sessions(plan_days: dict) -> list[dict]:
                     'warning': 'missing purpose',
                 })
     return warnings
+
+
+def _plan_date_error(plan_days: dict, today: date) -> dict | None:
+    """Today-anchored plan date validation. Returns an error dict or None.
+
+    Rejects plans whose days are ALL in the past (stale plan re-saved as
+    current) and plans containing any day key more than PLAN_MAX_FUTURE_DAYS
+    days in the future (fat-finger guard). Day keys are already ISO-validated
+    by the schema; unparseable keys are ignored here.
+    """
+    parsed = {}
+    for key in (plan_days or {}):
+        try:
+            parsed[key] = date.fromisoformat(key)
+        except (ValueError, TypeError):
+            continue
+    if not parsed:
+        return None
+
+    if all(d < today for d in parsed.values()):
+        return {
+            'error': 'plan_dates',
+            'message': 'plan is entirely historical — build a current week',
+            'plan_days': sorted(parsed),
+            'today': today.isoformat(),
+        }
+
+    horizon = today + timedelta(days=PLAN_MAX_FUTURE_DAYS)
+    too_far = sorted(k for k, d in parsed.items() if d > horizon)
+    if too_far:
+        return {
+            'error': 'plan_dates',
+            'message': (f'plan contains day(s) more than {PLAN_MAX_FUTURE_DAYS} '
+                        'days in the future — check the dates'),
+            'offending_days': too_far,
+            'latest_allowed': horizon.isoformat(),
+        }
+    return None
 
 
 @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
@@ -611,7 +667,8 @@ def get_weekly_plan() -> dict:
                        'idempotentHint': True, 'openWorldHint': False})
 def update_weekly_plan(plan: dict | None = None,
                        override_injury_gate: bool = False,
-                       plan_json: str | None = None) -> dict:
+                       plan_json: str | None = None,
+                       override_purpose_gate: bool = False) -> dict:
     """
     Saves a new or updated weekly training plan.
 
@@ -639,9 +696,9 @@ def update_weekly_plan(plan: dict | None = None,
             'rationale': 'Why this plan was generated'
         }
 
-        Session fields: 'type' is REQUIRED (string). 'purpose' explains WHY
-        the session matters — every non-rest session without one is listed
-        in the response's `purpose_warnings` (warn-only for now).
+        Session fields: 'type' is REQUIRED (string). 'purpose' is REQUIRED
+        for every non-rest session (see PURPOSE GATE below) — it explains
+        WHY the session matters.
 
         'intensity' is a free string. The special value 'discretion' marks
         an athlete-discretion day: the coach grants the athlete the choice
@@ -713,12 +770,32 @@ def update_weekly_plan(plan: dict | None = None,
             iterations: N
             steps: [list of nested phases — may include further repeats]
 
+    PURPOSE GATE
+
+        The save is REJECTED when any non-rest session lacks a non-empty
+        'purpose' string (error code 'purpose_gate', listing the offending
+        dates/sessions). Nested 'sessions' lists are checked at the leaf
+        level; rest days are exempt. Only set override_purpose_gate=True
+        with a logged rationale — a session you can't explain is a session
+        that shouldn't be on the plan.
+
     INJURY GATE
 
         Plans are rejected when any non-rest session's type intersects an
-        active/improving injury's restricted_activities. The error lists the
-        offending dates/sessions. Only set override_injury_gate=True with the
+        active/improving injury's restricted_activities (taxonomy-aware:
+        'long_ride' is caught by a 'cycling' restriction; free-text
+        restrictions match by substring). The error lists the offending
+        dates/sessions. Only set override_injury_gate=True with the
         athlete's informed consent and a logged rationale.
+
+        A plan failing BOTH gates reports both: the injury_gate error
+        carries a 'purpose_gate' section with the missing-purpose sessions.
+
+    DATE VALIDATION
+
+        Plans whose day keys are ALL in the past are rejected ('plan is
+        entirely historical — build a current week'), as is any plan with a
+        day key more than 21 days in the future (fat-finger guard).
 
     LIFECYCLE
 
@@ -731,10 +808,13 @@ def update_weekly_plan(plan: dict | None = None,
         plan: Structured plan dict (see PLAN STRUCTURE above). Preferred.
         override_injury_gate: Bypass the injury restriction check (default False)
         plan_json: DEPRECATED — JSON string form of the plan. Use `plan`.
+        override_purpose_gate: Bypass the missing-purpose rejection (default
+            False). The bypass is logged and noted in the response.
 
     Returns:
-        Confirmation (with `purpose_warnings` for non-rest sessions missing a
-        purpose) or structured error naming the offending day/field.
+        Confirmation, or a structured error naming the offending
+        day/field/sessions ('validation_error', 'plan_dates', 'purpose_gate',
+        'injury_gate').
     """
     try:
         # Tolerate legacy positional calls that pass the JSON string as the
@@ -778,21 +858,75 @@ def update_weekly_plan(plan: dict | None = None,
                          "planned session needs at least a string 'type'."),
             }
 
+        # Date sanity gate: an entirely-historical plan or a fat-fingered
+        # future date is a structural problem — reject before the coaching
+        # gates run.
+        today = date.today()
+        date_error = _plan_date_error(plan['days'], today)
+        if date_error:
+            return date_error
+
+        # Coaching gates run on the days that will survive the save's
+        # pruning (entries older than PLAN_RETENTION_DAYS get archived) —
+        # a gate shouldn't reject on a day about to be pruned anyway.
+        prune_cutoff = (today - timedelta(days=PLAN_RETENTION_DAYS)).isoformat()
+        gated_days = {d: v for d, v in plan['days'].items()
+                      if not isinstance(d, str) or d >= prune_cutoff}
+
+        # Purpose gate: every non-rest session must say WHY it exists.
+        missing_purpose = _missing_purpose_sessions(gated_days)
         # Injury write-gate: never save sessions that violate active/improving
         # injury restrictions unless explicitly overridden.
         injuries = load_athlete().get('injury_history', [])
-        violations = _injury_gate_violations(plan['days'], injuries)
+        violations = _injury_gate_violations(gated_days, injuries)
+
+        purpose_blocked = bool(missing_purpose) and not override_purpose_gate
+        injury_blocked = bool(violations) and not override_injury_gate
+
+        purpose_gate_error = {
+            'missing_purpose': missing_purpose,
+            'hint': ("Add a non-empty 'purpose' string to each listed session "
+                     "(WHY it exists), or pass override_purpose_gate=True "
+                     "with a logged rationale."),
+        }
+        if injury_blocked:
+            error = {
+                'error': 'injury_gate',
+                'message': 'Plan contains sessions restricted by active/improving injuries',
+                'violations': violations,
+                'hint': ('Adjust the offending sessions, or pass '
+                         'override_injury_gate=True with a logged rationale '
+                         'after confirming with the athlete.'),
+            }
+            if purpose_blocked:
+                # Gates compose: report BOTH failures in one round-trip.
+                error['message'] += (
+                    '; the plan also fails the purpose gate '
+                    f'({len(missing_purpose)} session(s) without a purpose)'
+                )
+                error['purpose_gate'] = purpose_gate_error
+            return error
+        if purpose_blocked:
+            return {
+                'error': 'purpose_gate',
+                'message': (f'{len(missing_purpose)} non-rest session(s) have '
+                            'no purpose — every non-rest session must explain '
+                            'WHY it exists'),
+                **purpose_gate_error,
+            }
+
+        purpose_gate_note = None
+        if missing_purpose:  # only reachable with override_purpose_gate=True
+            logger.warning(
+                "Purpose gate OVERRIDDEN in update_weekly_plan: %s",
+                missing_purpose,
+            )
+            purpose_gate_note = {
+                'purpose_gate_overridden': True,
+                'missing_purpose': missing_purpose,
+            }
         injury_gate_note = None
-        if violations:
-            if not override_injury_gate:
-                return {
-                    'error': 'injury_gate',
-                    'message': 'Plan contains sessions restricted by active/improving injuries',
-                    'violations': violations,
-                    'hint': ('Adjust the offending sessions, or pass '
-                             'override_injury_gate=True with a logged rationale '
-                             'after confirming with the athlete.'),
-                }
+        if violations:  # only reachable with override_injury_gate=True
             logger.warning(
                 "Injury gate OVERRIDDEN in update_weekly_plan: %s", violations
             )
@@ -803,20 +937,24 @@ def update_weekly_plan(plan: dict | None = None,
 
         save_weekly_plan(plan)
         # Computed AFTER save: save_weekly_plan prunes stale days in place, so
-        # warnings only cover days that actually remain in the plan.
+        # warnings only cover days that actually remain in the plan. Non-empty
+        # only when the purpose gate was overridden.
         purpose_warnings = _missing_purpose_sessions(plan.get('days', {}))
         result = {
             'status': 'success',
             'message': 'Weekly plan saved',
-            'last_updated': date.today().isoformat(),
+            'last_updated': today.isoformat(),
             'purpose_warnings': purpose_warnings,
         }
         if purpose_warnings:
             result['message'] = (
-                f"Weekly plan saved — {len(purpose_warnings)} non-rest "
-                "session(s) have no purpose. Every non-rest session should "
-                "explain WHY it matters."
+                f"Weekly plan saved with purpose gate OVERRIDDEN — "
+                f"{len(purpose_warnings)} non-rest session(s) have no "
+                "purpose. Every non-rest session should explain WHY it "
+                "matters."
             )
+        if purpose_gate_note:
+            result['purpose_gate'] = purpose_gate_note
         if injury_gate_note:
             result['injury_gate'] = injury_gate_note
         return result

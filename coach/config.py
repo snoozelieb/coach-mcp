@@ -187,6 +187,25 @@ POLARIZATION_TARGETS = {
     'high_pct': 5,       # Z4-Z5: threshold/VO2max
 }
 
+# Canonical adaptation-pattern registry (Phase 3.2).
+# record_athlete_response() normalizes its `pattern` argument against these
+# keys (case/space tolerant + unique substring match) so the counts in
+# get_response_patterns() / snapshot adaptation_patterns aggregate by
+# canonical key and can actually trigger coaching behavior. Unknown patterns
+# are still stored but flagged `unrecognized_pattern` in the tool response.
+ADAPTATION_PATTERN_REGISTRY = {
+    'handles_volume_well': 'Absorbs week-over-week volume increases without readiness, sleep or compliance decline — supports aggressive load steps.',
+    'struggles_with_volume': 'Readiness, sleep or compliance degrade when weekly volume rises — keep load steps conservative.',
+    'recovers_quickly': 'Readiness rebounds within a day after hard sessions — shorter gaps between quality sessions are fine.',
+    'slow_recovery': 'Needs longer than the usual recovery window after hard sessions — space out intensity.',
+    'needs_extra_rest_after_intensity': 'Requires an extra easy/rest day after interval or threshold work.',
+    'responds_well_to_intensity': 'Adapts strongly to interval/threshold stimulus — fitness jumps after intensity blocks.',
+    'struggles_with_early_sessions': 'Early-morning sessions get skipped or underperformed — schedule key work later in the day.',
+    'running_impact_intolerance_during_bone_healing': 'Impact loading provokes symptoms while a bone injury heals — keep impact activities gated until cleared.',
+    'sleep_sensitive': 'Performance and readiness drop sharply after short sleep — gate intensity on the sleep_gate signal.',
+    'consistent_when_scheduled': 'Completes sessions reliably when they are explicitly scheduled in the plan — vague prescriptions get dropped.',
+}
+
 # Race proximity weights for sport priority calculation
 # Maps max days_until → weight (closer race = higher weight)
 RACE_TIME_WEIGHTS = [

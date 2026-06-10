@@ -70,16 +70,25 @@ Garmin fetch cache. Note: the snapshot is intentionally NOT marked read-only
 — every call persists activity ingest + sleep/readiness data (clients gating
 auto-approval on readOnlyHint will prompt once per session).
 
-## Saving Plans (typed parameter + purpose gate)
+## Saving Plans (typed parameter + hard gates)
 
 update_weekly_plan takes a structured `plan` dict (preferred); `plan_json`
 is a deprecated JSON-string alias — provide exactly one. The plan validates
-through pydantic (errors name the offending day/field). The response
-includes `purpose_warnings` listing non-rest sessions missing a purpose
-(warn-only today; Phase 3 makes it a gate) — fix these before pushing. For
-athlete-discretion days, keep the plan truthful: set intensity 'discretion'
-plus a `constraints` list (e.g. constraints: ['Z2 only', 'no running'])
-instead of inventing a session the athlete didn't commit to.
+through pydantic (errors name the offending day/field), then three gates run:
+(1) DATE — plans whose days are all in the past are rejected ("build a
+current week"), as is any day key more than 21 days out (fat-finger guard).
+(2) PURPOSE — every non-rest session needs a non-empty `purpose` (nested
+session lists are checked at the leaf level) or the save is REJECTED with
+error 'purpose_gate'; override_purpose_gate=True bypasses with a logged
+note — a session you can't explain shouldn't be on the plan. (3) INJURY —
+sessions matching an active/improving injury's restricted_activities reject
+the save (taxonomy-aware: 'long_ride' is caught by a 'cycling' restriction;
+free-text restrictions match by substring); override_injury_gate=True
+bypasses only with athlete consent and a logged rationale. A plan failing
+purpose AND injury reports both in one error. For athlete-discretion days,
+keep the plan truthful: set intensity 'discretion' plus a `constraints` list
+(e.g. constraints: ['Z2 only', 'no running']) instead of inventing a session
+the athlete didn't commit to.
 
 ## Load Hierarchy (injury prevention — check in order)
 
@@ -147,8 +156,33 @@ impact='major') — the athlete must approve_proposal or reject_proposal.
 At session start, get_active_decisions() loads previous decisions — they
 should influence recommendations. Persist significant choices with
 log_coaching_decision(); after completed sessions, record_athlete_response()
-to feed adaptation_patterns (handles_volume_well, recovers_quickly,
-needs_extra_rest_after_intensity).
+to feed adaptation_patterns. Pattern labels are canonical (registry in
+coach/config.py: handles_volume_well, recovers_quickly,
+needs_extra_rest_after_intensity, responds_well_to_intensity,
+struggles_with_early_sessions, ...) — unknown labels are stored but flagged
+unrecognized_pattern; prefer canonical keys so counts can trigger behavior.
+
+Decision review lifecycle: loading decisions auto-transitions active
+decisions past their review_date to needs_review (persisted once). The
+snapshot's coaching_memory.decisions_due_review carries their summaries
+(id, decision excerpt, review_date) — discuss each with the athlete, then
+update_decision_status to active / completed / superseded.
+
+Anomaly memory: planned_vs_actual anomalies persist with an id and an
+open -> asked -> resolved lifecycle. Only open/asked entries surface (with
+any prior athlete_explanation). After the athlete explains one, call
+resolve_anomaly(anomaly_id, explanation, status='resolved'|'asked') —
+resolved anomalies never resurface. Never leave an anomaly silently open.
+
+Season lifecycle: the snapshot auto-creates pending approvals (idempotent —
+one per trigger, ever) when an A/B race has passed without a race_review
+decision (action_type='season_replan': debrief, then log_coaching_decision
+with decision_type='race_review' naming the event) or when
+periodization.target_transition passed > 7 days ago without a
+phase_transition decision (resolve via update_phase or by moving the date
+with a logged rationale). data_quality carries the matching season flags —
+block_dates_invalid, a_race_in_past, no_upcoming_events, phase_overdue —
+surface them to the athlete; they are never auto-fixed.
 
 ## Personalizing Load Decisions
 

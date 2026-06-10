@@ -556,9 +556,13 @@ class TestPlanLifecycle:
         old_day = (TODAY - timedelta(days=12)).isoformat()
         d0, d1 = TODAY.isoformat(), (TODAY + timedelta(days=1)).isoformat()
         plan = {'days': {
+            # old_day is past the retention cutoff: pruned on save, so the
+            # Phase 3 purpose gate must NOT reject on its missing purpose.
             old_day: {'planned': {'type': 'cycling', 'duration_mins': 60}},
-            d0: {'planned': {'type': 'cycling', 'duration_mins': 60}},
-            d1: {'planned': {'type': 'strength', 'duration_mins': 45}},
+            d0: {'planned': {'type': 'cycling', 'duration_mins': 60,
+                             'purpose': 'Aerobic base'}},
+            d1: {'planned': {'type': 'strength', 'duration_mins': 45,
+                             'purpose': 'Strength pillar'}},
         }}
 
         result = update_weekly_plan(plan_json=json.dumps(plan))
@@ -701,7 +705,8 @@ class TestInjuryWriteGate:
         })
         tomorrow = (TODAY + timedelta(days=1)).isoformat()
         plan = {'days': {tomorrow: {
-            'planned': {'type': 'running', 'duration_mins': 30},
+            'planned': {'type': 'running', 'duration_mins': 30,
+                        'purpose': 'Gated restart with athlete consent'},
         }}}
 
         result = update_weekly_plan(plan_json=json.dumps(plan),
@@ -717,7 +722,8 @@ class TestInjuryWriteGate:
         })
         tomorrow = (TODAY + timedelta(days=1)).isoformat()
         plan = {'days': {tomorrow: {
-            'planned': {'type': 'cycling', 'duration_mins': 60},
+            'planned': {'type': 'cycling', 'duration_mins': 60,
+                        'purpose': 'Aerobic base — safe under restriction'},
         }}}
 
         result = update_weekly_plan(plan_json=json.dumps(plan))

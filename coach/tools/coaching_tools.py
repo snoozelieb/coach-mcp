@@ -31,6 +31,7 @@ from ..planner import (
     load_methodology,
     load_coaching_log,
     get_coaching_context,
+    validate_season_config,
 )
 from ..rules import (
     check_weekly_compliance,
@@ -80,6 +81,18 @@ logger = logging.getLogger(__name__)
 
 # Import shared helper from strength_tools
 from .strength_tools import _get_strength_baseline_data
+
+# Phase 3 memory + season lifecycles (anomaly persistence, pattern
+# normalization, decision review, tagged auto-proposals) are owned by
+# decision_tools — the snapshot drives them.
+from .decision_tools import (
+    _slugify,
+    auto_transition_due_decisions,
+    ensure_tagged_proposal,
+    normalize_adaptation_pattern,
+    register_detected_anomalies,
+    summarize_decisions_due_review,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -461,20 +474,29 @@ def _build_adaptation_patterns() -> dict:
         log = load_coaching_log()
         responses = log.get('athlete_responses', [])
 
-        # Extract key patterns (boolean flags — backward compat)
-        patterns = {}
+        # Count by CANONICAL pattern key (config.ADAPTATION_PATTERN_REGISTRY)
+        # so case/spacing variants of the same pattern aggregate — that's
+        # what lets a pattern actually trigger coaching behavior.
+        counts = {}
+        unrecognized = {}
         for r in responses:
-            pattern = r.get('pattern')
-            if pattern:
-                patterns[pattern] = patterns.get(pattern, 0) + 1
+            raw = r.get('pattern')
+            if not raw:
+                continue
+            canonical, recognized = normalize_adaptation_pattern(raw)
+            bucket = counts if recognized else unrecognized
+            bucket[canonical] = bucket.get(canonical, 0) + 1
 
         result = {
-            'handles_volume_well': patterns.get('handles_volume_well', 0) > patterns.get('struggles_with_volume', 0),
-            'recovers_quickly': patterns.get('recovers_quickly', 0) > patterns.get('slow_recovery', 0),
-            'needs_extra_rest_after_intensity': patterns.get('needs_recovery_after_intensity', 0) > 0,
-            'patterns_logged': len(patterns),
+            'handles_volume_well': counts.get('handles_volume_well', 0) > counts.get('struggles_with_volume', 0),
+            'recovers_quickly': counts.get('recovers_quickly', 0) > counts.get('slow_recovery', 0),
+            'needs_extra_rest_after_intensity': counts.get('needs_extra_rest_after_intensity', 0) > 0,
+            'pattern_counts': counts,
+            'patterns_logged': len(counts) + len(unrecognized),
             'total_responses': len(responses),
         }
+        if unrecognized:
+            result['unrecognized_patterns'] = unrecognized
 
         # Quantified adaptation thresholds (when numeric data available)
         thresholds = derive_adaptation_thresholds(responses)
@@ -819,6 +841,104 @@ def _count_decisions_due_review(active_decisions: list, today: date,
     return due
 
 
+# Days past periodization.target_transition before the snapshot nudges the
+# athlete with a phase_transition proposal (the data_quality flag fires
+# immediately; the proposal waits out a grace window).
+PHASE_OVERDUE_GRACE_DAYS = 7
+
+
+def _season_lifecycle_proposals(training_config: dict, today: date) -> list[dict]:
+    """Auto-generate season-lifecycle approvals (idempotent by event tag).
+
+    1. RACE PASSED: an A/B-priority event whose date has passed with no
+       race_review decision mentioning it → action_type='season_replan'.
+       C/D/life_event priorities never trigger a replan.
+    2. PHASE OVERDUE: periodization.target_transition passed more than
+       PHASE_OVERDUE_GRACE_DAYS ago with no phase_transition decision since
+       → action_type='phase_transition'.
+
+    Proposals route through the normal approval machinery
+    (propose_coaching_action → approve_proposal / reject_proposal) and carry
+    an event_tag, so each real-world trigger only ever generates ONE
+    proposal — open, approved and rejected proposals all block re-creation.
+    Returns the list of freshly created proposals (usually empty).
+    """
+    created = []
+    log = load_coaching_log()
+    decisions = log.get('decisions', []) or []
+
+    def _decision_text(d):
+        return f"{d.get('decision') or ''} {d.get('rationale') or ''}".lower()
+
+    for event in (training_config or {}).get('events', []) or []:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get('priority') or '').upper() not in ('A', 'B'):
+            continue
+        try:
+            event_date = date.fromisoformat(event.get('date') or '')
+        except (ValueError, TypeError):
+            continue
+        if event_date >= today:
+            continue
+        name = event.get('name') or f"Race on {event.get('date')}"
+        reviewed = any(
+            d.get('type') == 'race_review' and name.lower() in _decision_text(d)
+            for d in decisions
+        )
+        if reviewed:
+            continue
+        days_ago = (today - event_date).days
+        result = ensure_tagged_proposal(
+            event_tag=f"season_replan:{_slugify(name)}:{event.get('date')}",
+            action_type='season_replan',
+            proposal=f"{name} completed — debrief and re-plan the season",
+            rationale=(
+                f"{name} ({event.get('priority')}-priority) was {days_ago} "
+                f"day(s) ago and no race_review decision has been logged. "
+                f"Debrief the race with the athlete (log_coaching_decision "
+                f"with decision_type='race_review'), then re-plan the season "
+                f"around the next target."),
+            impact='major',
+        )
+        if result.get('created'):
+            created.append(result)
+
+    periodization = (training_config or {}).get('periodization', {}) or {}
+    target_transition = periodization.get('target_transition')
+    try:
+        transition_date = (date.fromisoformat(target_transition)
+                           if target_transition else None)
+    except (ValueError, TypeError):
+        transition_date = None
+    if transition_date and (today - transition_date).days > PHASE_OVERDUE_GRACE_DAYS:
+        transitioned_since = any(
+            d.get('type') == 'phase_transition'
+            and (d.get('date') or '') >= target_transition
+            for d in decisions
+        )
+        if not transitioned_since:
+            current_phase = periodization.get('current_phase') or 'unknown'
+            days_overdue = (today - transition_date).days
+            result = ensure_tagged_proposal(
+                event_tag=f"phase_transition:{_slugify(current_phase)}:{target_transition}",
+                action_type='phase_transition',
+                proposal=(f"Phase transition overdue — '{current_phase}' was "
+                          f"due to end {target_transition} "
+                          f"({days_overdue} days ago)"),
+                rationale=(
+                    f"periodization.target_transition ({target_transition}) "
+                    f"passed {days_overdue} days ago with no phase_transition "
+                    f"decision since. Review the block with the athlete: "
+                    f"update_phase() to move on, or push target_transition "
+                    f"out with a logged rationale."),
+                impact='major',
+            )
+            if result.get('created'):
+                created.append(result)
+    return created
+
+
 def _activities_from_history(daily_loads: dict, start_iso: str, end_iso: str) -> list[dict]:
     """Reconstruct a parsed-activity list from persisted daily_loads.
 
@@ -1003,10 +1123,16 @@ def _build_snapshot_flags(snapshot: dict) -> dict:
     if pending:
         flags['pending_approvals'] = len(pending)
 
-    # Decisions due for review (active decisions older than 7 days)
-    review_due = _count_decisions_due_review(
-        memory.get('active_decisions', []), date.today()
-    )
+    # Decisions due for review — prefer the summaries the memory section
+    # carries (needs_review lifecycle aware); fall back to the age heuristic
+    # when only active_decisions is available.
+    due_summaries = memory.get('decisions_due_review')
+    if isinstance(due_summaries, list):
+        review_due = len(due_summaries)
+    else:
+        review_due = _count_decisions_due_review(
+            memory.get('active_decisions', []), date.today()
+        )
     if review_due:
         flags['decisions_due_for_review'] = review_due
 
@@ -1468,7 +1594,10 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
 
     The planned_vs_actual.anomalies array flags things that need attention:
     type mismatches, duration deltas, missing sessions, unplanned activities.
-    Investigate anomalies with the athlete before drawing conclusions.
+    Anomalies are PERSISTENT: each carries an id and an open/asked/resolved
+    lifecycle in coaching memory. Investigate with the athlete, then record
+    their answer via resolve_anomaly(id, explanation) — resolved anomalies
+    stop surfacing; 'asked' ones keep surfacing with the explanation attached.
 
     Args:
         sections: None or ['core'] for the default payload; add any of
@@ -1623,6 +1752,15 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 current_plan, all_fetched_activities, today,
                 daily_loads=daily_loads, sleep_history=sleep_history,
             )
+            # Curiosity with memory: persist fresh detections (idempotent by
+            # id) and surface ONLY open/asked anomalies, each carrying any
+            # prior athlete_explanation. Resolved anomalies never resurface.
+            if isinstance(planned_vs_actual, dict) and 'anomalies' in planned_vs_actual:
+                try:
+                    planned_vs_actual['anomalies'] = register_detected_anomalies(
+                        planned_vs_actual['anomalies'])
+                except Exception:
+                    logger.warning("Anomaly registry update failed", exc_info=True)
 
         # 4. Fitness metrics — overall + per-sport
         #
@@ -2119,13 +2257,34 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             data_quality['sleep_fetch_error'] = sleep_fetch_error
         if auth_error:
             data_quality['garmin_auth'] = 'required'
+        # Season-layer config validation (Phase 3): invalid block dates,
+        # A-race in the past, no upcoming events, overdue phase transition.
+        # Flags the coach must SURFACE to the athlete — never auto-fixed.
+        try:
+            data_quality.update(validate_season_config(training_config, today))
+        except Exception:
+            logger.warning("Season config validation failed", exc_info=True)
         if data_quality:
             snapshot['data_quality'] = data_quality
+
+        # Season lifecycle: race-passed debriefs + overdue phase transitions
+        # auto-propose ONCE through the normal approval machinery (idempotent
+        # by event tag) — fresh proposals surface in coaching_memory
+        # pending_approvals below; the athlete approves/rejects as usual.
+        try:
+            _season_lifecycle_proposals(training_config, today)
+        except Exception:
+            logger.warning("Season lifecycle proposal generation failed",
+                           exc_info=True)
 
         # Coaching memory (continuity across sessions).
         # Decisions/responses are stored append-only (oldest first) — surface
         # the MOST RECENT entries, newest first, not the oldest.
+        # Loading decisions runs the review lifecycle first: active decisions
+        # past their review_date persist to 'needs_review' (idempotent), and
+        # decisions_due_review carries their actual summaries, not a count.
         try:
+            decision_log, _transitioned = auto_transition_due_decisions(today)
             coaching_ctx = get_coaching_context()
             active_decisions = sorted(
                 coaching_ctx.get('active_decisions', []),
@@ -2140,8 +2299,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             snapshot['coaching_memory'] = {
                 'active_decisions': active_decisions[:5],
                 'pending_approvals': coaching_ctx.get('pending_approvals', []),
-                'decisions_due_review': _count_decisions_due_review(
-                    active_decisions, today),
+                'decisions_due_review': summarize_decisions_due_review(
+                    decision_log.get('decisions', []), today)[:10],
                 'adaptation_patterns': coaching_ctx.get('response_patterns', []),
                 'recent_responses': recent_responses[:3],
             }

@@ -4,7 +4,8 @@ Covers:
 - update_weekly_plan accepts a typed dict via `plan` (validated through
   schemas.WeeklyPlan; errors name the offending day/field)
 - `plan_json` stays as a deprecated alias (exactly one of the two required)
-- `purpose_warnings` emitted for non-rest sessions missing a purpose (warn-only)
+- the purpose gate: non-rest sessions missing a purpose REJECT the save
+  (Phase 3 graduated this from warn-only; full coverage in test_phase3_gates.py)
 - the Phase 0 injury write-gate still fires through the typed path
 - all seven planning tools return structured dicts (not JSON strings)
 """
@@ -224,7 +225,7 @@ class TestPlanJsonAlias:
 
 
 # ---------------------------------------------------------------------------
-# purpose_warnings (warn-only; Phase 3 makes it a gate)
+# purpose gate (Phase 3 graduated this from warn-only to a reject)
 # ---------------------------------------------------------------------------
 
 class TestPurposeWarnings:
@@ -236,19 +237,21 @@ class TestPurposeWarnings:
 
         result = update_weekly_plan(plan)
 
-        assert result['status'] == 'success', "warn-only — must still save"
-        assert result['purpose_warnings'] == [{
+        assert result['error'] == 'purpose_gate', \
+            "Phase 3: missing purpose rejects the save"
+        assert result['missing_purpose'] == [{
             'date': TOMORROW, 'type': 'cycling', 'name': 'No-why ride',
             'warning': 'missing purpose',
         }]
-        assert 'purpose' in result['message']
+        assert not (data_env / 'weekly_plan.json').exists()
 
     def test_blank_purpose_counts_as_missing(self, data_env):
         plan = {'days': {TOMORROW: {'planned': _session(purpose='   ')}}}
 
         result = update_weekly_plan(plan)
 
-        assert len(result['purpose_warnings']) == 1
+        assert result['error'] == 'purpose_gate'
+        assert len(result['missing_purpose']) == 1
 
     def test_sessions_with_purpose_not_warned(self, data_env):
         plan = {'days': {TOMORROW: {'planned': [

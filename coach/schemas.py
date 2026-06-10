@@ -179,7 +179,10 @@ class Session(LenientModel):
     duration_mins: float | None = None
     intensity: str | None = None       # free string; 'discretion' = athlete's choice
     constraints: list[str] | None = None  # bounds on a discretion day, e.g. ['Z2 only']
-    purpose: str | None = None         # WHY this session matters (warn-only for now)
+    purpose: str | None = None         # WHY this session matters (required by the
+                                       # update_weekly_plan purpose gate for non-rest
+                                       # sessions; Optional here so storage validation
+                                       # of legacy files stays flag-only)
     description: str | None = None
     structure: list[dict[str, Any]] | None = None
     exercises: list[SessionExercise] | None = None

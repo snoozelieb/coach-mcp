@@ -32,7 +32,6 @@ from coach.mcp_app import mcp
 READ_ONLY_TOOLS = {
     # local data only
     'generate_smart_brief',
-    'get_active_decisions',
     'get_athlete',
     'get_coaching_score',
     'get_methodology',
@@ -66,8 +65,10 @@ IDEMPOTENT_WRITE_TOOLS = {
     'add_exercise',
     'approve_progression',
     'approve_proposal',
+    'get_active_decisions',  # loads decisions, persists overdue->needs_review (idempotent)
     'reject_proposal',
     'remove_race',
+    'resolve_anomaly',
     'set_exercise_preference',
     'set_ftp',
     'set_threshold_pace',

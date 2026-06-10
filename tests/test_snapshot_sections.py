@@ -402,8 +402,11 @@ class TestCorePayload:
         # Most recent decision first
         assert memory['active_decisions'][0]['id'] == 'd0'
         assert len(memory['pending_approvals']) == 1
-        # d3..d6 are 9/12/15/18 days old -> 4 due review (counts ALL active)
-        assert memory['decisions_due_review'] == 4
+        # d3..d6 are 9/12/15/18 days old -> 4 due review (scans ALL active).
+        # Phase 3: decisions_due_review carries actual summaries, not a count.
+        due = memory['decisions_due_review']
+        assert len(due) == 4
+        assert {'id', 'decision', 'review_date', 'status'} <= set(due[0])
 
     async def test_core_plan_is_today_and_tomorrow_only(self, data_env, mock_ctx, monkeypatch):
         _seed_realistic_env(data_env)

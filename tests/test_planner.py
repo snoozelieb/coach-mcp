@@ -174,7 +174,11 @@ class TestUpdateWeeklyPlanValidation:
     def test_accepts_valid_plan(self, tmp_path, monkeypatch):
         monkeypatch.setattr(planner, 'DATA_DIR', tmp_path)
         from coach.tools.planning_tools import update_weekly_plan
-        valid_plan = {'days': {'2026-02-08': {'planned': {'type': 'running'}}}}
+        # Relative date: the Phase 3 date gate rejects entirely-historical
+        # plans; the purpose gate requires a purpose on non-rest sessions.
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        valid_plan = {'days': {tomorrow: {
+            'planned': {'type': 'running', 'purpose': 'Aerobic base'}}}}
         result = update_weekly_plan(plan_json=json.dumps(valid_plan))
         assert result['status'] == 'success'
 

@@ -156,6 +156,84 @@ def get_coaching_context() -> dict[str, Any]:
     }
 
 
+def validate_season_config(training_config: dict[str, Any],
+                           today: date | None = None) -> dict[str, Any]:
+    """Season-layer config validation → data_quality flags (flag, don't fix).
+
+    Pure function over training_config.json content. Returns a dict of flags
+    the snapshot merges into data_quality — the coach must SURFACE these to
+    the athlete; nothing is ever auto-fixed:
+
+    - block_dates_invalid: list of date-consistency problems
+      (current_block.end_date before start_date; periodization
+      target_transition before phase_start)
+    - a_race_in_past: {name, date, days_ago} — the configured A race already
+      happened; debrief it and re-plan the season
+    - no_upcoming_events: True when no configured event is today or later
+    - phase_overdue: {target_transition, days_overdue} when
+      periodization.target_transition has passed
+    """
+    today = today or date.today()
+    config = training_config or {}
+    flags: dict[str, Any] = {}
+
+    def _parse(value):
+        try:
+            return date.fromisoformat(value) if value else None
+        except (ValueError, TypeError):
+            return None
+
+    block = config.get('current_block') or {}
+    periodization = config.get('periodization') or {}
+
+    problems = []
+    block_start = _parse(block.get('start_date'))
+    block_end = _parse(block.get('end_date'))
+    if block_start and block_end and block_end < block_start:
+        problems.append(
+            f"current_block.end_date ({block.get('end_date')}) is before "
+            f"start_date ({block.get('start_date')})")
+    phase_start = _parse(periodization.get('phase_start'))
+    transition = _parse(periodization.get('target_transition'))
+    if phase_start and transition and transition < phase_start:
+        problems.append(
+            f"periodization.target_transition "
+            f"({periodization.get('target_transition')}) is before "
+            f"phase_start ({periodization.get('phase_start')})")
+    if problems:
+        flags['block_dates_invalid'] = problems
+
+    has_upcoming = False
+    past_a_races = []
+    for event in config.get('events') or []:
+        if not isinstance(event, dict):
+            continue
+        event_date = _parse(event.get('date'))
+        if event_date is None:
+            continue
+        if event_date >= today:
+            has_upcoming = True
+        elif str(event.get('priority') or '').upper() == 'A':
+            past_a_races.append((event_date, event))
+    if past_a_races:
+        race_date, race = max(past_a_races, key=lambda pair: pair[0])
+        flags['a_race_in_past'] = {
+            'name': race.get('name'),
+            'date': race.get('date'),
+            'days_ago': (today - race_date).days,
+        }
+    if not has_upcoming:
+        flags['no_upcoming_events'] = True
+
+    if transition and transition < today:
+        flags['phase_overdue'] = {
+            'target_transition': periodization.get('target_transition'),
+            'days_overdue': (today - transition).days,
+        }
+
+    return flags
+
+
 def _get_a_race_requirements(
     upcoming_events: list[dict[str, Any]],
     training_config: dict[str, Any],
