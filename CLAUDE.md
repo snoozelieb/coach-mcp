@@ -302,8 +302,8 @@ snapshot; math matches `snapshot.compliance`.
 
 ```bash
 python server.py                              # Run the MCP server (stdio, from a checkout)
-coach-mcp                                     # Same server via the console entry point (pip/uvx install)
-COACH_DATA_DIR=/path/to/data coach-mcp        # Point the server at an explicit data directory
+garmin-coach-mcp                              # Same server via the console entry point (pip/uvx install; coach-mcp is an alias)
+COACH_DATA_DIR=/path/to/data garmin-coach-mcp # Point the server at an explicit data directory
 COACH_TRANSPORT=http python server.py         # Run with HTTP transport
 COACH_CODE_MODE=1 python server.py            # Run with Code Mode (search/execute)
 python -m pytest -v                           # Run all tests

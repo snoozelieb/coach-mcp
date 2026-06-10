@@ -189,6 +189,8 @@ class TestEntryPoints:
     def test_pyproject_declares_console_script_and_build_system(self):
         py = tomllib.loads(
             (REPO_ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
+        assert py['project']['scripts']['garmin-coach-mcp'] == 'coach.server:main'
+        # coach-mcp ships as a convenience alias to the same entry point.
         assert py['project']['scripts']['coach-mcp'] == 'coach.server:main'
         assert py['build-system']['build-backend'] == 'hatchling.build'
         # coach/defaults/*.json ships because the whole package is included

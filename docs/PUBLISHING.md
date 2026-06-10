@@ -18,7 +18,7 @@ The project does not exist on PyPI yet, so register a **pending publisher**:
 1. Log in at <https://pypi.org> → account menu → **Publishing**
    (<https://pypi.org/manage/account/publishing/>).
 2. Under "Add a new pending publisher" (GitHub tab), enter exactly:
-   - **PyPI project name**: `coach-mcp`
+   - **PyPI project name**: `garmin-coach-mcp`
    - **Owner**: `snoozelieb`
    - **Repository name**: `coach-mcp`
    - **Workflow name**: `release.yml`
@@ -47,7 +47,7 @@ git push origin v1.0.0
 ```
 
 Watch the run under **Actions → Release**. When it finishes, verify
-<https://pypi.org/project/coach-mcp/> and the GitHub Release exist.
+<https://pypi.org/project/garmin-coach-mcp/> and the GitHub Release exist.
 
 ## Publish to the official MCP Registry
 

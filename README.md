@@ -26,7 +26,7 @@ You need Python 3.12+, a free Garmin Connect account, and an MCP client
 No install step — your MCP client runs the server on demand:
 
 ```bash
-uvx coach-mcp
+uvx garmin-coach-mcp
 ```
 
 Jump to [Connect your MCP client](#connect-your-mcp-client) and use `uvx` as
@@ -62,7 +62,7 @@ From a source checkout, a `.env` file works too.
 claude mcp add coach-mcp \
   --env GARMIN_EMAIL=you@example.com \
   --env GARMIN_PASSWORD=your_garmin_password \
-  -- uvx coach-mcp
+  -- uvx garmin-coach-mcp
 ```
 
 Or in `.mcp.json`:
@@ -72,7 +72,7 @@ Or in `.mcp.json`:
   "mcpServers": {
     "coach-mcp": {
       "command": "uvx",
-      "args": ["coach-mcp"],
+      "args": ["garmin-coach-mcp"],
       "env": {
         "GARMIN_EMAIL": "you@example.com",
         "GARMIN_PASSWORD": "your_garmin_password",
@@ -94,7 +94,7 @@ In `claude_desktop_config.json` (Settings → Developer → Edit Config):
   "mcpServers": {
     "coach-mcp": {
       "command": "uvx",
-      "args": ["coach-mcp"],
+      "args": ["garmin-coach-mcp"],
       "env": {
         "GARMIN_EMAIL": "you@example.com",
         "GARMIN_PASSWORD": "your_garmin_password",
@@ -114,7 +114,7 @@ In `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
   "mcpServers": {
     "coach-mcp": {
       "command": "uvx",
-      "args": ["coach-mcp"],
+      "args": ["garmin-coach-mcp"],
       "env": {
         "GARMIN_EMAIL": "you@example.com",
         "GARMIN_PASSWORD": "your_garmin_password",
@@ -125,8 +125,8 @@ In `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
 }
 ```
 
-If you installed with `pip install coach-mcp` instead of uvx, use
-`"command": "coach-mcp"` with no args in any of the blocks above.
+If you installed with `pip install garmin-coach-mcp` instead of uvx, use
+`"command": "garmin-coach-mcp"` with no args in any of the blocks above.
 
 ## First run
 
@@ -246,11 +246,11 @@ committed.
 
 ```bash
 # HTTP / SSE transport instead of stdio
-COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 coach-mcp
+COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
 
 # Code Mode (search/execute meta-tools instead of 48 individual tools)
 pip install fastmcp[code-mode]
-COACH_CODE_MODE=1 coach-mcp
+COACH_CODE_MODE=1 garmin-coach-mcp
 
 # Standalone morning audit
 python scripts/daily_loop.py          # template-based brief

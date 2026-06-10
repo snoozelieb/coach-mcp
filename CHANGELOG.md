@@ -10,8 +10,9 @@ First publishable release — the end of a five-phase modernization
 (see [docs/UPGRADE_ROADMAP.md](docs/UPGRADE_ROADMAP.md) for the full rationale).
 
 ### Added
-- **Packaging**: installable via `pip install coach-mcp` / `uvx coach-mcp`
-  with a `coach-mcp` console entry point; `COACH_DATA_DIR` env var with
+- **Packaging**: installable via `pip install garmin-coach-mcp` /
+  `uvx garmin-coach-mcp` with a `garmin-coach-mcp` console entry point
+  (`coach-mcp` ships as an alias); `COACH_DATA_DIR` env var with
   data-dir resolution (env var → checkout `data/` → per-user directory);
   published to PyPI and the official MCP Registry.
 - **Hard coaching gates, code-enforced**: `update_weekly_plan` /

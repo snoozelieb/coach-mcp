@@ -11,7 +11,7 @@
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "coach-mcp",
+      "identifier": "garmin-coach-mcp",
       "version": "1.0.0",
       "runtimeHint": "uvx",
       "transport": {

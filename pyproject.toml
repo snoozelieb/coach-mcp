@@ -1,5 +1,6 @@
-# Project metadata + pinned dependency stack. Installable via pip/uvx
-# (console script: coach-mcp) AND runnable from a checkout (python server.py).
+# Project metadata + pinned dependency stack. Installable via pip/uvx as
+# "garmin-coach-mcp" (console scripts: garmin-coach-mcp + coach-mcp alias)
+# AND runnable from a checkout (python server.py).
 # requirements.txt mirrors [project].dependencies for the documented
 # pip-install path; keep the two in sync.
 [build-system]
@@ -7,7 +8,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "coach-mcp"
+name = "garmin-coach-mcp"
 version = "1.0.0"
 description = "Adaptive AI training coach MCP server backed by Garmin Connect"
 readme = "README.md"
@@ -49,6 +50,7 @@ Changelog = "https://github.com/snoozelieb/coach-mcp/blob/main/CHANGELOG.md"
 Issues = "https://github.com/snoozelieb/coach-mcp/issues"
 
 [project.scripts]
+garmin-coach-mcp = "coach.server:main"
 coach-mcp = "coach.server:main"
 
 [dependency-groups]
