@@ -4,6 +4,7 @@ from ..mcp_app import mcp
 from ..web_utils import fetch_page_text
 from ..planner import save_json_file
 from ..rules import load_training_config
+from ..taxonomy import race_sport_for
 from ..config import (VALID_PRIORITIES, ELEVATION_SIGNIFICANCE_THRESHOLD,
                     HIGH_ALTITUDE_THRESHOLD)
 from datetime import date, timedelta
@@ -236,11 +237,25 @@ def add_race(
         config['events'] = events
         save_json_file('training_config.json', config)
 
-        return json.dumps({
+        response = {
             'status': 'success',
             'message': f"Added {priority.upper()}-race: {name} on {race_date}",
-            'event': new_event
-        }, indent=2)
+            'event': new_event,
+        }
+        # Surface the taxonomy-derived sport so unrecognized race types are
+        # visible immediately (unknown types fall back to overall CTL in
+        # sport-specific fitness lookups).
+        if race_type:
+            sport = race_sport_for(race_type)
+            response['sport'] = sport
+            if sport is None:
+                response['warning'] = (
+                    f"Race type '{race_type}' is not a recognized race type — "
+                    "sport-specific fitness tracking will fall back to overall CTL. "
+                    "Known types include: multi_day_mtb, road_cycling, mtb, trail_ultra, "
+                    "marathon, half_marathon, 10k, 5k, triathlon, swimming, tournament."
+                )
+        return json.dumps(response, indent=2)
 
     except Exception as e:
         logger.exception("add_race failed")

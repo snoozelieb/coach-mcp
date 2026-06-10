@@ -6,6 +6,12 @@ and make the codebase easier to maintain.
 """
 from pathlib import Path
 
+from .taxonomy import (
+    RACE_TYPE_TO_SPORT,
+    garmin_types_in_sport_group,
+    sport_group_for,
+)
+
 # Paths
 DATA_DIR = Path(__file__).parent.parent / "data"
 TOKEN_DIR = str(Path(__file__).parent.parent / ".garth")  # String for garth compatibility
@@ -156,26 +162,21 @@ DEFAULT_EQUIVALENCE_GROUPS = {
 }
 
 # Activity restrictions by injury type (common patterns)
-# Sport group mapping for sport-specific fitness tracking
-# Groups align with race calendar (cycling A-race, running events) and training pillars
+# Sport group mapping for sport-specific fitness tracking.
+# Groups align with race calendar (cycling A-race, running events) and training
+# pillars. Derived from the canonical taxonomy (coach/taxonomy.py) so the
+# vocabulary cannot drift between modules.
 SPORT_GROUPS = {
-    'cycling': ['cycling', 'mountain_biking', 'indoor_cycling', 'virtual_ride',
-                'gravel_cycling', 'road_biking'],
-    'running': ['running', 'trail_running', 'treadmill_running', 'track_running'],
-    'strength': ['strength_training', 'indoor_cardio', 'functional_strength'],
+    'cycling': garmin_types_in_sport_group('cycling'),
+    'running': garmin_types_in_sport_group('running'),
+    'strength': garmin_types_in_sport_group('strength'),
     'other': [],  # catchall for padel, ultimate_disc, yoga, pilates, swimming, etc.
 }
-
-# Inverse lookup built from SPORT_GROUPS
-_ACTIVITY_TO_SPORT = {}
-for _group, _types in SPORT_GROUPS.items():
-    for _t in _types:
-        _ACTIVITY_TO_SPORT[_t] = _group
 
 
 def get_sport_group(activity_type: str) -> str:
     """Return the sport group for an activity type ('cycling', 'running', 'strength', or 'other')."""
-    return _ACTIVITY_TO_SPORT.get(activity_type, 'other')
+    return sport_group_for(activity_type)
 
 
 
@@ -205,12 +206,10 @@ SLEEP_NAP_EFFECTIVE_MINS = 15      # Minimum nap to count as recovery
 SLEEP_VARIANCE_THRESHOLD_HRS = 2   # Flag inconsistent sleep hygiene
 SLEEP_TARGET_DEFAULT_HRS = 7.5     # Fallback when athlete hasn't set personal target
 
-# Race type → sport group mapping (used for sport-specific CTL lookups)
-RACE_TYPE_SPORT_MAP = {
-    'multi_day_mtb': 'cycling', 'road_cycling': 'cycling',
-    'trail_ultra': 'running', 'running_marathon': 'running',
-    'running_half': 'running', 'running_ultra': 'running',
-}
+# Race type → sport group mapping (used for sport-specific CTL lookups).
+# Kept as a module constant for backward compatibility — the canonical map
+# lives in coach/taxonomy.py (use taxonomy.race_sport_for for lookups).
+RACE_TYPE_SPORT_MAP = dict(RACE_TYPE_TO_SPORT)
 
 # Clinical reference sources
 PHYSIOPEDIA_BASE_URL = "https://www.physio-pedia.com"

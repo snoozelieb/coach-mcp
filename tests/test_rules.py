@@ -239,10 +239,16 @@ class TestCheckWeeklyCompliance:
 
 
 class TestCheckSafetyRules:
+    # NOTE: check_safety_rules counts consecutive hard DAYS (not activities),
+    # anchored to today — tests use relative dates so the streak is current.
+
     def test_warns_on_consecutive_hard_days(self):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        two_days_ago = (date.today() - timedelta(days=2)).isoformat()
         activities = [
-            {'type': 'ultimate_disc', 'duration_mins': 60, 'date': '2025-12-05'},
-            {'type': 'interval_training', 'duration_mins': 45, 'date': '2025-12-04'},
+            {'type': 'ultimate_disc', 'duration_mins': 60, 'date': yesterday},
+            {'type': 'interval_training', 'duration_mins': 45, 'date': two_days_ago},
         ]
 
         result = check_safety_rules(activities, constraints={'max_consecutive_hard_days': 2})
@@ -250,9 +256,12 @@ class TestCheckSafetyRules:
         assert any('consecutive hard days' in w for w in result['warnings'])
 
     def test_blocks_hard_after_max_consecutive(self):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        two_days_ago = (date.today() - timedelta(days=2)).isoformat()
         activities = [
-            {'type': 'ultimate_disc', 'duration_mins': 60},
-            {'type': 'hiit', 'duration_mins': 30},
+            {'type': 'ultimate_disc', 'duration_mins': 60, 'date': yesterday},
+            {'type': 'hiit', 'duration_mins': 30, 'date': two_days_ago},
         ]
         today_plan = {'type': 'interval_training', 'duration_mins': 45}
 

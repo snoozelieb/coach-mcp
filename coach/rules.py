@@ -17,6 +17,7 @@ from .config import (
     METHODOLOGY_FILE,
     ATHLETE_FILE,
 )
+from . import taxonomy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -225,7 +226,13 @@ def load_training_config() -> dict[str, Any]:
 
 def get_activity_classifications() -> dict[str, set]:
     """
-    Load activity type classifications from methodology.json.
+    Load activity type classifications: canonical taxonomy + methodology.json.
+
+    The canonical taxonomy (coach/taxonomy.py) provides the baseline so that
+    plan aliases ('strength', 'long_ride') and Garmin types
+    ('strength_training', 'mountain_biking') classify identically.
+    methodology.json activity_classification entries are unioned in, so
+    user-added types extend (never shrink) the canonical sets.
 
     Returns dict with sets: strength_types, mobility_types, cardio_types, high_intensity_types
     """
@@ -237,12 +244,11 @@ def get_activity_classifications() -> dict[str, set]:
     else:
         classifications = {}
 
-    # Return classifications with hardcoded defaults as fallbacks
     return {
-        'strength_types': set(classifications.get('strength_types', ['strength_training', 'indoor_cardio', 'functional_strength'])),
-        'mobility_types': set(classifications.get('mobility_types', ['yoga', 'pilates', 'stretching', 'breathwork'])),
-        'cardio_types': set(classifications.get('cardio_types', ['running', 'cycling', 'swimming', 'trail_running', 'open_water_swimming'])),
-        'high_intensity_types': set(classifications.get('high_intensity_types', ['ultimate_disc', 'hiit', 'interval_training', 'track_running'])),
+        'strength_types': set(classifications.get('strength_types', [])) | taxonomy.pillar_types('strength'),
+        'mobility_types': set(classifications.get('mobility_types', [])) | taxonomy.pillar_types('mobility'),
+        'cardio_types': set(classifications.get('cardio_types', [])) | taxonomy.pillar_types('long_effort'),
+        'high_intensity_types': set(classifications.get('high_intensity_types', [])) | taxonomy.high_intensity_types(),
     }
 
 
@@ -441,6 +447,31 @@ def check_weekly_compliance(
     return result
 
 
+def _activity_day(activity: dict[str, Any]) -> date | None:
+    """Parse an activity's date to a date object, or None when missing/invalid."""
+    raw = activity.get('date')
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def _consecutive_hard_days(hard_by_day: dict[date, bool], anchor: date) -> int:
+    """Count consecutive hard DAYS walking backwards from anchor (inclusive).
+
+    A day breaks the streak when it has no activities (rest) or only
+    non-hard activities.
+    """
+    streak = 0
+    day = anchor
+    while hard_by_day.get(day, False):
+        streak += 1
+        day -= timedelta(days=1)
+    return streak
+
+
 def check_safety_rules(
     recent_activities: list[dict[str, Any]],
     today_plan: dict[str, Any] = None,
@@ -449,8 +480,13 @@ def check_safety_rules(
     """
     Check safety constraints for training decisions.
 
+    Counts DAYS, not activities: two hard activities on the same day are one
+    hard day; a rest day (no activities) breaks a hard-day streak; a race only
+    triggers the mandatory-rest gate while today is still inside the rest
+    window after the race date.
+
     Args:
-        recent_activities: Last 7-14 days of activities, sorted by date descending (most recent first)
+        recent_activities: Last 7-14 days of activities (any order; grouped by date)
         today_plan: Planned session for today (optional)
         constraints: Safety constraints (loads from config if None)
 
@@ -471,35 +507,45 @@ def check_safety_rules(
     max_consecutive_hard = constraints.get('max_consecutive_hard_days', 2)
     rest_after_race = constraints.get('mandatory_rest_after_race_days', 1)
 
-    # Sort activities by date descending to ensure correct order
-    sorted_activities = sorted(
-        recent_activities,
-        key=lambda a: a.get('date', ''),
-        reverse=True
-    )
+    today = date.today()
 
-    # Check for consecutive hard days
-    if sorted_activities:
-        consecutive_hard = 0
-        for activity in sorted_activities[:7]:  # Last 7 days
-            classification = classify_activity(activity)
-            if classification['is_hard']:
-                consecutive_hard += 1
-            else:
-                break  # Reset on non-hard day
+    # --- Consecutive hard DAYS gate -------------------------------------
+    # A day is hard when ANY activity that day is hard.
+    hard_by_day: dict[date, bool] = {}
+    undated_hard = False
+    for activity in recent_activities:
+        classification = classify_activity(activity)
+        day = _activity_day(activity)
+        if day is None:
+            # Undated activities can't be placed on the calendar — treated
+            # below as one extra day adjacent to the most recent known day.
+            undated_hard = undated_hard or classification['is_hard']
+            continue
+        hard_by_day[day] = hard_by_day.get(day, False) or classification['is_hard']
 
-        if consecutive_hard >= max_consecutive_hard:
-            warnings.append(f"{consecutive_hard} consecutive hard days - recovery recommended")
+    if undated_hard:
+        anchor = max(hard_by_day) if hard_by_day else today - timedelta(days=1)
+        hard_by_day[anchor] = True
 
-        if today_plan:
-            today_classification = classify_activity(today_plan)
-            if today_classification['is_hard'] and consecutive_hard >= max_consecutive_hard:
-                blocked.append("Cannot schedule hard session - maximum consecutive hard days reached")
+    # Streak must be CURRENT (running into today or yesterday) to gate
+    # today's session — a rest day since the last hard day resets it.
+    streak_anchor = today if hard_by_day.get(today) else today - timedelta(days=1)
+    consecutive_hard = _consecutive_hard_days(hard_by_day, streak_anchor)
 
-    # Check for race in recent history requiring rest
-    # Look for both "race" in name AND race activity types
+    if consecutive_hard >= max_consecutive_hard:
+        warnings.append(f"{consecutive_hard} consecutive hard days - recovery recommended")
+
+    if today_plan:
+        today_classification = classify_activity(today_plan)
+        if today_classification['is_hard'] and consecutive_hard >= max_consecutive_hard:
+            blocked.append("Cannot schedule hard session - maximum consecutive hard days reached")
+
+    # --- Post-race rest gate ---------------------------------------------
+    # A race gates training only while today is inside the mandatory rest
+    # window (race day + rest_after_race days). Undated race activities are
+    # treated as recent (conservative).
     race_types = {'race', 'competition', 'event', 'triathlon', 'marathon'}
-    for activity in sorted_activities[:rest_after_race + 1]:
+    for activity in recent_activities:
         activity_name = (activity.get('name', '') or '').lower()
         activity_type = (activity.get('type', '') or '').lower()
 
@@ -508,12 +554,19 @@ def check_safety_rules(
             'competition' in activity_name or
             activity_type in race_types
         )
+        if not is_race:
+            continue
 
-        if is_race:
-            warnings.append("Recent race detected - ensure adequate recovery")
-            if today_plan:
-                blocked.append(f"Mandatory {rest_after_race}-day rest after race")
-            break
+        day = _activity_day(activity)
+        if day is not None:
+            days_since_race = (today - day).days
+            if days_since_race < 0 or days_since_race > rest_after_race:
+                continue  # future event or rest window already served
+
+        warnings.append("Recent race detected - ensure adequate recovery")
+        if today_plan:
+            blocked.append(f"Mandatory {rest_after_race}-day rest after race")
+        break
 
     return {
         'safe': len(blocked) == 0,
