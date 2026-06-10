@@ -376,7 +376,7 @@ class TestCorePayload:
         # current_time_context is the FIRST key
         assert next(iter(result)) == 'current_time_context'
 
-    async def test_core_fitness_metrics_carry_acwr_status_and_shadow(
+    async def test_core_fitness_metrics_carry_acwr_status_and_ewma_reference(
             self, data_env, mock_ctx, monkeypatch):
         _seed_realistic_env(data_env)
         _patch_garmin(monkeypatch, _default_client())
@@ -384,8 +384,12 @@ class TestCorePayload:
         result = await _snapshot(mock_ctx)
 
         fm = result['fitness_metrics']
-        assert 'acwr_status' in fm and 'acwr_shadow' in fm
+        # Rolling 7d:28d primary + labeled legacy EWMA reference
+        # (cutover 2026-06-10; the acwr_shadow key is retired)
+        assert 'acwr_status' in fm and 'acwr_ewma' in fm
+        assert 'acwr_shadow' not in fm
         assert set(fm['acwr_status']) == {'value', 'zone', 'safe'}
+        assert set(fm['acwr_ewma']) == {'value', 'zone', 'safe', 'note'}
         assert 'load_hierarchy' in fm
 
     async def test_core_carries_injuries_and_memory(self, data_env, mock_ctx, monkeypatch):

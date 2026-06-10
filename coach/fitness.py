@@ -5,7 +5,10 @@ Implements science-based metrics:
 - CTL (Chronic Training Load) - 42-day exponentially weighted fitness
 - ATL (Acute Training Load) - 7-day exponentially weighted fatigue
 - TSB (Training Stress Balance) - Form = CTL - ATL
-- ACWR (Acute:Chronic Workload Ratio) - Injury risk indicator
+- ACWR (Acute:Chronic Workload Ratio) - Injury risk indicator. Primary model
+  is the classic rolling 7d:28d coupled-window ratio (Hulin/Gabbett) since
+  the 2026-06-10 cutover; the legacy EWMA ratio is kept as a labeled
+  reference (acwr_ewma)
 - Intensity distribution tracking (80/20 polarized model)
 
 Based on research from TrainingPeaks, Firstbeat, and Norwegian Olympic methodology.
@@ -89,14 +92,20 @@ def calculate_ewma(values: list[float], time_constant: int) -> float:
 ACWR_ROLLING_ACUTE_DAYS = 7
 ACWR_ROLLING_CHRONIC_DAYS = 28
 
+# Label attached to the demoted EWMA ACWR wherever it is exposed.
+ACWR_EWMA_REFERENCE_NOTE = (
+    "legacy EWMA model — reference only, retired as primary 2026-06-10"
+)
+
 
 def classify_acwr_zone(acwr: float) -> tuple[str, str]:
     """Classify an ACWR value into a zone using the research thresholds.
 
     Thresholds (config): < 0.8 low, 0.8-1.3 optimal, 1.3-1.5 elevated,
-    > 1.5 danger. NOTE: these thresholds come from classic 7d:28d
-    rolling-average research; applying them to the EWMA values is the
-    known mismatch the shadow model exists to quantify.
+    > 1.5 danger. These thresholds come from classic 7d:28d rolling-average
+    research and are NATIVE to the rolling primary model (cutover
+    2026-06-10). The legacy EWMA reference value reuses the same labels
+    purely for comparability.
 
     Returns:
         (zone, risk_description) tuple.
@@ -112,7 +121,7 @@ def classify_acwr_zone(acwr: float) -> tuple[str, str]:
 
 
 def calculate_rolling_acwr(loads_list: list[float]) -> float:
-    """Classic rolling-average ACWR (SHADOW model — not yet a decision input).
+    """Classic rolling-average ACWR (PRIMARY decision model since 2026-06-10).
 
     acute   = mean daily load over the last 7 days
     chronic = mean daily load over the last 28 days (coupled windows: the
@@ -120,9 +129,11 @@ def calculate_rolling_acwr(loads_list: list[float]) -> float:
               Hulin/Gabbett 7d:28d methodology)
 
     This is the model the 0.8/1.3/1.5 thresholds were actually derived
-    against. It runs IN SHADOW alongside the EWMA model until the 90-day
-    comparison report (scripts/acwr_shadow_report.py) has been reviewed;
-    cutover recalibrates every consumer constant in the same commit.
+    against. It ran in shadow alongside the EWMA model for 90 days; the
+    owner-approved cutover (mean abs diff 0.264, 42% zone mismatch, and the
+    May 11-13 post-stage-race danger window the EWMA model missed) made it
+    the primary on 2026-06-10. The EWMA value survives as a clearly-labeled
+    reference (``acwr_ewma``).
 
     Args:
         loads_list: Daily loads, oldest first. Rest days must be present
@@ -153,19 +164,19 @@ def calculate_fitness_metrics(
 
     Two ACWR models are returned side by side:
 
-    - ``acwr`` / ``acwr_status`` (EWMA model — CURRENT decision model):
-      ATL/CTL where both are EWMAs with k = 2/(N+1) (N=7 acute, N=42
-      chronic). Audit note: k = 2/(N+1) decays roughly twice as fast as
-      the TrainingPeaks k = 1/N convention this module cites, and the
-      0.8/1.3/1.5 thresholds applied to it come from rolling-average
-      research. DO NOT silently change these numbers — cutover requires
-      recomputing historical snapshots and recalibrating every consumer
-      constant (CTL_TARGETS, volume steps, thresholds) in one commit.
+    - ``acwr`` / ``acwr_status`` / ``acwr_risk`` (classic rolling model —
+      PRIMARY since the 2026-06-10 cutover): 7-day mean / 28-day mean daily
+      load (coupled windows, Hulin/Gabbett), the model the 0.8/1.3/1.5
+      thresholds were derived against. Promoted after the owner reviewed
+      the 90-day shadow report (scripts/acwr_shadow_report.py).
 
-    - ``acwr_rolling`` / ``acwr_rolling_status`` (classic rolling model —
-      SHADOW): 7-day mean / 28-day mean daily load (coupled windows), the
-      model the thresholds were derived against. Shadow-only until the
-      90-day comparison report (scripts/acwr_shadow_report.py) is reviewed.
+    - ``acwr_ewma`` (legacy EWMA model — REFERENCE ONLY): ATL/CTL where
+      both are EWMAs with k = 2/(N+1) (N=7 acute, N=42 chronic). Retired
+      as primary 2026-06-10; kept as a labeled ``{value, zone, safe, note}``
+      block for continuity with pre-cutover analyses.
+
+    CTL/ATL/TSB math is UNCHANGED by the cutover — their EWMA scale is
+    self-consistent and CTL_TARGETS / volume steps are tuned against it.
 
     Args:
         daily_loads: Dict mapping date strings to training load values
@@ -174,8 +185,8 @@ def calculate_fitness_metrics(
             (clock discipline; see tests/test_clock_discipline.py).
 
     Returns:
-        Dict with ctl, atl, tsb, acwr (EWMA), acwr_rolling (shadow),
-        acwr_rolling_status, and metadata
+        Dict with ctl, atl, tsb, acwr (rolling primary), acwr_status,
+        acwr_risk, acwr_ewma (legacy reference), and metadata
     """
     # Build list of daily loads for the calculation window
     # Need CTL_TIME_CONSTANT_DAYS of history for accurate CTL
@@ -199,19 +210,21 @@ def calculate_fitness_metrics(
     # Calculate TSB (form) = CTL - ATL
     tsb = round(ctl - atl, 1)
 
-    # Calculate ACWR (Acute:Chronic Workload Ratio) — EWMA model (current)
-    if ctl > 0:
-        acwr = round(atl / ctl, 2)
-    else:
-        acwr = 1.0 if atl == 0 else 2.0  # No chronic fitness = high ratio
-
-    # Determine ACWR status
+    # Calculate ACWR (Acute:Chronic Workload Ratio) — PRIMARY: classic
+    # rolling 7d:28d coupled windows (see calculate_rolling_acwr).
+    acwr = calculate_rolling_acwr(loads_list)
     acwr_status, acwr_risk = classify_acwr_zone(acwr)
 
-    # SHADOW MODEL: classic 7d:28d rolling-average ACWR, computed alongside
-    # the EWMA value for the comparison period (see calculate_rolling_acwr).
-    acwr_rolling = calculate_rolling_acwr(loads_list)
-    rolling_zone, _rolling_risk = classify_acwr_zone(acwr_rolling)
+    # Legacy EWMA ACWR (ATL/CTL) — reference only since the 2026-06-10
+    # cutover. The 90-day shadow report showed mean abs diff 0.264 and 42%
+    # zone mismatch vs the rolling model; rolling correctly flagged the
+    # May 11-13 post-stage-race danger window the EWMA model read as
+    # optimal/low.
+    if ctl > 0:
+        acwr_ewma_value = round(atl / ctl, 2)
+    else:
+        acwr_ewma_value = 1.0 if atl == 0 else 2.0  # No chronic fitness = high ratio
+    ewma_zone, _ewma_risk = classify_acwr_zone(acwr_ewma_value)
 
     # Count days with data
     days_with_data = sum(1 for d in daily_loads.values() if d > 0)
@@ -223,11 +236,11 @@ def calculate_fitness_metrics(
         'acwr': acwr,
         'acwr_status': acwr_status,
         'acwr_risk': acwr_risk,
-        'acwr_rolling': acwr_rolling,
-        'acwr_rolling_status': {
-            'value': acwr_rolling,
-            'zone': rolling_zone,
-            'safe': rolling_zone in ('optimal', 'low'),
+        'acwr_ewma': {
+            'value': acwr_ewma_value,
+            'zone': ewma_zone,
+            'safe': ewma_zone in ('optimal', 'low'),
+            'note': ACWR_EWMA_REFERENCE_NOTE,
         },
         'days_analyzed': len(loads_list),
         'days_with_data': days_with_data,
@@ -709,8 +722,9 @@ def calculate_sport_fitness_metrics(
     """
     Calculate CTL/ATL/TSB/ACWR for a specific sport.
 
-    Extracts that sport's load from each day's by_sport dict and runs
-    the same EWMA calculation used for overall metrics.
+    Extracts that sport's load from each day's by_sport dict and runs the
+    same calculation used for overall metrics — EWMA CTL/ATL/TSB plus the
+    rolling 7d:28d primary ACWR, so the load hierarchy never mixes models.
 
     Args:
         daily_loads: v2 daily_loads dict

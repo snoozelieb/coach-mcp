@@ -87,7 +87,7 @@ DAY                       <- What should today look like?
 
 **CRITICAL: Before making ANY coaching recommendations, call `get_coaching_snapshot()` first.**
 
-**The snapshot is SECTIONED.** The default is the CORE payload (~2-3K tokens) — everything needed to coach right now: `current_time_context`, `flags`, `week_grid`, `fitness_metrics` (acwr_status + acwr_shadow + load_hierarchy), `acwr_warnings`, `injuries`, `plan_adherence`, `weekly_plan.today`/`weekly_plan.tomorrow`, `coaching_memory` (recent decisions, pending approvals, `decisions_due_review`), open `planned_vs_actual` anomalies, the compact `sleep_gate` signal, and `data_quality` (always present). Request named sections for drill-down detail — `plan`, `activities`, `fitness`, `sleep`, `recovery`, `strength`, `memory`, `goals`, `patterns`, `sport_priorities` — or `sections=['full']` for everything. Activity ingestion + sleep/readiness persistence run on EVERY call regardless of sections; `force_refresh=True` bypasses the ~300s Garmin fetch cache.
+**The snapshot is SECTIONED.** The default is the CORE payload (~2-3K tokens) — everything needed to coach right now: `current_time_context`, `flags`, `week_grid`, `fitness_metrics` (acwr_status + acwr_ewma legacy reference + load_hierarchy), `acwr_warnings`, `injuries`, `plan_adherence`, `weekly_plan.today`/`weekly_plan.tomorrow`, `coaching_memory` (recent decisions, pending approvals, `decisions_due_review`), open `planned_vs_actual` anomalies, the compact `sleep_gate` signal, and `data_quality` (always present). Request named sections for drill-down detail — `plan`, `activities`, `fitness`, `sleep`, `recovery`, `strength`, `memory`, `goals`, `patterns`, `sport_priorities` — or `sections=['full']` for everything. Activity ingestion + sleep/readiness persistence run on EVERY call regardless of sections; `force_refresh=True` bypasses the ~300s Garmin fetch cache.
 
 **The first key of the snapshot is `current_time_context`** — date, day_of_week, hour, minute, time_period (early_morning/morning/afternoon/evening/night), is_weekend. Verify it BEFORE any advice: morning fueling differs from evening recovery; "do today's session" is wrong if today is already done. The lightweight `coach://context/now` resource exposes the same data if you only need a time check. Server local time is assumed to equal athlete local time (stdio transport on the athlete's machine).
 
@@ -111,7 +111,7 @@ Check `data_quality` in the snapshot — it flags missing critical data (weight,
 2. **SPORT-SPECIFIC ACWR** (spike detection) — catches "hasn't run in 4 weeks, now wants to"
 3. **SPORT-SPECIFIC CTL** (race readiness) — build toward target WITHOUT violating levels 1 or 2
 
-The snapshot includes `fitness_metrics.acwr_status` (structured: `{value, zone, safe}`) and `load_hierarchy` with these checks pre-computed.
+The snapshot includes `fitness_metrics.acwr_status` (structured: `{value, zone, safe}`) and `load_hierarchy` with these checks pre-computed. Both ACWR levels use the same rolling 7d:28d model — the hierarchy never mixes models.
 
 ### Multi-Sport Handling
 
@@ -163,13 +163,15 @@ Use `get_coaching_score()` periodically to evaluate effectiveness:
 
 ### Load Management (ACWR Reference)
 
-Based on ACWR (Acute:Chronic Workload Ratio) research:
+ACWR is the **classic rolling 7d:28d coupled-window model** (Hulin/Gabbett): acute = 7-day mean daily load, chronic = 28-day mean (chronic window includes the acute week). This is the model the thresholds below were derived against, and it has been the PRIMARY decision model since the 2026-06-10 cutover (the 90-day shadow comparison showed mean abs diff 0.264 and 42% zone mismatch vs the old EWMA model, which also missed the May 11-13 post-stage-race danger window).
+
+Research-backed thresholds (native to the rolling model):
 - **0.8-1.3**: Sweet spot - safe to train normally
 - **< 0.8**: Undertrained - safe to increase load
 - **> 1.3**: Elevated risk - reduce intensity
 - **> 1.5**: High risk - mandatory load reduction
 
-The snapshot provides `fitness_metrics.acwr_status` with `{value, zone, safe}` — the zone labels map to these research-backed thresholds.
+The snapshot provides `fitness_metrics.acwr_status` with `{value, zone, safe}` — the zone labels map to these research-backed thresholds. `fitness_metrics.acwr_ewma` `{value, zone, safe, note}` is the retired EWMA model, kept as a clearly-labeled reference only — never base load decisions on it. CTL/ATL/TSB remain EWMA-based (their scale is self-consistent and targets are tuned against them). Historical snapshot entries in `fitness_history.json` are recomputed under the rolling model by `scripts/recompute_acwr_history.py` (supervised; `--check` dry-run, `--apply` writes after a one-time `.pre-acwr-cutover.bak`).
 
 ### Coaching Continuity
 

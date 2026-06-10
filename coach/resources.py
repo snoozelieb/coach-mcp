@@ -57,7 +57,7 @@ this resource carries the full operating doctrine.
 ## Snapshot Sections (drill-down on request)
 
 get_coaching_snapshot() defaults to a compact CORE payload: time context,
-flags, week_grid, ACWR status (+ rolling shadow) and load hierarchy,
+flags, week_grid, ACWR status (+ legacy EWMA reference) and load hierarchy,
 injuries, plan_adherence, today/tomorrow plan, coaching memory (recent
 decisions, pending approvals, decisions due review), open planned-vs-actual
 anomalies, the compact sleep_gate signal, and data_quality. Request named
@@ -101,6 +101,10 @@ the athlete didn't commit to.
 Never violate a higher level to chase a lower-level target. ACWR zones:
 0.8-1.3 sweet spot (train normally); < 0.8 undertrained (safe to increase);
 > 1.3 elevated risk (reduce intensity); > 1.5 high risk (mandatory reduction).
+ACWR at every level is the classic rolling 7d:28d coupled-window model
+(Hulin/Gabbett — the model these thresholds were derived against; primary
+since 2026-06-10). fitness_metrics.acwr_ewma is the retired EWMA model,
+kept as a labeled reference only — never base load decisions on it.
 
 ## week_grid and plan_adherence
 

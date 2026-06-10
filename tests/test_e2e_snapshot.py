@@ -354,8 +354,10 @@ class TestCoreGoldenSchema:
         assert isinstance(status['value'], (int, float))
         assert isinstance(status['zone'], str)
         assert isinstance(status['safe'], bool)
-        shadow = fm['acwr_shadow']
-        assert {'value', 'zone', 'safe', 'note'} <= set(shadow)
+        # Legacy EWMA reference (replaced acwr_shadow at the 2026-06-10 cutover)
+        ewma = fm['acwr_ewma']
+        assert {'value', 'zone', 'safe', 'note'} <= set(ewma)
+        assert 'acwr_shadow' not in fm
         # 35 days of cycling + strength history -> both sports tracked
         assert {'cycling', 'strength'} <= set(fm['by_sport'])
         for sport_metrics in fm['by_sport'].values():

@@ -99,9 +99,9 @@ from .decision_tools import (
 # Snapshot sections
 # ---------------------------------------------------------------------------
 # The default snapshot is the CORE payload (~2-3K tokens): time context,
-# flags, week_grid, ACWR status (+ shadow), injuries, plan adherence,
-# today/tomorrow plan, coaching memory, open anomalies, the sleep gate and
-# data_quality. Named sections add the heavier detail on request;
+# flags, week_grid, ACWR status (+ legacy EWMA reference), injuries, plan
+# adherence, today/tomorrow plan, coaching memory, open anomalies, the sleep
+# gate and data_quality. Named sections add the heavier detail on request;
 # sections=['full'] adds everything.
 
 SNAPSHOT_NAMED_SECTIONS = (
@@ -1003,7 +1003,7 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
     """Filter the internal full snapshot down to core + requested sections.
 
     Core ALWAYS carries: time context, flags, week_grid, slim fitness
-    metrics (acwr_status + acwr_shadow + load hierarchy), acwr_warnings,
+    metrics (acwr_status + acwr_ewma reference + load hierarchy), acwr_warnings,
     injuries, plan_adherence, today/tomorrow plan, coaching memory, open
     planned-vs-actual anomalies, the sleep gate, and data_quality. Memory +
     curiosity + the sleep gate live in the DEFAULT payload by design — a
@@ -1569,7 +1569,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
 
     By default returns the CORE payload — everything needed to coach right
     now without the heavy detail: current_time_context, flags, week_grid,
-    ACWR status (+ rolling shadow) and load hierarchy, active injuries,
+    ACWR status (rolling 7d:28d primary, + legacy EWMA reference) and load
+    hierarchy, active injuries,
     plan_adherence, today's + tomorrow's plan, coaching memory (recent
     decisions, pending approvals, decisions due review), open
     planned_vs_actual anomalies, a compact sleep_gate signal, and
@@ -1761,7 +1762,9 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 except Exception:
                     logger.warning("Anomaly registry update failed", exc_info=True)
 
-        # 4. Fitness metrics — overall + per-sport
+        # 4. Fitness metrics — overall + per-sport. ACWR at BOTH levels is the
+        # rolling 7d:28d primary model (cutover 2026-06-10) — the hierarchy
+        # never mixes models.
         #
         # LOAD HIERARCHY (injury prevention order):
         # 1. OVERALL ACWR — total body stress gate. If overall ACWR > 1.3, back off
@@ -1787,14 +1790,11 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                         'tsb': sm['tsb'], 'acwr': sm['acwr'],
                     }
 
-            # Structured ACWR status (zone + safety boolean, no prose)
+            # Structured ACWR status (zone + safety boolean, no prose).
+            # PRIMARY model: classic rolling 7d:28d (cutover 2026-06-10).
             overall_acwr = overall_metrics.get('acwr', 0)
             overall_ctl = overall_metrics.get('ctl', 0)
             acwr_zone = overall_metrics.get('acwr_status', 'unknown')
-
-            # Shadow model: classic 7d:28d rolling ACWR computed alongside
-            # the EWMA value. Decisions still use acwr_status until cutover.
-            rolling_status = overall_metrics.get('acwr_rolling_status') or {}
 
             fitness_metrics = {
                 'overall': {k: v for k, v in overall_metrics.items()},
@@ -1803,12 +1803,9 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                     'zone': acwr_zone,
                     'safe': acwr_zone in ('optimal', 'low'),
                 },
-                'acwr_shadow': {
-                    'value': rolling_status.get('value'),
-                    'zone': rolling_status.get('zone', 'unknown'),
-                    'safe': rolling_status.get('safe'),
-                    'note': 'shadow model — comparison period running until cutover',
-                },
+                # Legacy EWMA model — reference only since the 2026-06-10
+                # cutover. Carries its own {value, zone, safe, note} block.
+                'acwr_ewma': overall_metrics.get('acwr_ewma'),
                 'by_sport': sport_fitness,
                 'load_hierarchy': {
                     'overall_acwr_safe': acwr_zone in ('optimal', 'low'),

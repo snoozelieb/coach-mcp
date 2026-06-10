@@ -4,6 +4,30 @@ All notable changes to coach-mcp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **ACWR cutover to the classic rolling 7d:28d model** (owner-approved after
+  the 90-day shadow period — mean abs diff 0.264, 42% zone mismatch, and the
+  May 11-13 post-stage-race danger window the EWMA model missed). The rolling
+  coupled-window ratio (Hulin/Gabbett — the model the 0.8/1.3/1.5 thresholds
+  were derived against) is now the PRIMARY `acwr`/`acwr_status` everywhere:
+  snapshot `fitness_metrics`, `load_hierarchy`, `acwr_warnings`, the weekly
+  prescription volume adjustment, the coaching score health component, and
+  sport-specific ACWR (the load hierarchy never mixes models). The legacy
+  EWMA ratio is demoted to `fitness_metrics.acwr_ewma`
+  `{value, zone, safe, note}` — reference only. The shadow keys
+  (`acwr_rolling`, `acwr_rolling_status`, `acwr_shadow`) are removed.
+  CTL/ATL/TSB math, the 0.8/1.3/1.5 thresholds, and the [10, 15, 25] volume
+  steps are unchanged.
+
+### Added
+- `scripts/recompute_acwr_history.py`: supervised one-off migration that
+  recomputes the `acwr` field of every stored `fitness_history.json` snapshot
+  (total + per-sport) under the rolling model — `--check` dry-run by default,
+  `--apply` writes after a one-time `.pre-acwr-cutover.bak` backup;
+  ctl/atl/tsb are never touched.
+
 ## [1.0.0] - 2026-06-10
 
 First publishable release — the end of a five-phase modernization

@@ -1,22 +1,25 @@
-"""ACWR shadow comparison report: EWMA model vs classic rolling model.
+"""ACWR comparison report: rolling primary model vs legacy EWMA reference.
+
+HISTORICAL (cutover completed 2026-06-10). This report drove the shadow
+period that ended with the owner-approved cutover: over 90 days the two
+models showed mean abs diff 0.264 and 42% zone mismatch, and the rolling
+model correctly flagged the May 11-13 post-stage-race danger window
+(rolling 2.13-2.40 danger) that the then-primary EWMA model read as
+optimal/low. The classic rolling 7d:28d model is now the PRIMARY
+(``acwr`` / ``acwr_status``); the EWMA model survives only as the labeled
+``acwr_ewma`` reference. The script is retained for audit and for
+re-checking divergence on any window.
 
 READ-ONLY. Reads data/fitness_history.json and writes NOTHING — no data
 files, no logs, no caches. Safe to run against the live data directory.
 
-Context (roadmap Phase 1.5 — load model rebuild, shadow then cutover):
-- CURRENT decision model: ACWR = ATL/CTL where both are EWMAs with
-  k = 2/(N+1) (N=7/42) — roughly double the decay of the TrainingPeaks
-  k = 1/N convention the docstrings cite.
-- SHADOW model: classic rolling ACWR = 7-day mean / 28-day mean daily
-  load (coupled windows) — the model the 0.8/1.3/1.5 thresholds were
-  actually derived against.
-
-This script recomputes BOTH models for each of the last N days (default
-90) from raw daily_loads and prints a date table plus divergence stats,
-so the owner can eyeball how often the models would have disagreed
-before deciding on cutover. Cutover itself (recompute historical
-snapshots + recalibrate every consumer constant) is a separate,
-supervised step.
+Model definitions (both still computed by coach.fitness):
+- PRIMARY: classic rolling ACWR = 7-day mean / 28-day mean daily load
+  (coupled windows) — the model the 0.8/1.3/1.5 thresholds were actually
+  derived against.
+- LEGACY REFERENCE: ACWR = ATL/CTL where both are EWMAs with k = 2/(N+1)
+  (N=7/42) — roughly double the decay of the TrainingPeaks k = 1/N
+  convention.
 
 Usage:
     python scripts/acwr_shadow_report.py
@@ -87,10 +90,12 @@ def build_shadow_report(
     current = start
     while current <= as_of:
         m = calculate_fitness_metrics(flat_loads, as_of_date=current)
-        ewma_acwr = m["acwr"]
-        ewma_zone = m["acwr_status"]
-        rolling_acwr = m["acwr_rolling"]
-        rolling_zone = m["acwr_rolling_status"]["zone"]
+        # Post-cutover key shapes: acwr/acwr_status = rolling PRIMARY,
+        # acwr_ewma = legacy reference block.
+        ewma_acwr = m["acwr_ewma"]["value"]
+        ewma_zone = m["acwr_ewma"]["zone"]
+        rolling_acwr = m["acwr"]
+        rolling_zone = m["acwr_status"]
         rows.append({
             "date": current.isoformat(),
             "load": round(flat_loads.get(current.isoformat(), 0.0), 1),
@@ -154,7 +159,8 @@ def format_report(report: dict[str, Any]) -> str:
 
     lines = []
     lines.append("=" * 78)
-    lines.append("ACWR SHADOW REPORT  (EWMA current model vs classic 7d:28d rolling model)")
+    lines.append("ACWR COMPARISON REPORT  (rolling 7d:28d PRIMARY vs legacy EWMA reference)")
+    lines.append("Historical: cutover to the rolling primary completed 2026-06-10.")
     lines.append(f"Window: {report['window_start']} .. {report['as_of']}"
                  f"  ({report['days_compared']} days)")
     lines.append("READ-ONLY analysis - nothing was written.")
@@ -180,36 +186,34 @@ def format_report(report: dict[str, Any]) -> str:
     lines.append(f"  max divergence:           {mx['abs_diff']} on {mx['date']}"
                  f" (ewma {mx['ewma_acwr']} vs rolling {mx['rolling_acwr']})")
     lines.append(f"  EWMA unsafe / rolling safe days:  {s['ewma_unsafe_rolling_safe_days']}"
-                 "  (would have over-restricted)")
+                 "  (legacy model would have over-restricted)")
     lines.append(f"  rolling unsafe / EWMA safe days:  {s['rolling_unsafe_ewma_safe_days']}"
-                 "  (spike risk the current model missed)")
+                 "  (spike risk the legacy model missed)")
     lines.append("-" * 78)
     lines.append("RECOMMENDATION")
     level = s["divergence_level"]
     if level == "material":
         lines.append("  MATERIAL divergence. The two models would have coached this athlete")
-        lines.append("  differently on a meaningful share of days. Review the mismatch days")
-        lines.append("  above before relying on either zone label for load decisions.")
+        lines.append("  differently on a meaningful share of days over this window.")
     elif level == "moderate":
         lines.append("  MODERATE divergence. Models mostly agree but differ around load")
-        lines.append("  spikes/tapers. Eyeball the mismatch days before cutover.")
+        lines.append("  spikes/tapers over this window.")
     else:
-        lines.append("  LOW divergence over this window. Models track closely; cutover risk")
-        lines.append("  from the math swap itself appears small for this athlete's data.")
+        lines.append("  LOW divergence over this window. Models track closely.")
     lines.append("")
-    lines.append("  Cutover checklist (roadmap Phase 1.5 - do NOT do piecemeal):")
-    lines.append("   1. Backup data/ first (data-backups/backup-YYYYMMDD-HHMM/).")
-    lines.append("   2. Recompute historical snapshots from raw daily_loads.")
-    lines.append("   3. Recalibrate every consumer constant in the SAME commit:")
-    lines.append("      CTL_TARGETS, [10,15,25] volume steps, 0.8/1.3/1.5 thresholds.")
-    lines.append("   4. Owner reviews this report and approves before any of the above.")
+    lines.append("  HISTORICAL NOTE: the cutover to the rolling 7d:28d primary completed")
+    lines.append("  on 2026-06-10 after owner review of the 90-day shadow window (mean")
+    lines.append("  abs diff 0.264, 42% zone mismatch, May 11-13 danger window). The")
+    lines.append("  EWMA column above is the legacy reference (acwr_ewma) only — load")
+    lines.append("  decisions key off the rolling column. Historical snapshot entries")
+    lines.append("  are recomputed by scripts/recompute_acwr_history.py (supervised).")
     lines.append("=" * 78)
     return "\n".join(lines)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Read-only ACWR shadow comparison (EWMA vs classic rolling).")
+        description="Read-only ACWR comparison (rolling primary vs legacy EWMA reference).")
     parser.add_argument("--days", type=int, default=90,
                         help="Comparison window in days (default 90)")
     parser.add_argument("--history", type=Path, default=DEFAULT_HISTORY_PATH,

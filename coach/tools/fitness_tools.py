@@ -313,13 +313,10 @@ def _fitness_status(days: int = 90, *, today: date) -> dict:
                     'tsb_label': 'Training Stress Balance (Form)',
                     'acwr': metrics['acwr'],
                     'acwr_status': metrics['acwr_status'],
-                    'acwr_label': 'Acute:Chronic Workload Ratio',
-                    'acwr_shadow': {
-                        'value': metrics.get('acwr_rolling'),
-                        'zone': metrics.get('acwr_rolling_status', {}).get('zone', 'unknown'),
-                        'safe': metrics.get('acwr_rolling_status', {}).get('safe'),
-                        'note': 'shadow model — comparison period running until cutover',
-                    },
+                    'acwr_label': 'Acute:Chronic Workload Ratio (rolling 7d:28d)',
+                    # Legacy EWMA model — reference only since the
+                    # 2026-06-10 cutover ({value, zone, safe, note}).
+                    'acwr_ewma': metrics.get('acwr_ewma'),
                 },
                 'by_sport': by_sport,
             },

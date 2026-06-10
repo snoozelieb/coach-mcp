@@ -1,21 +1,23 @@
-"""Golden-value tests for the load model (Phase 1.5 — shadow then cutover).
+"""Golden-value tests for the load model (post-cutover, 2026-06-10).
 
 Pins BOTH ACWR models against hand-computed values so any future change to
 either is intentional:
 
-- EWMA model (CURRENT decision model): k = 2/(N+1). The pinned numbers
-  encode today's behavior — if anyone changes the decay constant (e.g. to
-  the TrainingPeaks k = 1/N convention) these tests MUST fail, because
-  cutover requires recomputing historical snapshots and recalibrating every
-  consumer constant in the same commit.
-- Classic rolling model (SHADOW): acute = 7-day mean daily load, chronic =
-  28-day mean (coupled windows). Constant load => exactly 1.0; a known
-  spike week => a hand-derivable ratio.
+- Classic rolling model (PRIMARY since the 2026-06-10 cutover): acute =
+  7-day mean daily load, chronic = 28-day mean (coupled windows,
+  Hulin/Gabbett — the model the 0.8/1.3/1.5 thresholds were derived
+  against). Constant load => exactly 1.0; a known spike week => a
+  hand-derivable ratio. Exposed as ``acwr`` / ``acwr_status`` everywhere.
+- EWMA model (LEGACY REFERENCE): k = 2/(N+1). Retired as primary on
+  2026-06-10 (90-day shadow: mean abs diff 0.264, 42% zone mismatch);
+  survives as the labeled ``acwr_ewma`` {value, zone, safe, note} block.
+  CTL/ATL/TSB stay EWMA-based — their math is pinned here too.
 
 Also covers: snapshot upsert-by-date dedup (same-day re-runs must replace,
 not append), get_fitness_trend day-span math (was dividing by snapshot
 count), zone classification boundaries, the snapshot/tool exposure of
-acwr_shadow, and the read-only shadow report script.
+acwr_ewma, the read-only comparison report script, and the supervised
+recompute_acwr_history cutover script.
 """
 import json
 from datetime import date, timedelta
@@ -50,11 +52,14 @@ from scripts.acwr_shadow_report import (
     format_report,
     load_history,
 )
+from scripts.recompute_acwr_history import recompute_snapshot_acwr
+from scripts import recompute_acwr_history as recompute_script
 
 TODAY = date.today()
 AS_OF = date(2026, 6, 1)  # fixed date for golden-value determinism
 
-SHADOW_NOTE = 'shadow model — comparison period running until cutover'
+# Exact user-visible label on the demoted EWMA reference — pinned here.
+EWMA_NOTE = 'legacy EWMA model — reference only, retired as primary 2026-06-10'
 
 
 def _constant_loads(load: float, days: int, end: date) -> dict[str, float]:
@@ -88,7 +93,7 @@ def _write(data_dir, filename, payload):
 
 
 # ---------------------------------------------------------------------------
-# Rolling (shadow) model — golden values
+# Rolling (PRIMARY) model — golden values
 # ---------------------------------------------------------------------------
 
 class TestRollingAcwrGoldenValues:
@@ -97,22 +102,22 @@ class TestRollingAcwrGoldenValues:
         assert ACWR_ROLLING_CHRONIC_DAYS == 28
 
     def test_constant_load_is_exactly_one(self):
-        """Constant daily load => acute mean == chronic mean => exactly 1.0."""
+        """Constant daily load => acute mean == chronic mean => exactly 1.0.
+
+        Hand-computed: acute = mean(last 7 @ 50) = 50; chronic =
+        mean(last 28 @ 50) = 50; 50/50 = 1.0 ('optimal')."""
         loads = _constant_loads(50.0, 35, AS_OF)
         m = calculate_fitness_metrics(loads, AS_OF)
-        assert m['acwr_rolling'] == 1.0
-        assert m['acwr_rolling_status'] == {
-            'value': 1.0, 'zone': 'optimal', 'safe': True,
-        }
+        assert m['acwr'] == 1.0
+        assert m['acwr_status'] == 'optimal'
 
     def test_spike_week_known_ratio(self):
         """28d @ 50 then 7d @ 100:
         acute = 100, chronic = (21*50 + 7*100)/28 = 62.5 => 1.6 exactly."""
         loads = _spike_loads(50.0, 100.0, AS_OF)
         m = calculate_fitness_metrics(loads, AS_OF)
-        assert m['acwr_rolling'] == 1.6
-        assert m['acwr_rolling_status']['zone'] == 'danger'
-        assert m['acwr_rolling_status']['safe'] is False
+        assert m['acwr'] == 1.6
+        assert m['acwr_status'] == 'danger'
 
     def test_direct_function_spike_series(self):
         loads_list = [50.0] * 28 + [100.0] * 7
@@ -137,17 +142,23 @@ class TestRollingAcwrGoldenValues:
         loads_list = [0.0] * 15 + [50.0] * 28
         assert calculate_rolling_acwr(loads_list) == 1.0
 
-    def test_existing_keys_unchanged(self):
-        """Adding the shadow model must not touch existing return keys."""
+    def test_return_keys_post_cutover(self):
+        """Primary keys keep their names; the shadow keys are GONE and the
+        legacy EWMA reference rides along as acwr_ewma."""
         m = calculate_fitness_metrics(_constant_loads(50.0, 35, AS_OF), AS_OF)
         for key in ('ctl', 'atl', 'tsb', 'acwr', 'acwr_status', 'acwr_risk',
-                    'days_analyzed', 'days_with_data', 'data_sufficient',
-                    'as_of_date'):
-            assert key in m, f'missing pre-existing key {key}'
+                    'acwr_ewma', 'days_analyzed', 'days_with_data',
+                    'data_sufficient', 'as_of_date'):
+            assert key in m, f'missing key {key}'
+        # Shadow period is over — the old shadow keys must not linger.
+        assert 'acwr_rolling' not in m
+        assert 'acwr_rolling_status' not in m
+        assert set(m['acwr_ewma']) == {'value', 'zone', 'safe', 'note'}
+        assert m['acwr_ewma']['note'] == EWMA_NOTE
 
 
 # ---------------------------------------------------------------------------
-# EWMA (current) model — golden values pinning the existing constants
+# EWMA model — golden values pinning CTL/ATL math + the legacy reference
 # ---------------------------------------------------------------------------
 
 class TestEwmaGoldenValuesPinned:
@@ -166,27 +177,35 @@ class TestEwmaGoldenValuesPinned:
 
     def test_full_metrics_constant_load_golden(self):
         """35 days @ 50/day (49-day window zero-padded at the front):
-        CTL 40.6, ATL 50.0, TSB -9.4, EWMA-ACWR 1.23 ('optimal').
+        CTL 40.6, ATL 50.0, TSB -9.4 (EWMA math UNCHANGED by the cutover).
 
-        NOTE the audit finding made visible: perfectly constant load reads
-        as EWMA-ACWR 1.23 while the rolling model reads exactly 1.0. This
-        divergence is WHY the shadow comparison exists.
+        PRIMARY rolling ACWR: acute = mean(7 @ 50) = 50, chronic =
+        mean(28 @ 50) = 50 => exactly 1.0 ('optimal').
+        LEGACY EWMA reference: ATL/CTL = 50.0/40.6 = 1.2315... => 1.23 —
+        the audit finding made visible: perfectly constant load reads as
+        EWMA 1.23 while the (now primary) rolling model reads exactly 1.0.
         """
         m = calculate_fitness_metrics(_constant_loads(50.0, 35, AS_OF), AS_OF)
         assert m['ctl'] == 40.6
         assert m['atl'] == 50.0
         assert m['tsb'] == -9.4
-        assert m['acwr'] == 1.23
+        assert m['acwr'] == 1.0
         assert m['acwr_status'] == 'optimal'
-        assert m['acwr_rolling'] == 1.0
+        assert m['acwr_ewma'] == {
+            'value': 1.23, 'zone': 'optimal', 'safe': True, 'note': EWMA_NOTE,
+        }
 
     def test_full_metrics_spike_golden(self):
-        """Spike week: EWMA reads 1.71 (danger); rolling reads 1.6 (danger).
-        Both flag the spike — magnitudes differ between models."""
+        """Spike week (28d @ 50 then 7d @ 100): PRIMARY rolling reads
+        acute 100 / chronic (21*50 + 7*100)/28 = 62.5 => 1.6 (danger);
+        legacy EWMA reference reads 1.71 (danger). Both flag the spike —
+        magnitudes differ between models."""
         m = calculate_fitness_metrics(_spike_loads(50.0, 100.0, AS_OF), AS_OF)
-        assert m['acwr'] == 1.71
+        assert m['acwr'] == 1.6
         assert m['acwr_status'] == 'danger'
-        assert m['acwr_rolling'] == 1.6
+        assert m['acwr_ewma']['value'] == 1.71
+        assert m['acwr_ewma']['zone'] == 'danger'
+        assert m['acwr_ewma']['safe'] is False
 
 
 # ---------------------------------------------------------------------------
@@ -348,10 +367,10 @@ class TestFitnessTrendDayMath:
 
 
 # ---------------------------------------------------------------------------
-# Shadow exposure — query_metrics(kind='fitness') tool + coaching snapshot
+# Post-cutover exposure — query_metrics(kind='fitness') + coaching snapshot
 # ---------------------------------------------------------------------------
 
-class TestShadowExposure:
+class TestPrimaryAndReferenceExposure:
     def _seed_history(self, data_dir, days=35, load=50.0):
         daily_loads = {
             (TODAY - timedelta(days=i)).isoformat(): _v2_day(load)
@@ -367,7 +386,7 @@ class TestShadowExposure:
             'last_activity_ingest_date': TODAY.isoformat(),
         })
 
-    def test_fitness_metrics_exposes_shadow(self, tmp_path, monkeypatch):
+    def test_fitness_metrics_exposes_primary_and_reference(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
         self._seed_history(tmp_path)
 
@@ -375,15 +394,19 @@ class TestShadowExposure:
 
         assert 'error' not in result
         overall = result['metrics']['overall']
-        # EWMA model untouched (golden: constant 50 => 1.23)
-        assert overall['acwr'] == 1.23
-        shadow = overall['acwr_shadow']
-        assert shadow['value'] == 1.0  # constant load => rolling exactly 1.0
-        assert shadow['zone'] == 'optimal'
-        assert shadow['safe'] is True
-        assert shadow['note'] == SHADOW_NOTE
+        # PRIMARY is rolling: constant load => exactly 1.0
+        assert overall['acwr'] == 1.0
+        assert overall['acwr_status'] == 'optimal'
+        # Legacy EWMA reference (golden: constant 50 => 1.23), labeled
+        ewma = overall['acwr_ewma']
+        assert ewma['value'] == 1.23
+        assert ewma['zone'] == 'optimal'
+        assert ewma['safe'] is True
+        assert ewma['note'] == EWMA_NOTE
+        # The retired shadow key is gone
+        assert 'acwr_shadow' not in overall
 
-    async def test_snapshot_exposes_acwr_shadow_next_to_acwr_status(
+    async def test_snapshot_exposes_acwr_ewma_next_to_acwr_status(
             self, tmp_path, monkeypatch, mock_ctx):
         for mod in (planner, rules, fitness, parsers_mod, workout_builder,
                     coaching_mod, planning_mod, strength_mod, fitness_tools_mod):
@@ -419,19 +442,21 @@ class TestShadowExposure:
 
         assert 'error' not in result
         fm = result['fitness_metrics']
-        # Both models side by side
+        # Primary + labeled legacy reference side by side
         assert 'acwr_status' in fm
-        assert 'acwr_shadow' in fm
-        shadow = fm['acwr_shadow']
-        assert shadow['note'] == SHADOW_NOTE
-        assert shadow['value'] == fm['overall']['acwr_rolling']
-        assert shadow['zone'] == fm['overall']['acwr_rolling_status']['zone']
-        # Decisions still keyed off the EWMA status until cutover
+        assert 'acwr_ewma' in fm
+        assert 'acwr_shadow' not in fm  # shadow period over
+        ewma = fm['acwr_ewma']
+        assert ewma['note'] == EWMA_NOTE
+        assert ewma == fm['overall']['acwr_ewma']
+        # Decisions key off the rolling PRIMARY (constant load => 1.0)
         assert fm['acwr_status']['value'] == fm['overall']['acwr']
+        assert fm['acwr_status']['value'] == 1.0
+        assert fm['acwr_status']['zone'] == 'optimal'
 
 
 # ---------------------------------------------------------------------------
-# Shadow report script (read-only)
+# Comparison report script (read-only, historical since the cutover)
 # ---------------------------------------------------------------------------
 
 class TestShadowReportScript:
@@ -455,8 +480,8 @@ class TestShadowReportScript:
         assert report['days_compared'] == 14
         last = report['rows'][-1]
         assert last['date'] == AS_OF.isoformat()
-        assert last['rolling_acwr'] == 1.0   # constant load
-        assert last['ewma_acwr'] == 1.23     # pinned EWMA golden
+        assert last['rolling_acwr'] == 1.0   # constant load (primary)
+        assert last['ewma_acwr'] == 1.23     # pinned legacy-reference golden
         stats = report['stats']
         for key in ('mean_abs_diff', 'max_divergence', 'days_in_different_zones',
                     'zone_mismatch_pct', 'divergence_level',
@@ -507,3 +532,122 @@ class TestShadowReportScript:
 
         assert history_path.read_bytes() == before_bytes
         assert sorted(p.name for p in tmp_path.iterdir()) == before_listing
+
+
+# ---------------------------------------------------------------------------
+# Cutover history recompute script (supervised, dry-run by default)
+# ---------------------------------------------------------------------------
+
+class TestRecomputeAcwrHistory:
+    """scripts/recompute_acwr_history.py — rewrites stored snapshot `acwr`
+    values under the rolling primary; ctl/atl/tsb untouched."""
+
+    def _history(self, end=AS_OF):
+        """35 days of constant load: cycling 40/day + strength 10/day
+        (total 50/day).
+
+        Hand-computed rolling ACWR as of `end` (full 28-day chronic window
+        of constant data): total 50/50 = 1.0; cycling 40/40 = 1.0;
+        strength 10/10 = 1.0. The seeded snapshots carry the pre-cutover
+        EWMA values (total 1.23 = 50/40.6 golden) that must be rewritten.
+        """
+        daily_loads = {}
+        for i in range(35):
+            d = (end - timedelta(days=i)).isoformat()
+            daily_loads[d] = {
+                'total': 50.0,
+                'by_sport': {'cycling': 40.0, 'strength': 10.0},
+                'activities': [],
+            }
+        return {
+            'schema_version': 2,
+            'daily_loads': daily_loads,
+            'snapshots': [
+                {'date': end.isoformat(),
+                 'total': {'ctl': 40.6, 'atl': 50.0, 'tsb': -9.4, 'acwr': 1.23},
+                 'cycling': {'ctl': 32.5, 'atl': 40.0, 'tsb': -7.5, 'acwr': 1.23},
+                 'strength': {'ctl': 8.1, 'atl': 10.0, 'tsb': -1.9, 'acwr': 1.23}},
+                {'date': (end - timedelta(days=7)).isoformat(),
+                 'total': {'ctl': 38.0, 'atl': 50.0, 'tsb': -12.0, 'acwr': 1.32}},
+            ],
+            'sleep_history': [],
+            'last_updated': end.isoformat(),
+        }
+
+    def test_recompute_rewrites_acwr_only(self):
+        history, changes = recompute_snapshot_acwr(self._history())
+
+        snap = history['snapshots'][0]
+        # Constant load => rolling exactly 1.0 at every scope
+        assert snap['total']['acwr'] == 1.0
+        assert snap['cycling']['acwr'] == 1.0
+        assert snap['strength']['acwr'] == 1.0
+        # ctl/atl/tsb untouched (EWMA scale is self-consistent)
+        assert snap['total'] == {'ctl': 40.6, 'atl': 50.0, 'tsb': -9.4, 'acwr': 1.0}
+        assert snap['cycling']['ctl'] == 32.5
+        assert snap['strength']['atl'] == 10.0
+        # Earlier snapshot recomputed as of ITS OWN date (still constant
+        # load over its window => 1.0)
+        assert history['snapshots'][1]['total']['acwr'] == 1.0
+        # Change report covers every rewritten block
+        assert {(c['date'], c['scope']) for c in changes} == {
+            (AS_OF.isoformat(), 'total'),
+            (AS_OF.isoformat(), 'cycling'),
+            (AS_OF.isoformat(), 'strength'),
+            ((AS_OF - timedelta(days=7)).isoformat(), 'total'),
+        }
+
+    def test_recompute_is_idempotent(self):
+        history, first = recompute_snapshot_acwr(self._history())
+        _, second = recompute_snapshot_acwr(history)
+        assert first  # something changed on the first pass
+        assert second == []  # nothing left to change
+
+    def test_check_mode_writes_nothing(self, tmp_path):
+        history_path = tmp_path / 'fitness_history.json'
+        history_path.write_text(json.dumps(self._history()), encoding='utf-8')
+        before_bytes = history_path.read_bytes()
+
+        rc = recompute_script.main(['--check', '--data-dir', str(tmp_path)])
+
+        assert rc == 0
+        assert history_path.read_bytes() == before_bytes
+        assert not (tmp_path / ('fitness_history.json'
+                                + recompute_script.BACKUP_SUFFIX)).exists()
+
+    def test_default_invocation_is_dry_run(self, tmp_path):
+        history_path = tmp_path / 'fitness_history.json'
+        history_path.write_text(json.dumps(self._history()), encoding='utf-8')
+        before_bytes = history_path.read_bytes()
+
+        rc = recompute_script.main(['--data-dir', str(tmp_path)])
+
+        assert rc == 0
+        assert history_path.read_bytes() == before_bytes
+
+    def test_apply_writes_with_backup(self, tmp_path):
+        history_path = tmp_path / 'fitness_history.json'
+        history_path.write_text(json.dumps(self._history()), encoding='utf-8')
+        original_bytes = history_path.read_bytes()
+        backup_path = tmp_path / ('fitness_history.json'
+                                  + recompute_script.BACKUP_SUFFIX)
+
+        rc = recompute_script.main(['--apply', '--data-dir', str(tmp_path)])
+
+        assert rc == 0
+        # Backup is the pre-cutover original, byte for byte
+        assert backup_path.read_bytes() == original_bytes
+        written = json.loads(history_path.read_text(encoding='utf-8'))
+        assert written['snapshots'][0]['total']['acwr'] == 1.0
+        assert written['snapshots'][0]['total']['ctl'] == 40.6
+        # Daily loads untouched
+        assert written['daily_loads'] == self._history()['daily_loads']
+
+        # Second --apply: no changes left, backup NOT overwritten
+        backup_bytes = backup_path.read_bytes()
+        rc2 = recompute_script.main(['--apply', '--data-dir', str(tmp_path)])
+        assert rc2 == 0
+        assert backup_path.read_bytes() == backup_bytes
+
+    def test_missing_history_errors(self, tmp_path):
+        assert recompute_script.main(['--check', '--data-dir', str(tmp_path)]) == 1
