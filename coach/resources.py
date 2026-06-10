@@ -16,6 +16,128 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Long-form coaching doctrine. SERVER_INSTRUCTIONS in mcp_app.py must stay under
+# ~1,900 chars (Claude Code truncates at 2KB), so everything beyond the hard
+# mandates lives here and is read on demand via coach://coaching/doctrine.
+COACHING_DOCTRINE = """\
+# Coaching Doctrine
+
+Read this before planning any sessions. The hard mandates (snapshot first,
+injury hard gate, verify before confirming) are in the server instructions;
+this resource carries the full operating doctrine.
+
+## Canonical Coaching Flow
+
+1. START OF EVERY CONVERSATION -> get_coaching_snapshot(). Mandatory checks:
+   (a) current_time_context — ground every recommendation in "now"
+   (b) injuries — every entry with status 'active' or 'improving': its
+       restricted_activities MUST be honoured. Hard gate — never prescribe a
+       restricted activity regardless of ACWR, readiness, or plan.
+   (c) flags.active_injuries + acwr_warnings — quick scan
+   (d) week_grid — rest days and what actually happened each day
+   (e) planned_vs_actual.anomalies + plan_adherence.skipped_dates
+   (f) fitness_metrics.acwr_status.safe
+2. ATHLETE CLAIM VERIFICATION -> "I did X today" -> check week_grid[today]
+   BEFORE confirming. If is_rest=true or types mismatch, ask — don't assume.
+3. PLAN BUILDING -> get_week_constraints() (guardrails, includes injury
+   restrictions) + get_weekly_prescription() (volume + intensity targets) ->
+   build the plan (every session must respect
+   snapshot.injuries[*].restricted_activities, every non-rest session needs a
+   purpose) -> update_weekly_plan() -> push_plan_to_garmin().
+4. DRILL-DOWNS when the snapshot isn't enough -> get_fitness_status(days=N),
+   get_intensity_distribution(days=N), get_activities_range(start, end),
+   get_training_readiness(for_date).
+5. MUTATIONS -> log_coaching_decision, record_athlete_response,
+   propose_coaching_action -> approve_proposal / reject_proposal,
+   update_athlete, set_ftp, set_threshold_pace, update_phase,
+   update_weekly_plan, update_injury_status.
+
+## Load Hierarchy (injury prevention — check in order)
+
+1. OVERALL ACWR — total-body injury gate. If > 1.3, back off EVERYTHING.
+2. SPORT-SPECIFIC ACWR — spike detection (catches "hasn't run in 4 weeks,
+   now wants to").
+3. SPORT-SPECIFIC CTL — race readiness; build toward target WITHOUT
+   violating levels 1 or 2.
+
+Never violate a higher level to chase a lower-level target. ACWR zones:
+0.8-1.3 sweet spot (train normally); < 0.8 undertrained (safe to increase);
+> 1.3 elevated risk (reduce intensity); > 1.5 high risk (mandatory reduction).
+
+## week_grid and plan_adherence
+
+- week_grid: rolling 7-day window keyed by ISO date — day_of_week,
+  activity_count, types_summary ("cycling+strength" or "REST"),
+  total_duration_mins, total_load, is_rest, is_today. Scan it before any
+  weekly-pattern comment: aggregate metrics (CTL, ACWR, compliance totals)
+  hide zero-activity days; the grid marks them explicitly as REST.
+- plan_adherence: per pillar {strength, mobility, long_effort}, each with
+  {planned, completed, skipped_dates, pending_dates, deficit} — gives
+  "planned 5, completed 3, skipped Monday + Wednesday" at a glance.
+
+## Multi-Session Days
+
+A day's `planned` field accepts a single session dict OR a list of session
+dicts. Use the list whenever a day has two or three distinct workouts (run +
+short strength set, long ride + upper body, gym day split into legs + UB).
+Each session in the list is pushed to Garmin as its own workout and counted
+independently in compliance and adherence. Do NOT cram multiple workouts into
+one description string — that loses per-session tracking.
+
+## Structured Running Sessions (schema summary)
+
+For running sessions with intervals (run/walk protocols, threshold reps,
+fartlek, hill repeats, distance-based segments), author a `structure` field —
+a list of phases. Without it, the run pushes as ONE timed block regardless of
+what the description prose says.
+
+- phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
+  (repeat carries `iterations` + nested `steps`, which may nest further)
+- End condition (one of, priority order): distance_m; duration_secs or
+  duration_mins; "open" as any duration value for lap-button advance
+- Target (one of, priority order): pace [slow_mps, fast_mps];
+  hr_target [low, high]; cadence [low, high]; or intensity
+  ("easy"|"recovery"|"tempo"|"threshold"|"vo2" — resolves to a pace zone)
+- notes: free-form, truncated to 50 chars on display
+
+Full schema with a worked example: the update_weekly_plan docstring.
+
+## Injury Protocol (non-negotiable)
+
+Check snapshot.injuries FIRST before any training recommendation. For each
+entry with status 'active' or 'improving', honour restricted_activities. If
+the athlete asks for a restricted activity, say no and explain why with
+evidence. Only update_injury_status to 'resolved' lifts the restriction, and
+only the athlete (not the coach) approves that transition.
+
+## Approval Workflow and Coaching Memory
+
+Changes needing approval (phase transition, > 15% volume change, pillar
+tweak): propose_coaching_action(action_type, proposal, rationale,
+impact='major') — the athlete must approve_proposal or reject_proposal.
+At session start, get_active_decisions() loads previous decisions — they
+should influence recommendations. Persist significant choices with
+log_coaching_decision(); after completed sessions, record_athlete_response()
+to feed adaptation_patterns (handles_volume_well, recovers_quickly,
+needs_extra_rest_after_intensity).
+
+## Personalizing Load Decisions
+
+volume_data.load_increase_pcts gives [conservative, standard, aggressive]
+(e.g. [10, 15, 25]). Choose using adaptation_patterns, sleep.trend_direction,
+recovery.hrv_trend, and compliance.compliance_rate_pct:
+- Red flags (sleep < 6.5 hr, HRV declining, compliance < 60%) -> conservative
+- Green signals (sleep > 7.5 hr and improving, compliance > 85%,
+  HRV improving) -> aggressive
+- Mixed/unknown -> standard
+
+Sleep is a GATE for training, not just a metric: under sleep deficit,
+high-intensity intervals suffer most and early-AM workouts that cut into
+sleep are counterproductive. New athlete with empty adaptation patterns?
+Start conservative and log responses every week.
+"""
+
+
 @mcp.resource(
     "coach://athlete/profile",
     name="athlete_profile",
@@ -107,3 +229,14 @@ def coaching_decisions_resource() -> str:
     except Exception as e:
         logger.exception("Failed to load coaching decisions resource")
         return json.dumps({"error": str(e)})
+
+
+@mcp.resource(
+    "coach://coaching/doctrine",
+    name="coaching_doctrine",
+    description="Full coaching doctrine: canonical flow, load hierarchy, week_grid/plan_adherence usage, multi-session days, structured-run schema, injury protocol, approval workflow — read before planning sessions",
+    mime_type="text/markdown",
+)
+def coaching_doctrine_resource() -> str:
+    """Long-form coaching doctrine (kept out of size-limited SERVER_INSTRUCTIONS)."""
+    return COACHING_DOCTRINE
