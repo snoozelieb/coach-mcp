@@ -41,6 +41,7 @@ from .config import (
     get_sport_group,
 )
 from .garmin_client import garmin_api_call
+from .parsers import epoch_ms_to_local_iso
 import logging
 
 logger = logging.getLogger(__name__)
@@ -577,6 +578,11 @@ def update_fitness_history(
     snapshots = [s for s in snapshots if s['date'] >= cutoff]
     history['snapshots'] = snapshots
 
+    # Dedicated activity-ingestion marker. save_fitness_history bumps
+    # last_updated on EVERY save (including sleep/readiness persistence),
+    # so staleness checks must use this field instead.
+    history['last_activity_ingest_date'] = date.today().isoformat()
+
     save_fitness_history(history)
     return history
 
@@ -740,10 +746,22 @@ def detect_bedtime_drift(sleep_nights: list[dict], min_nights: int = 8) -> dict[
     # Convert bedtime to minutes-after-noon (so 20:00 → 480, 01:00 → 780)
     # Anything between 12:00 and 23:59 gets its real hour*60+min.
     # Anything between 00:00 and 11:59 gets +1440 (so 01:00 lands after 23:00).
-    def _bedtime_mins(iso: str) -> float | None:
+    # Defensive: bedtime may be an ISO string, an epoch-ms int (raw Garmin
+    # payloads), or None — none of these may crash the snapshot.
+    def _bedtime_mins(value) -> float | None:
+        if value is None:
+            return None
         try:
-            dt = _dt.fromisoformat(iso.replace('Z', '+00:00'))
-        except (ValueError, TypeError):
+            if isinstance(value, (int, float)):
+                iso = epoch_ms_to_local_iso(value)
+                if iso is None:
+                    return None
+                dt = _dt.fromisoformat(iso)
+            elif isinstance(value, str):
+                dt = _dt.fromisoformat(value.replace('Z', '+00:00'))
+            else:
+                return None
+        except (ValueError, TypeError, AttributeError):
             return None
         mins = dt.hour * 60 + dt.minute
         if dt.hour < 12:
@@ -1290,12 +1308,14 @@ def get_sleep_summary(today: date, days: int = 7) -> dict:
                 nap_dtos = dto.get('dailyNapDTOS', []) or []
                 nap_count = len(nap_dtos)
 
-                # Extract bedtime / wake time — Garmin stores as local ISO8601
-                bedtime = (
+                # Extract bedtime / wake time — Garmin returns either local
+                # ISO8601 strings or epoch-ms ints depending on endpoint
+                # version. Normalize to local ISO strings at parse time.
+                bedtime = epoch_ms_to_local_iso(
                     dto.get('sleepStartTimestampLocal')
                     or dto.get('startTimestampLocal')
                 )
-                wake_time = (
+                wake_time = epoch_ms_to_local_iso(
                     dto.get('sleepEndTimestampLocal')
                     or dto.get('endTimestampLocal')
                 )

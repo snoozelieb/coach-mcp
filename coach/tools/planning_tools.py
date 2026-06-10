@@ -7,14 +7,81 @@ from ..planner import (get_current_plan, save_weekly_plan,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
                      get_week_constraints as _get_week_constraints)
-from ..rules import load_training_config, check_weekly_compliance, pillars_as_name_dict
-from ..fitness import load_fitness_history, calculate_fitness_metrics
+from ..rules import (load_training_config, check_weekly_compliance,
+                   pillars_as_name_dict, normalize_injury)
+from ..fitness import load_fitness_history, calculate_fitness_metrics, _extract_total_loads
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE
 from datetime import date, timedelta
 import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _activity_matches_restriction(session_type: str, restriction: str) -> bool:
+    """Case-insensitive substring/alias match between session type and restriction.
+
+    'run' matches 'running' and 'trail_running'; 'running' matches 'run'.
+    """
+    s = str(session_type or '').lower().strip()
+    r = str(restriction or '').lower().strip()
+    if not s or not r:
+        return False
+    return s in r or r in s
+
+
+def _iter_plan_sessions(day_data: dict):
+    """Yield every session dict for a plan day, including nested 'sessions' lists."""
+    planned = day_data.get('planned') if isinstance(day_data, dict) else None
+    if not planned:
+        return
+    sessions = planned if isinstance(planned, list) else [planned]
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        yield session
+        nested = session.get('sessions')
+        if isinstance(nested, list):
+            for sub in nested:
+                if isinstance(sub, dict):
+                    yield sub
+
+
+def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
+    """Find non-rest sessions whose type intersects an active/improving injury's
+    restricted_activities.
+
+    Returns a list of {date, session_type, injury, matched_restrictions} dicts —
+    empty when the plan is safe.
+    """
+    gating = [
+        normalize_injury(i) for i in (injuries or [])
+        if isinstance(i, dict) and i.get('status') in ('active', 'improving')
+    ]
+    gating = [i for i in gating if i['restricted_activities']]
+    if not gating:
+        return []
+
+    violations = []
+    for day_str, day_data in (plan_days or {}).items():
+        for session in _iter_plan_sessions(day_data):
+            session_type = str(session.get('type', '')).lower()
+            if not session_type or 'rest' in session_type:
+                continue
+            for injury in gating:
+                matched = [
+                    r for r in injury['restricted_activities']
+                    if _activity_matches_restriction(session_type, r)
+                ]
+                if matched:
+                    violations.append({
+                        'date': day_str,
+                        'session_type': session.get('type'),
+                        'injury': injury['name'],
+                        'injury_status': injury['status'],
+                        'matched_restrictions': matched,
+                    })
+    return violations
 
 
 @mcp.tool()
@@ -75,15 +142,19 @@ def get_periodization_status() -> str:
 
         typical_weeks = phase_info.get('typical_weeks', 4)
 
-        # Get fitness status if available
+        # Get fitness status if available. daily_loads is the v2 dict format —
+        # flatten to {date: total} before calculating metrics.
         fitness_metrics = None
+        fitness_metrics_unavailable = False
         try:
             history = load_fitness_history()
             daily_loads = history.get('daily_loads', {})
             if daily_loads:
-                fitness_metrics = calculate_fitness_metrics(daily_loads)
+                fitness_metrics = calculate_fitness_metrics(_extract_total_loads(daily_loads))
         except Exception:
-            pass
+            logger.warning("Could not calculate fitness metrics for periodization status",
+                           exc_info=True)
+            fitness_metrics_unavailable = True
 
         # Build remaining phases
         phase_order = ['base', 'build', 'peak', 'taper']
@@ -135,6 +206,8 @@ def get_periodization_status() -> str:
                 'acwr': fitness_metrics['acwr'],
                 'acwr_status': fitness_metrics['acwr_status'],
             }
+        elif fitness_metrics_unavailable:
+            result['fitness_metrics_unavailable'] = True
 
         # Add coaching notes based on phase
         notes = []
@@ -192,15 +265,19 @@ def get_weekly_prescription() -> str:
         phases = periodization.get('phases', {})
         phase_info = phases.get(current_phase, {})
 
-        # Get fitness metrics
+        # Get fitness metrics. daily_loads is the v2 dict format — flatten to
+        # {date: total} first, otherwise the ACWR volume adjustment never fires.
         fitness_metrics = None
+        fitness_metrics_unavailable = False
         try:
             history = load_fitness_history()
             daily_loads = history.get('daily_loads', {})
             if daily_loads:
-                fitness_metrics = calculate_fitness_metrics(daily_loads)
+                fitness_metrics = calculate_fitness_metrics(_extract_total_loads(daily_loads))
         except Exception:
-            pass
+            logger.warning("Could not calculate fitness metrics for weekly prescription",
+                           exc_info=True)
+            fitness_metrics_unavailable = True
 
         # Get today's readiness
         readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
@@ -258,16 +335,16 @@ def get_weekly_prescription() -> str:
             deficit = compliance.get('mobility', {}).get('deficit', 0)
             pillar_priorities.append(f"Mobility: {deficit} mins behind")
 
-        # Check for active injuries
+        # Check for active injuries (normalized — tolerates old/new record shapes)
         injury_constraints = []
         injuries = athlete.get('injury_history', [])
         for injury in injuries:
-            if injury.get('status') == 'active':
-                restricted = injury.get('restricted_activities', [])
+            if isinstance(injury, dict) and injury.get('status') == 'active':
+                norm = normalize_injury(injury)
                 injury_constraints.append({
-                    'injury': injury.get('type', 'Unknown'),
-                    'restricted': restricted,
-                    'safe': injury.get('safe_activities', []),
+                    'injury': norm['type'],
+                    'restricted': norm['restricted_activities'],
+                    'safe': norm['safe_activities'],
                 })
 
         # Check for life events this week
@@ -329,6 +406,8 @@ def get_weekly_prescription() -> str:
                 'tsb': fitness_metrics['tsb'],
                 'form_status': 'Fresh' if fitness_metrics['tsb'] > 0 else 'Fatigued',
             }
+        elif fitness_metrics_unavailable:
+            prescription['fitness_metrics_unavailable'] = True
 
         return json.dumps(prescription, indent=2)
 
@@ -447,27 +526,27 @@ def get_weekly_plan() -> str:
 
 
 @mcp.tool()
-def update_weekly_plan(plan_json: str) -> str:
+def update_weekly_plan(plan_json: str, override_injury_gate: bool = False) -> str:
     """
     Saves a new or updated weekly training plan.
 
-    Args:
-        plan_json: JSON string containing the plan with structure:
-            {
-                'days': {
-                    'YYYY-MM-DD': {
-                        'planned': {
-                            'type': 'running',
-                            'duration_mins': 45,
-                            'intensity': 'easy',
-                            'description': 'Easy recovery run'
-                        },
-                        'notes': 'Focus on form'
+    PLAN STRUCTURE (for plan_json)
+
+        {
+            'days': {
+                'YYYY-MM-DD': {
+                    'planned': {
+                        'type': 'running',
+                        'duration_mins': 45,
+                        'intensity': 'easy',
+                        'description': 'Easy recovery run'
                     },
-                    ...
+                    'notes': 'Focus on form'
                 },
-                'rationale': 'Why this plan was generated'
-            }
+                ...
+            },
+            'rationale': 'Why this plan was generated'
+        }
 
         'planned' may also be a LIST of session dicts when the day has two
         or three distinct workouts (e.g. run + short strength bolt-on, long
@@ -529,10 +608,26 @@ def update_weekly_plan(plan_json: str) -> str:
             iterations: N
             steps: [list of nested phases — may include further repeats]
 
-    The plan is saved as-supplied; internal fields like `pushed_workout_ids`
-    are preserved server-side and do not need to be carried in the JSON.
+    INJURY GATE
 
-    Returns confirmation or error.
+        Plans are rejected when any non-rest session's type intersects an
+        active/improving injury's restricted_activities. The error lists the
+        offending dates/sessions. Only set override_injury_gate=True with the
+        athlete's informed consent and a logged rationale.
+
+    LIFECYCLE
+
+        The plan is saved as-supplied; internal fields like `pushed_workout_ids`
+        are preserved server-side and do not need to be carried in the JSON.
+        week_start/week_end are derived from the day keys when missing, and day
+        entries older than 9 days are pruned to data/plan_history.json.
+
+    Args:
+        plan_json: JSON string containing the plan (see PLAN STRUCTURE above)
+        override_injury_gate: Bypass the injury restriction check (default False)
+
+    Returns:
+        Confirmation or structured error.
     """
     try:
         plan = json.loads(plan_json)
@@ -545,12 +640,38 @@ def update_weekly_plan(plan_json: str) -> str:
         if not isinstance(plan['days'], dict):
             return json.dumps({'error': "'days' must be a dict keyed by YYYY-MM-DD date strings"})
 
+        # Injury write-gate: never save sessions that violate active/improving
+        # injury restrictions unless explicitly overridden.
+        injuries = load_athlete().get('injury_history', [])
+        violations = _injury_gate_violations(plan['days'], injuries)
+        injury_gate_note = None
+        if violations:
+            if not override_injury_gate:
+                return json.dumps({
+                    'error': 'injury_gate',
+                    'message': 'Plan contains sessions restricted by active/improving injuries',
+                    'violations': violations,
+                    'hint': ('Adjust the offending sessions, or pass '
+                             'override_injury_gate=True with a logged rationale '
+                             'after confirming with the athlete.'),
+                }, indent=2)
+            logger.warning(
+                "Injury gate OVERRIDDEN in update_weekly_plan: %s", violations
+            )
+            injury_gate_note = {
+                'injury_gate_overridden': True,
+                'violations': violations,
+            }
+
         save_weekly_plan(plan)
-        return json.dumps({
+        result = {
             'status': 'success',
             'message': 'Weekly plan saved',
             'last_updated': date.today().isoformat()
-        })
+        }
+        if injury_gate_note:
+            result['injury_gate'] = injury_gate_note
+        return json.dumps(result)
     except json.JSONDecodeError as e:
         logger.exception("update_weekly_plan failed: invalid JSON")
         return json.dumps({'error': f'Invalid JSON: {str(e)}'})
@@ -560,7 +681,7 @@ def update_weekly_plan(plan_json: str) -> str:
 
 
 @mcp.tool()
-def push_plan_to_garmin() -> str:
+def push_plan_to_garmin(override_injury_gate: bool = False) -> str:
     """
     Push the current 7-day plan to Garmin Connect calendar.
 
@@ -579,6 +700,13 @@ def push_plan_to_garmin() -> str:
 
     Rest days are skipped.
 
+    INJURY GATE: the push is rejected when any non-rest session's type
+    intersects an active/improving injury's restricted_activities. Only set
+    override_injury_gate=True with the athlete's informed consent.
+
+    Args:
+        override_injury_gate: Bypass the injury restriction check (default False)
+
     Returns:
         JSON summary with count of pushed workouts, dates, and any errors.
     """
@@ -589,6 +717,29 @@ def push_plan_to_garmin() -> str:
 
         if not plan or 'days' not in plan:
             return json.dumps({'error': 'No weekly plan found. Generate a plan first.'})
+
+        # Injury write-gate: never push sessions that violate active/improving
+        # injury restrictions unless explicitly overridden.
+        injuries = load_athlete().get('injury_history', [])
+        violations = _injury_gate_violations(plan.get('days', {}), injuries)
+        injury_gate_note = None
+        if violations:
+            if not override_injury_gate:
+                return json.dumps({
+                    'error': 'injury_gate',
+                    'message': 'Plan contains sessions restricted by active/improving injuries — push blocked',
+                    'violations': violations,
+                    'hint': ('Fix the plan via update_weekly_plan, or pass '
+                             'override_injury_gate=True with a logged rationale '
+                             'after confirming with the athlete.'),
+                }, indent=2)
+            logger.warning(
+                "Injury gate OVERRIDDEN in push_plan_to_garmin: %s", violations
+            )
+            injury_gate_note = {
+                'injury_gate_overridden': True,
+                'violations': violations,
+            }
 
         # DUPLICATE PREVENTION: Delete previously pushed workouts by stored IDs
         previous_ids = plan.get('pushed_workout_ids', [])
@@ -619,6 +770,8 @@ def push_plan_to_garmin() -> str:
             'skipped': [],
             'errors': [],
         }
+        if injury_gate_note:
+            results['injury_gate'] = injury_gate_note
 
         for date_str, day_data in plan['days'].items():
             # Get the planned session(s)
@@ -813,7 +966,7 @@ def get_week_constraints() -> str:
         # Load compliance diagnostics if available (from coaching snapshot)
         compliance_diagnostics = None
         try:
-            from tools.coaching_tools import _build_compliance_diagnostics
+            from .coaching_tools import _build_compliance_diagnostics
             training_pillars = pillars_as_name_dict(athlete.get('training_pillars'))
             if training_pillars:
                 history = load_fitness_history()

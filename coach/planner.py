@@ -366,6 +366,42 @@ def get_current_plan() -> dict[str, Any]:
 
 INTERNAL_PLAN_FIELDS = ('pushed_workout_ids',)
 
+PLAN_HISTORY_FILE = 'plan_history.json'
+PLAN_RETENTION_DAYS = 9  # Day entries older than this (before today) are archived
+
+
+def _prune_and_archive_plan_days(plan: dict[str, Any]) -> None:
+    """Prune day entries older than PLAN_RETENTION_DAYS before today.
+
+    Pruned days are archived by appending to data/plan_history.json so plan
+    history is never silently lost. Mutates `plan` in place.
+    """
+    days = plan.get('days')
+    if not isinstance(days, dict):
+        return
+
+    cutoff = (date.today() - timedelta(days=PLAN_RETENTION_DAYS)).isoformat()
+    pruned = {d: v for d, v in days.items() if d < cutoff}
+    if not pruned:
+        return
+
+    plan['days'] = {d: v for d, v in days.items() if d >= cutoff}
+
+    try:
+        archive = load_json_file(PLAN_HISTORY_FILE) or {}
+        entries = archive.get('archived_days', [])
+        already_archived = {e.get('date') for e in entries if isinstance(e, dict)}
+        for day_str in sorted(pruned):
+            if day_str in already_archived:
+                continue
+            day_entry = pruned[day_str] if isinstance(pruned[day_str], dict) else {'value': pruned[day_str]}
+            entries.append({'date': day_str, **day_entry})
+        archive['archived_days'] = entries
+        archive['last_archived'] = date.today().isoformat()
+        save_json_file(PLAN_HISTORY_FILE, archive)
+    except Exception:
+        logger.warning("Failed to archive pruned plan days", exc_info=True)
+
 
 def save_weekly_plan(plan: dict[str, Any]) -> None:
     """Save the weekly plan.
@@ -373,11 +409,34 @@ def save_weekly_plan(plan: dict[str, Any]) -> None:
     Preserves internal metadata fields (e.g. pushed_workout_ids) from the
     existing file when the caller hasn't supplied them. This stops the
     coach LLM's plan-edit calls from silently dropping push-tracking state.
+
+    Also enforces plan lifecycle: day entries older than PLAN_RETENTION_DAYS
+    are pruned (archived to plan_history.json), and week_start/week_end are
+    derived from the day keys when missing.
     """
     existing = load_json_file('weekly_plan.json') or {}
     for field in INTERNAL_PLAN_FIELDS:
         if field not in plan and field in existing:
             plan[field] = existing[field]
+
+    # Prune stale days first, then derive week bounds from what remains
+    _prune_and_archive_plan_days(plan)
+
+    days = plan.get('days')
+    if isinstance(days, dict):
+        valid_keys = []
+        for k in days:
+            try:
+                date.fromisoformat(k)
+                valid_keys.append(k)
+            except (ValueError, TypeError):
+                continue
+        if valid_keys:
+            if not plan.get('week_start'):
+                plan['week_start'] = min(valid_keys)
+            if not plan.get('week_end'):
+                plan['week_end'] = max(valid_keys)
+
     plan['last_updated'] = date.today().isoformat()
     save_json_file('weekly_plan.json', plan)
 
@@ -504,7 +563,7 @@ def get_week_constraints(
         constraints['available_days'] = available_days
 
     # Pillar requirements
-    from .rules import pillars_as_name_dict
+    from .rules import pillars_as_name_dict, pillar_target_minutes
     pillars = pillars_as_name_dict(athlete.get('training_pillars'))
     if pillars:
         pillar_reqs = {}
@@ -516,7 +575,7 @@ def get_week_constraints(
             elif target_type == 'hours':
                 req['min_mins'] = round(config.get('target_hours_per_week', 0) * 60)
             elif target_type == 'minutes':
-                req['min_mins'] = config.get('target_minutes_per_week', 0)
+                req['min_mins'] = pillar_target_minutes(config)
             pillar_reqs[name] = req
         constraints['pillar_requirements'] = pillar_reqs
 
@@ -560,15 +619,23 @@ def get_week_constraints(
         if phase_guidelines:
             constraints['session_guidelines'] = phase_guidelines
 
-    # Active injuries / restrictions
+    # Active injuries / restrictions — normalize records first: real injury
+    # records use 'type'/'restricted_activities', not 'name'/'restrictions'.
     if injuries:
-        active = [i for i in injuries if i.get('status') in ('active', 'improving')]
+        from .rules import normalize_injury
+        active = [
+            normalize_injury(i) for i in injuries
+            if isinstance(i, dict) and i.get('status') in ('active', 'improving')
+        ]
         if active:
             constraints['injury_restrictions'] = [
                 {
-                    'name': i.get('name', 'unknown'),
+                    'name': i['name'],
+                    'status': i['status'],
                     'severity': i.get('severity'),
-                    'restrictions': i.get('restrictions', []),
+                    'restricted_activities': i['restricted_activities'],
+                    # Legacy alias kept for older consumers
+                    'restrictions': i['restricted_activities'],
                 }
                 for i in active
             ]

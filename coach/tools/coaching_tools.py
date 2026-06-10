@@ -34,6 +34,7 @@ from ..rules import (
     get_upcoming_events,
     load_training_config,
     pillars_as_name_dict,
+    pillar_target_minutes,
 )
 from ..fitness import (
     load_fitness_history,
@@ -488,7 +489,7 @@ def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: di
                 if total_mins >= target_mins and target_mins > 0:
                     met_weeks += 1
             elif target_type == 'minutes':
-                target_mins = pillar_config.get('target_minutes_per_week', 0)
+                target_mins = pillar_target_minutes(pillar_config)
                 total_mins = sum(a.get('duration_mins', 0) or 0 for a in matching)
                 if total_mins >= target_mins and target_mins > 0:
                     met_weeks += 1
@@ -744,6 +745,11 @@ def _build_snapshot_flags(snapshot: dict) -> dict:
     anomalies = pva.get('anomalies', [])
     if anomalies:
         flags['anomaly_count'] = len(anomalies)
+
+    # Expired plan — the athlete is effectively uncoached. Loud, not silent.
+    if pva.get('status') == 'plan_expired':
+        flags['plan_expired'] = True
+        flags['days_uncoached'] = pva.get('days_since_expiry')
 
     # Sleep deficit
     sleep = snapshot.get('sleep', {})
@@ -1236,22 +1242,38 @@ async def get_coaching_snapshot(ctx: Context) -> str:
         today = now.date()
         current_time_context = build_current_time_context(now)
 
-        # 0. Auto-refresh fitness history if stale
+        # 0. Activity ingestion. ALWAYS re-ingest a trailing 3-day window
+        # (idempotent — update_fitness_history overwrites by date), extending
+        # back to the last actual ingest when ingestion has fallen behind.
+        #
+        # Staleness is tracked via the dedicated last_activity_ingest_date:
+        # sleep/readiness persistence bumps last_updated on every snapshot,
+        # which previously defeated this check and silently froze ingestion.
         history = load_fitness_history()
-        last_updated = history.get('last_updated')
-        if last_updated is None or last_updated < (today - timedelta(days=1)).isoformat():
+        last_ingest = history.get('last_activity_ingest_date')
+        if not last_ingest:
+            # Field absent (pre-fix histories): fall back to newest ingested day
+            existing_loads = history.get('daily_loads', {})
+            last_ingest = max(existing_loads.keys()) if existing_loads else None
+
+        ingest_start = today - timedelta(days=3)
+        if last_ingest:
             try:
-                # Incremental refresh: only fetch since last_updated
-                refresh_start = last_updated or (today - timedelta(days=90)).isoformat()
-                raw_refresh = garmin_api_call(
-                    lambda c: c.get_activities_by_date(refresh_start, today.isoformat())
-                )
-                if raw_refresh:
-                    from ..parsers import parse_activities as _pa
-                    refreshed_activities = _pa(raw_refresh)
-                    history = update_fitness_history(refreshed_activities)
-            except Exception:
-                logger.warning("Fitness history auto-refresh failed", exc_info=True)
+                ingest_start = min(ingest_start, date.fromisoformat(last_ingest))
+            except (ValueError, TypeError):
+                pass
+        else:
+            ingest_start = today - timedelta(days=90)
+
+        try:
+            raw_refresh = garmin_api_call(
+                lambda c: c.get_activities_by_date(ingest_start.isoformat(), today.isoformat())
+            )
+            from ..parsers import parse_activities as _pa
+            refreshed_activities = _pa(raw_refresh or [])
+            history = update_fitness_history(refreshed_activities)
+        except Exception:
+            logger.warning("Activity ingestion failed", exc_info=True)
 
         daily_loads = history.get('daily_loads', {})
         await ctx.report_progress(1, 10, "Fitness history loaded")
@@ -1292,11 +1314,37 @@ async def get_coaching_snapshot(ctx: Context) -> str:
 
         # 3. Planned vs Actual comparison (uses full fetch range — the comparison
         # function filters by plan dates, so extra activities are harmless)
+        #
+        # When the plan has fully expired (ALL day entries in the past), the
+        # comparison would flood the snapshot with false 'missing' anomalies.
+        # Replace the flood with a single loud plan_expired signal instead.
+        plan_last_day = None
+        if current_plan and current_plan.get('days'):
+            plan_day_dates = []
+            for day_str in current_plan['days']:
+                try:
+                    plan_day_dates.append(date.fromisoformat(day_str))
+                except (ValueError, TypeError):
+                    continue
+            if plan_day_dates:
+                plan_last_day = max(plan_day_dates)
+        plan_expired = plan_last_day is not None and plan_last_day < today
+        days_since_expiry = (today - plan_last_day).days if plan_expired else 0
+
         sleep_history = history.get('sleep_history', [])
-        planned_vs_actual = _compare_planned_actual(
-            current_plan, all_fetched_activities, today,
-            daily_loads=daily_loads, sleep_history=sleep_history,
-        )
+        if plan_expired:
+            planned_vs_actual = {
+                'status': 'plan_expired',
+                'days_since_expiry': days_since_expiry,
+                'note': ('All plan days are in the past — anomaly comparison '
+                         'skipped. The athlete is uncoached: build a fresh '
+                         'week plan with them.'),
+            }
+        else:
+            planned_vs_actual = _compare_planned_actual(
+                current_plan, all_fetched_activities, today,
+                daily_loads=daily_loads, sleep_history=sleep_history,
+            )
 
         # 4. Fitness metrics — overall + per-sport
         #
@@ -1705,20 +1753,40 @@ async def get_coaching_snapshot(ctx: Context) -> str:
             data_quality['recovery'] = 'unavailable'
         if not sleep_data or sleep_data.get('status') == 'no_data':
             data_quality['sleep'] = 'unavailable'
-        last_updated = history.get('last_updated')
-        if last_updated and last_updated < (today - timedelta(days=1)).isoformat():
+        # Staleness based on actual activity ingestion (last_updated is bumped
+        # by sleep/readiness persistence and can't signal frozen ingestion)
+        last_ingest_check = history.get('last_activity_ingest_date')
+        if not last_ingest_check:
+            final_loads = history.get('daily_loads', {})
+            last_ingest_check = max(final_loads.keys()) if final_loads else None
+        if last_ingest_check and last_ingest_check < (today - timedelta(days=1)).isoformat():
             data_quality['fitness_history'] = 'stale'
+        if plan_expired:
+            data_quality['plan_stale'] = True
+            data_quality['plan_days_since_expiry'] = days_since_expiry
         if data_quality:
             snapshot['data_quality'] = data_quality
 
-        # Coaching memory (continuity across sessions)
+        # Coaching memory (continuity across sessions).
+        # Decisions/responses are stored append-only (oldest first) — surface
+        # the MOST RECENT entries, newest first, not the oldest.
         try:
             coaching_ctx = get_coaching_context()
+            active_decisions = sorted(
+                coaching_ctx.get('active_decisions', []),
+                key=lambda d: d.get('date') or '',
+                reverse=True,
+            )
+            recent_responses = sorted(
+                coaching_ctx.get('recent_responses', []),
+                key=lambda r: r.get('date') or '',
+                reverse=True,
+            )
             snapshot['coaching_memory'] = {
-                'active_decisions': coaching_ctx.get('active_decisions', [])[:5],
+                'active_decisions': active_decisions[:5],
                 'pending_approvals': coaching_ctx.get('pending_approvals', []),
                 'adaptation_patterns': coaching_ctx.get('response_patterns', []),
-                'recent_responses': coaching_ctx.get('recent_responses', [])[:3],
+                'recent_responses': recent_responses[:3],
             }
         except Exception:
             logger.warning("Failed to load coaching memory", exc_info=True)

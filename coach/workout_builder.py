@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .config import DATA_DIR, ATHLETE_FILE
 from .fitness import get_athlete_hr_zones
 from garminconnect.workout import (
     CyclingWorkout,
@@ -259,12 +260,16 @@ INTENSITY_POWER_ZONE_MAP = {
 
 def get_athlete_power_zones() -> dict:
     """Load athlete power zones from athlete.json."""
-    athlete_path = Path(__file__).parent / "data" / "athlete.json"
+    athlete_path = DATA_DIR / ATHLETE_FILE
     try:
         with open(athlete_path) as f:
             athlete = json.load(f)
         return athlete.get("personal", {}).get("power_zones", {})
+    except FileNotFoundError:
+        logger.warning("Athlete file not found at %s — power targets unavailable", athlete_path)
+        return {}
     except Exception:
+        logger.warning("Failed to load power zones from %s", athlete_path, exc_info=True)
         return {}
 
 
@@ -374,7 +379,7 @@ def get_athlete_running_zones() -> dict:
 
     Returns pace ranges as [slow_sec_per_km, fast_sec_per_km]
     """
-    athlete_path = Path(__file__).parent / "data" / "athlete.json"
+    athlete_path = DATA_DIR / ATHLETE_FILE
     try:
         with open(athlete_path) as f:
             athlete = json.load(f)
@@ -400,7 +405,11 @@ def get_athlete_running_zones() -> dict:
             "z4_threshold": [int(threshold_pace * 0.96), int(threshold_pace * 1.04)], # ±4%
             "z5_interval": [int(threshold_pace * 0.85), int(threshold_pace * 0.95)],  # 5-15% faster
         }
+    except FileNotFoundError:
+        logger.warning("Athlete file not found at %s — pace targets unavailable", athlete_path)
+        return {}
     except Exception:
+        logger.warning("Failed to load running zones from %s", athlete_path, exc_info=True)
         return {}
 
 

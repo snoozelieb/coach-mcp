@@ -46,6 +46,62 @@ def get_thresholds() -> dict[str, Any]:
     }
 
 
+def normalize_injury(record: dict | None) -> dict[str, Any]:
+    """Normalize an injury record to canonical keys, tolerant of old and new shapes.
+
+    Real records (written by injury_tools) use: type/body_region, status,
+    severity, restricted_activities, safe_activities. Some readers historically
+    expected 'name'/'restrictions' — keys that never existed on real records.
+    This accessor accepts both shapes and returns canonical keys; 'name' and
+    'type' are both populated for downstream convenience.
+    """
+    if not isinstance(record, dict):
+        record = {}
+
+    injury_type = (
+        record.get('type')
+        or record.get('name')
+        or record.get('body_region')
+        or record.get('location')
+        or 'unknown'
+    )
+
+    restricted = record.get('restricted_activities')
+    if restricted is None:
+        restricted = record.get('restrictions')
+    if not isinstance(restricted, list):
+        restricted = []
+
+    safe = record.get('safe_activities')
+    if not isinstance(safe, list):
+        safe = []
+
+    return {
+        'type': injury_type,
+        'name': injury_type,
+        'status': record.get('status', 'unknown'),
+        'severity': record.get('severity'),
+        'date': record.get('date'),
+        'restricted_activities': list(restricted),
+        'safe_activities': list(safe),
+    }
+
+
+def pillar_target_minutes(pillar_config: dict | None) -> float:
+    """Read a pillar's weekly minutes target, accepting both key spellings.
+
+    Live athlete.json uses 'target_mins_per_week'; some code paths historically
+    read 'target_minutes_per_week'. This read-side accessor tolerates both so
+    minute-based pillar targets are never silently treated as 0.
+    """
+    if not pillar_config:
+        return 0
+    value = pillar_config.get('target_mins_per_week')
+    if value is None:
+        value = pillar_config.get('target_minutes_per_week')
+    return value or 0
+
+
 def pillars_as_name_dict(training_pillars: dict | None) -> dict[str, dict]:
     """Return pillars as {name: config_dict}, handling both wrapper and legacy formats.
 
@@ -108,7 +164,7 @@ def convert_athlete_pillars_to_legacy(athlete_pillars: dict[str, Any]) -> dict[s
             legacy[key] = pillar.get('target_sessions_per_week', 0)
         elif target_type == 'minutes':
             key = f"{name}_minutes_per_week"
-            legacy[key] = pillar.get('target_mins_per_week', 0)
+            legacy[key] = pillar_target_minutes(pillar)
         elif target_type == 'hours':
             # Convert hours to minutes for consistency
             key = f"{name}_hours_per_week"

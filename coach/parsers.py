@@ -91,6 +91,31 @@ def build_current_time_context(now: datetime | None = None) -> dict:
     }
 
 
+def epoch_ms_to_local_iso(value: Any) -> str | None:
+    """Convert a Garmin '...Local' timestamp to a local ISO8601 string.
+
+    Garmin sleep payloads carry bedtime/wake as either ISO strings or
+    epoch-milliseconds ints. The epoch-ms '...TimestampLocal' fields are
+    offset so that interpreting them as UTC yields local wall-clock time.
+
+    Accepts: epoch-ms int/float, ISO string (passed through), or None.
+    Returns an ISO8601 string or None — never raises.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, (int, float)):
+        try:
+            from datetime import timezone
+            dt = datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+            return dt.replace(tzinfo=None).isoformat(timespec='seconds')
+        except (OverflowError, OSError, ValueError):
+            logger.warning("Could not convert epoch-ms timestamp %r to ISO", value)
+            return None
+    return None
+
+
 def parse_body_battery(body_battery: list[dict[str, Any]]) -> Union[int, str]:
     """
     Extract current body battery value from Garmin response.
