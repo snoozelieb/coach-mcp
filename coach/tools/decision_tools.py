@@ -84,26 +84,66 @@ def anomaly_id_for(anomaly: dict) -> str:
     return f"{a_date}:{a_type}:{slug or a_type}"
 
 
-def _anomaly_summary(anomaly: dict) -> str:
-    """One-line human-readable summary stored at registration time."""
+def relative_day_phrase(date_iso, today: date) -> str | None:
+    """'today' / 'yesterday' / 'N days ago' for an ISO date vs threaded today.
+
+    Future dates yield 'tomorrow' / 'in N days'. None when unparseable.
+    """
+    try:
+        delta = (today - date.fromisoformat(str(date_iso))).days
+    except (TypeError, ValueError):
+        return None
+    if delta == 0:
+        return 'today'
+    if delta == 1:
+        return 'yesterday'
+    if delta == -1:
+        return 'tomorrow'
+    if delta > 1:
+        return f'{delta} days ago'
+    return f'in {-delta} days'
+
+
+def _anomaly_summary(anomaly: dict, today: date | None = None) -> str:
+    """One-line human-readable summary, anchored to the anomaly's date.
+
+    Embeds the absolute date AND a relative phrase computed from the
+    threaded today — "2026-06-10 (yesterday): Planned padel (90min) has no
+    matching activity" — so a coach deep in a long conversation can never
+    mistake which day an anomaly belongs to.
+    """
     a_type = anomaly.get('flag', 'unknown')
     if a_type == 'missing':
-        return (f"Planned {anomaly.get('planned_type')} "
+        base = (f"Planned {anomaly.get('planned_type')} "
                 f"({anomaly.get('planned_mins')}min) has no matching activity")
-    if a_type == 'type_mismatch':
-        return (f"Planned {anomaly.get('planned_type')}, "
+    elif a_type == 'type_mismatch':
+        base = (f"Planned {anomaly.get('planned_type')}, "
                 f"actual was {anomaly.get('actual_type')}")
-    if a_type == 'duration_delta':
-        return (f"{anomaly.get('planned_mins')}min planned vs "
+    elif a_type == 'duration_delta':
+        base = (f"{anomaly.get('planned_mins')}min planned vs "
                 f"{anomaly.get('actual_mins')}min actual "
                 f"({anomaly.get('delta_pct')}%)")
-    if a_type == 'unplanned':
-        return (f"Unplanned {anomaly.get('activity_type')} "
-                f"({anomaly.get('duration_mins')}min) on a rest day")
-    return f"{a_type} on {anomaly.get('date')}"
+    elif a_type == 'unplanned':
+        base = (f"Unplanned {anomaly.get('activity_type')} "
+                f"({anomaly.get('duration_mins')}min")
+        if anomaly.get('load') is not None:
+            base += f", load {anomaly.get('load')}"
+        base += ")"
+        if anomaly.get('on_rest_day'):
+            base += " on a rest day"
+    else:
+        base = a_type
+    a_date = anomaly.get('date')
+    if not a_date:
+        return base
+    phrase = relative_day_phrase(a_date, today) if today is not None else None
+    if phrase:
+        return f"{a_date} ({phrase}): {base}"
+    return f"{a_date}: {base}"
 
 
-def register_detected_anomalies(detected: list | None) -> list:
+def register_detected_anomalies(detected: list | None,
+                                today: date | None = None) -> list:
     """Persist freshly detected anomalies; return the open/asked view.
 
     Curiosity with memory: each detected anomaly is registered ONCE
@@ -112,22 +152,50 @@ def register_detected_anomalies(detected: list | None) -> list:
     athlete's partial explanation attached) or 'resolved' (stops surfacing —
     and because the id stays in the registry, it can never re-register).
 
+    `today` (threaded from the snapshot boundary — clock discipline) drives
+    the today-is-pending guard: a 'missing' anomaly dated today or later is
+    NEVER registered (the day isn't over), and any OPEN 'missing' registry
+    entry dated today or later is dropped — those were written by the
+    pre-fix comparison and legitimately re-register tomorrow if the session
+    genuinely never happened. Summaries and the surfaced 'days_ago' fields
+    are anchored to the same today.
+
     The returned list is every open/asked registry entry, newest date first:
     lifecycle fields (id, status, summary, athlete_explanation) merged with
     the fresh detection detail when the anomaly is still being detected.
 
     The date.today() here is a write-time created/updated stamp on new
-    registry entries, not date logic — allowlisted in
-    tests/test_clock_discipline.py.
+    registry entries (and the fallback when `today` is not threaded) —
+    allowlisted in tests/test_clock_discipline.py.
     """
     log = load_coaching_log()
     registry = log.get('anomalies', [])
-    by_id = {entry.get('id') for entry in registry}
-    today_iso = date.today().isoformat()
+    stamp_iso = date.today().isoformat()
+    if today is None:
+        today = date.fromisoformat(stamp_iso)
+    today_iso = today.isoformat()
     changed = False
+
+    # Today is PENDING, not missed: drop wrongly-registered open
+    # missing-anomalies dated today (or later). Removing the id lets the
+    # anomaly re-register tomorrow if the session truly never happened.
+    kept = [
+        entry for entry in registry
+        if not (entry.get('type') == 'missing'
+                and entry.get('status') == 'open'
+                and (entry.get('date') or '') >= today_iso)
+    ]
+    if len(kept) != len(registry):
+        registry = kept
+        changed = True
+
+    by_id = {entry.get('id') for entry in registry}
 
     fresh_by_id = {}
     for anomaly in detected or []:
+        if (anomaly.get('flag') == 'missing'
+                and (anomaly.get('date') or '') >= today_iso):
+            continue  # today's sessions are pending — never register as missed
         aid = anomaly_id_for(anomaly)
         fresh_by_id[aid] = anomaly
         if aid in by_id:
@@ -136,11 +204,11 @@ def register_detected_anomalies(detected: list | None) -> list:
             'id': aid,
             'date': anomaly.get('date'),
             'type': anomaly.get('flag', 'unknown'),
-            'summary': _anomaly_summary(anomaly),
+            'summary': _anomaly_summary(anomaly, today),
             'status': 'open',
             'athlete_explanation': None,
-            'created': today_iso,
-            'updated': today_iso,
+            'created': stamp_iso,
+            'updated': stamp_iso,
         })
         by_id.add(aid)
         changed = True
@@ -162,6 +230,14 @@ def register_detected_anomalies(detected: list | None) -> list:
         if fresh:
             for key, value in fresh.items():
                 view.setdefault(key, value)
+            # Keep the relative phrase current — a summary written when the
+            # anomaly was 'yesterday' must not still say 'yesterday' later.
+            view['summary'] = _anomaly_summary(fresh, today)
+        try:
+            view['days_ago'] = (today - date.fromisoformat(
+                view.get('date') or '')).days
+        except (TypeError, ValueError):
+            pass
         surfaced.append(view)
     surfaced.sort(key=lambda a: a.get('date') or '', reverse=True)
     return surfaced[:MAX_SURFACED_ANOMALIES]

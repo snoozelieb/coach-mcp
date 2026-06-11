@@ -406,7 +406,10 @@ class TestPlannedVsActualTaxonomy:
         assert result['details'][0]['status'] == 'matched'
         assert result['anomalies'] == []
 
-    def test_cross_sport_still_mismatches(self, empty_data_dir):
+    def test_cross_sport_yields_missing_plus_unplanned(self, empty_data_dir):
+        """A taxonomy-known plan type (long_run) is never paired with a
+        non-matching actual (cycling) — that crosswire is the June 2026
+        defect. The honest verdict is missing + unplanned."""
         plan = {'days': {
             '2026-01-13': {'planned': {'type': 'long_run', 'duration_mins': 60}},
         }}
@@ -415,8 +418,11 @@ class TestPlannedVsActualTaxonomy:
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
-        mismatches = [a for a in result['anomalies'] if a['flag'] == 'type_mismatch']
-        assert len(mismatches) == 1
+        assert [a['flag'] for a in result['anomalies']].count('type_mismatch') == 0
+        missing = [a for a in result['anomalies'] if a['flag'] == 'missing']
+        assert len(missing) == 1 and missing[0]['planned_type'] == 'long_run'
+        unplanned = [a for a in result['anomalies'] if a['flag'] == 'unplanned']
+        assert len(unplanned) == 1 and unplanned[0]['activity_type'] == 'cycling'
 
     def test_taxonomy_match_preferred_over_first_activity_fallback(self, empty_data_dir):
         """With a run + a ride on the same day, plan 'long_ride' picks the ride."""

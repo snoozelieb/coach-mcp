@@ -46,7 +46,7 @@ TIME_PERIODS = ('early_morning', 'morning', 'afternoon', 'evening', 'night')
 
 CORE_MANDATED_KEYS = [
     'current_time_context', 'snapshot_date', 'day_of_week', 'sections',
-    'flags', 'week_grid', 'weekly_plan', 'plan_adherence',
+    'flags', 'week_grid', 'week_grid_today', 'weekly_plan', 'plan_adherence',
     'planned_vs_actual', 'fitness_metrics', 'acwr_warnings', 'injuries',
     'coaching_memory', 'sleep_gate', 'data_quality',
 ]
@@ -297,11 +297,14 @@ class TestCoreGoldenSchema:
             assert isinstance(entry['total_duration_mins'], (int, float))
             assert isinstance(entry['is_rest'], bool)
             assert entry['is_today'] == (d == TODAY)
+            assert entry['days_ago'] == (TODAY - d).days
             assert entry['is_rest'] == (entry['activity_count'] == 0)
             if entry['is_rest']:
                 assert entry['types_summary'] == 'REST'
         # 35 days of seeded daily loads + fresh activities: today is not REST
         assert grid[TODAY.isoformat()]['is_rest'] is False
+        # The grid names its own anchor date (temporal self-anchoring)
+        assert result['week_grid_today'] == TODAY.isoformat()
 
     async def test_weekly_plan_carries_today_and_tomorrow_only(
             self, happy_env, mock_ctx):

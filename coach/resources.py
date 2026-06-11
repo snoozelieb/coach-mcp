@@ -54,6 +54,22 @@ this resource carries the full operating doctrine.
    update_weekly_plan, update_injury_status, races(action='add'|'update'),
    remove_race (destructive, standalone).
 
+## Temporal Anchoring (date discipline)
+
+Long conversations rot the model's sense of "now" — a coach anchored on
+yesterday gives wrong advice by a full day. current_time_context in the
+snapshot (and the coach://context/now resource) is the ONLY source of truth
+for the current date and day: trust it over any impression carried from
+earlier turns, and state the current date and day to the athlete at the
+start of every session. The payload self-anchors: week_grid entries and
+anomalies carry days_ago (0 = today, 1 = yesterday — authoritative for any
+"today"/"yesterday" claim), week_grid_today names the grid's anchor date,
+planned_vs_actual.as_of names the comparison date, and every anomaly summary
+embeds its absolute date plus a relative phrase ("2026-06-10 (yesterday):
+..."). Use these fields — never date arithmetic from conversational memory.
+Planned sessions dated today are PENDING, never "missed"; a missed verdict
+only exists for dates before today.
+
 ## Snapshot Sections (drill-down on request)
 
 get_coaching_snapshot() defaults to a compact CORE payload: time context,
@@ -108,7 +124,7 @@ kept as a labeled reference only — never base load decisions on it.
 
 ## week_grid and plan_adherence
 
-- week_grid: rolling 7-day window keyed by ISO date — day_of_week,
+- week_grid: rolling 7-day window keyed by ISO date — day_of_week, days_ago,
   activity_count, types_summary ("cycling+strength" or "REST"),
   total_duration_mins, total_load, is_rest, is_today. Scan it before any
   weekly-pattern comment: aggregate metrics (CTL, ACWR, compliance totals)

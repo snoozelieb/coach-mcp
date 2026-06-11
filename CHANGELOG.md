@@ -6,6 +6,39 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Planned-vs-actual matcher no longer crosswires types** (live coaching
+  failure, 2026-06-10): pairing now happens ONLY between a planned session
+  and an actual whose types satisfy `taxonomy.types_match`, with a new
+  name-hint fallback so plan "mobility" matches Garmin type `other` when the
+  activity name contains mobility/stretch/yoga ("Cape Town Mobility"); when
+  several actuals match by type the closest duration wins. Unmatched planned
+  sessions are `missing`, unmatched actuals are `unplanned` (load included)
+  — never paired just because both were left over. The skipped-padel day now
+  reads mobility=completed, padel=MISSING, hard ride=UNPLANNED instead of
+  two fabricated type_mismatches. `type_mismatch` survives only as a narrow
+  substitute signal: one unmatched planned session whose type the taxonomy
+  can't classify (e.g. `race`) plus exactly one leftover actual.
+- **Today is pending, never missed**: planned sessions dated today no longer
+  produce `missing` anomalies or land in `plan_adherence.skipped_dates` — a
+  06:27 snapshot was flagging the day's sessions as already skipped. The
+  comparison cutoff is now date < today for missing; today belongs in
+  `pending_dates`. Persistent-anomaly registration refuses missing-anomalies
+  dated today, and cleanup drops previously mis-registered open
+  missing-anomalies for the current date (they re-register tomorrow if the
+  session genuinely never happened). Anomaly ids keep the
+  `<date>:<type>:<slug>` format.
+- **Snapshot payload is temporally self-anchoring** (the coach combined
+  week-old anomalies into "padel was today"): `week_grid` entries and all
+  anomalies carry `days_ago` (0 = today), the snapshot carries
+  `week_grid_today`, `planned_vs_actual` carries `as_of`, and every anomaly
+  summary embeds its absolute date plus a relative phrase
+  ("2026-06-10 (yesterday): ..."), recomputed against the threaded today on
+  every snapshot. `SERVER_INSTRUCTIONS` now mandates trusting
+  `current_time_context` over any date impression from earlier conversation
+  and stating the current date/day at session start; the full date-discipline
+  doctrine lives in `coach://coaching/doctrine`.
+
 ### Changed
 - **ACWR cutover to the classic rolling 7d:28d model** (owner-approved after
   the 90-day shadow period — mean abs diff 0.264, 42% zone mismatch, and the

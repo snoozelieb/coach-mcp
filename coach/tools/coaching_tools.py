@@ -70,7 +70,13 @@ from ..config import (
     RACE_TIME_WEIGHTS,
     RACE_TIME_WEIGHT_DEFAULT,
 )
-from ..taxonomy import types_match, race_sport_for
+from ..taxonomy import (
+    types_match,
+    types_match_with_name,
+    is_mobility_by_name,
+    is_known_type,
+    race_sport_for,
+)
 from datetime import date, datetime, timedelta
 import json
 import logging
@@ -179,17 +185,34 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
                             daily_loads: dict = None, sleep_history: list = None) -> dict:
     """Compare planned sessions against actual activities.
 
-    Surfaces anomalies for LLM reasoning instead of drawing conclusions.
+    Pairing is TYPE-HONEST: a planned session only pairs with an actual
+    activity whose type satisfies taxonomy.types_match (plus a name-hint
+    fallback for mobility work Garmin logs as type 'other'). When several
+    actuals match by type, the closest duration wins. Leftover planned
+    sessions become 'missing' — but ONLY for dates before today; today's
+    sessions stay 'pending' until the day is over. Leftover actuals become
+    'unplanned' (load included so a hard unplanned ride is visible).
+
+    Mismatched types are NEVER paired just because both are left over
+    (the June 2026 padel/cycling crosswire). One narrow exception survives:
+    when the day's only unmatched planned session has a type the taxonomy
+    cannot classify (e.g. 'race') and exactly one actual remains, the pair
+    surfaces as 'type_mismatch' — a plausible substitute to ask about.
+
     Status values: matched, partial, missing, unplanned, type_mismatch, pending.
+    'as_of' anchors the date the comparison was computed against; every
+    anomaly carries 'days_ago' relative to it.
 
     When daily_loads and sleep_history are provided, anomalies are enriched
     with surrounding context (sleep, prior day load) so the LLM can reason
     about WHY an anomaly occurred.
     """
     if not plan or not plan.get('days'):
-        return {'status': 'no_plan', 'note': 'No weekly plan to compare against'}
+        return {'status': 'no_plan', 'as_of': today.isoformat(),
+                'note': 'No weekly plan to compare against'}
 
     comparison = {
+        'as_of': today.isoformat(),
         'sessions_planned': 0,
         'sessions_completed': 0,
         'sessions_missed': 0,
@@ -198,8 +221,21 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
         'details': []
     }
 
-    # Build set of planned dates to detect unplanned activities later
-    planned_dates = set()
+    def _unplanned_anomaly(day_str, act, on_rest_day=False):
+        anomaly = {
+            'date': day_str,
+            'flag': 'unplanned',
+            'activity_type': act.get('type'),
+            'duration_mins': act.get('duration_mins', 0),
+        }
+        load = act.get('load')
+        if load is None:
+            load = act.get('garmin_training_load')
+        if load is not None:
+            anomaly['load'] = load
+        if on_rest_day:
+            anomaly['on_rest_day'] = True
+        return anomaly
 
     for day_str, day_data in plan.get('days', {}).items():
         try:
@@ -220,12 +256,8 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
             day_activities = [a for a in activities if a.get('date') == day_str]
             if day_activities and day_date <= today:
                 for act in day_activities:
-                    comparison['anomalies'].append({
-                        'date': day_str,
-                        'flag': 'unplanned',
-                        'activity_type': act.get('type'),
-                        'duration_mins': act.get('duration_mins', 0),
-                    })
+                    comparison['anomalies'].append(
+                        _unplanned_anomaly(day_str, act, on_rest_day=True))
                     comparison['details'].append({
                         'date': day_str,
                         'status': 'unplanned',
@@ -234,10 +266,39 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
                     })
             continue
 
-        planned_dates.add(day_str)
         day_activities = [a for a in activities if a.get('date') == day_str]
         unmatched_activities = list(day_activities)
+        unmatched_planned = []
         day_details = []
+
+        def _paired_detail(planned_type, planned_duration, act, status):
+            """Detail + duration-delta anomalies for a planned/actual pair."""
+            actual_type = act.get('type', 'unknown')
+            actual_duration = act.get('duration_mins', 0)
+            detail = {
+                'date': day_str,
+                'planned_type': planned_type,
+                'actual_type': actual_type,
+                'duration_planned': planned_duration,
+                'duration_actual': actual_duration,
+                'status': status,
+            }
+            if planned_duration and actual_duration:
+                delta_pct = round(
+                    (actual_duration - planned_duration) / planned_duration * 100, 1
+                )
+                detail['duration_delta_pct'] = delta_pct
+                if delta_pct < -30 or delta_pct > 30:
+                    if delta_pct < -30 and detail['status'] == 'matched':
+                        detail['status'] = 'partial'
+                    comparison['anomalies'].append({
+                        'date': day_str,
+                        'flag': 'duration_delta',
+                        'planned_mins': planned_duration,
+                        'actual_mins': actual_duration,
+                        'delta_pct': delta_pct,
+                    })
+            return detail
 
         for planned in non_rest_sessions:
             comparison['sessions_planned'] += 1
@@ -253,78 +314,87 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
                 })
                 continue
 
-            match_idx = None
-            for i, act in enumerate(unmatched_activities):
-                # Taxonomy-aware: plan 'strength' matches Garmin
-                # 'strength_training', 'long_ride' matches 'mountain_biking'.
-                if types_match(planned_type, act.get('type', '')):
-                    match_idx = i
-                    break
-            if match_idx is None and unmatched_activities:
-                match_idx = 0
-
-            if match_idx is not None:
+            # Type-honest pairing: only taxonomy matches qualify (with the
+            # mobility-by-name fallback for Garmin type 'other'); among
+            # several candidates the closest duration wins.
+            candidates = [
+                (i, act) for i, act in enumerate(unmatched_activities)
+                if types_match_with_name(planned_type, act.get('type', ''),
+                                         act.get('name'))
+            ]
+            if candidates:
+                if planned_duration:
+                    match_idx = min(
+                        candidates,
+                        key=lambda c: abs((c[1].get('duration_mins') or 0)
+                                          - planned_duration),
+                    )[0]
+                else:
+                    match_idx = candidates[0][0]
                 best_match = unmatched_activities.pop(match_idx)
                 comparison['sessions_completed'] += 1
-                actual_type = best_match.get('type', 'unknown')
-                actual_duration = best_match.get('duration_mins', 0)
+                day_details.append(_paired_detail(
+                    planned_type, planned_duration, best_match, 'matched'))
+            else:
+                unmatched_planned.append(planned)
 
-                detail = {
+        # Narrow substitute exception: ONE leftover planned session whose
+        # type the taxonomy can't classify (e.g. 'race') + exactly ONE
+        # leftover actual -> surface as type_mismatch for the coach to ask
+        # about. Taxonomy-KNOWN plan types (padel, long_run, ...) never
+        # pair with a non-matching actual.
+        if (len(unmatched_planned) == 1 and len(unmatched_activities) == 1
+                and unmatched_planned[0].get('type')
+                and not is_known_type(unmatched_planned[0].get('type'))):
+            planned = unmatched_planned.pop(0)
+            substitute = unmatched_activities.pop(0)
+            comparison['sessions_completed'] += 1
+            comparison['anomalies'].append({
+                'date': day_str,
+                'flag': 'type_mismatch',
+                'planned_type': planned.get('type', ''),
+                'actual_type': substitute.get('type', 'unknown'),
+            })
+            day_details.append(_paired_detail(
+                planned.get('type', ''), planned.get('duration_mins', 0),
+                substitute, 'type_mismatch'))
+
+        # Leftover planned sessions: missing only for PAST days. Today's
+        # sessions are pending until the day is over — a 06:27 snapshot
+        # must never report today's ride as missed.
+        for planned in unmatched_planned:
+            planned_type = planned.get('type', '')
+            if day_date >= today:
+                comparison['sessions_pending'] += 1
+                day_details.append({
                     'date': day_str,
-                    'planned_type': planned_type,
-                    'actual_type': actual_type,
-                    'duration_planned': planned_duration,
-                    'duration_actual': actual_duration,
-                }
-
-                if planned_type and actual_type and not types_match(planned_type, actual_type):
-                    detail['status'] = 'type_mismatch'
-                    comparison['anomalies'].append({
-                        'date': day_str,
-                        'flag': 'type_mismatch',
-                        'planned_type': planned_type,
-                        'actual_type': actual_type,
-                    })
-                else:
-                    detail['status'] = 'matched'
-
-                if planned_duration and actual_duration:
-                    delta_pct = round(
-                        (actual_duration - planned_duration) / planned_duration * 100, 1
-                    )
-                    detail['duration_delta_pct'] = delta_pct
-
-                    if delta_pct < -30:
-                        detail['status'] = 'partial' if detail['status'] == 'matched' else detail['status']
-                        comparison['anomalies'].append({
-                            'date': day_str,
-                            'flag': 'duration_delta',
-                            'planned_mins': planned_duration,
-                            'actual_mins': actual_duration,
-                            'delta_pct': delta_pct,
-                        })
-                    elif delta_pct > 30:
-                        comparison['anomalies'].append({
-                            'date': day_str,
-                            'flag': 'duration_delta',
-                            'planned_mins': planned_duration,
-                            'actual_mins': actual_duration,
-                            'delta_pct': delta_pct,
-                        })
-
-                day_details.append(detail)
+                    'status': 'pending',
+                    'planned': planned_type,
+                })
             else:
                 comparison['sessions_missed'] += 1
                 comparison['anomalies'].append({
                     'date': day_str,
                     'flag': 'missing',
                     'planned_type': planned_type,
-                    'planned_mins': planned_duration,
+                    'planned_mins': planned.get('duration_mins', 0),
                 })
                 day_details.append({
                     'date': day_str,
                     'status': 'missing',
                     'planned_type': planned_type,
+                })
+
+        # Leftover actuals: unplanned, never silently absorbed as a
+        # substitute for a non-matching planned session.
+        if day_date <= today:
+            for act in unmatched_activities:
+                comparison['anomalies'].append(_unplanned_anomaly(day_str, act))
+                day_details.append({
+                    'date': day_str,
+                    'status': 'unplanned',
+                    'actual': act.get('type'),
+                    'duration_actual': act.get('duration_mins', 0),
                 })
 
         # If the day had more activities than planned sessions, attach
@@ -352,6 +422,14 @@ def _compare_planned_actual(plan: dict, activities: list, today: date,
         round(comparison['sessions_completed'] / comparison['sessions_planned'] * 100, 1)
         if comparison['sessions_planned'] > 0 else None
     )
+
+    # Temporal self-anchoring: every anomaly knows how far back it happened
+    # (0 = today, 1 = yesterday) so a long conversation can't drift dates.
+    for anomaly in comparison['anomalies']:
+        try:
+            anomaly['days_ago'] = (today - date.fromisoformat(anomaly['date'])).days
+        except (ValueError, TypeError, KeyError):
+            pass
 
     # Enrich anomalies with surrounding context when data is available
     if (daily_loads or sleep_history) and comparison['anomalies']:
@@ -723,7 +801,8 @@ def _summarize_plan_adherence_by_pillar(plan: dict, activities: list,
       - planned: count of planned sessions matching the pillar
       - completed: count of planned-then-matched sessions
       - skipped_dates: list of ISO dates where a pillar session was planned but
-          no matching activity happened (only dates <= today)
+          no matching activity happened (only dates BEFORE today — today's
+          unfinished sessions are pending, never skipped)
       - deficit: planned - completed (skipped + still-pending count)
 
     This closes the "planned 5 strength, completed 3, skipped Monday + Wednesday"
@@ -769,17 +848,21 @@ def _summarize_plan_adherence_by_pillar(plan: dict, activities: list,
         if not planned_pillars:
             continue
 
-        # Was this pillar actually done on this day?
+        # Was this pillar actually done on this day? (Garmin logs mobility
+        # sessions as type 'other' — the activity NAME decides for those.)
         day_acts = [a for a in activities if a.get('date') == day_str]
         actual_pillars = set()
         for a in day_acts:
             actual_pillars |= _session_pillars(a)
+            if is_mobility_by_name(a.get('type'), a.get('name')):
+                actual_pillars.add('mobility')
 
         for pillar in planned_pillars:
             result[pillar]['planned'] += 1
             if pillar in actual_pillars:
                 result[pillar]['completed'] += 1
-            elif day_date > today:
+            elif day_date >= today:
+                # Today is pending until the day is over — never 'skipped'
                 result[pillar]['pending_dates'].append(day_str)
             else:
                 result[pillar]['skipped_dates'].append(day_str)
@@ -816,6 +899,7 @@ def _build_week_grid(activities: list, today: date,
 
         grid[day_str] = {
             'day_of_week': day.strftime('%A'),
+            'days_ago': offset,  # 0 = today, 1 = yesterday — authoritative
             'activity_count': len(day_acts),
             'types': types,
             'types_summary': '+'.join(types) if types else 'REST',
@@ -1045,6 +1129,7 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
         },
         'flags': full.get('flags', {}),
         'week_grid': full.get('week_grid'),
+        'week_grid_today': full.get('week_grid_today'),
         'weekly_plan': weekly_plan,
         'plan_adherence': full.get('plan_adherence'),
         'planned_vs_actual': pva,
@@ -1742,6 +1827,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         if plan_expired:
             planned_vs_actual = {
                 'status': 'plan_expired',
+                'as_of': today.isoformat(),
                 'days_since_expiry': days_since_expiry,
                 'note': ('All plan days are in the past — anomaly comparison '
                          'skipped. The athlete is uncoached: build a fresh '
@@ -1755,10 +1841,12 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             # Curiosity with memory: persist fresh detections (idempotent by
             # id) and surface ONLY open/asked anomalies, each carrying any
             # prior athlete_explanation. Resolved anomalies never resurface.
+            # `today` is threaded so registration can enforce today-is-pending
+            # and anchor summaries/days_ago (clock discipline).
             if isinstance(planned_vs_actual, dict) and 'anomalies' in planned_vs_actual:
                 try:
                     planned_vs_actual['anomalies'] = register_detected_anomalies(
-                        planned_vs_actual['anomalies'])
+                        planned_vs_actual['anomalies'], today=today)
                 except Exception:
                     logger.warning("Anomaly registry update failed", exc_info=True)
 
@@ -2175,6 +2263,9 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             },
 
             'week_grid': _build_week_grid(all_fetched_activities, today, daily_loads),
+
+            # The ISO date the grid (and its days_ago fields) anchors to
+            'week_grid_today': today.isoformat(),
 
             'plan_adherence': _summarize_plan_adherence_by_pillar(
                 current_plan, all_fetched_activities, today),
