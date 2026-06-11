@@ -79,7 +79,8 @@ ALLOWLIST = {
     ('coach/tools/decision_tools.py', 'reject_proposal'),
     ('coach/tools/decision_tools.py', 'record_athlete_response'),
     ('coach/tools/decision_tools.py', 'resolve_anomaly'),
-    # [stamp] created/updated stamps on new anomaly-registry entries
+    # [stamp] created/updated stamps on new anomaly-registry entries, also
+    # the fallback default for `today` when not threaded (snapshot threads it)
     ('coach/tools/decision_tools.py', 'register_detected_anomalies'),
     # [stamp] 'created' stamp on the auto_proposal_tags registry entry
     # (expiry math lives in propose_coaching_action, a boundary)

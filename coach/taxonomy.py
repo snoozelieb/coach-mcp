@@ -13,8 +13,15 @@ the coach package so that config/rules/tools can all depend on it.
 
 Public API:
   canonical_type(t)        -> canonical name for any known alias/Garmin type
+  is_known_type(t)         -> True when the registry recognizes the name
   types_match(plan, garmin)-> True when a plan type and a Garmin type refer
                               to the same kind of training
+  types_match_with_name(plan, garmin, name)
+                           -> types_match plus a name-hint fallback for
+                              mobility logged as Garmin type 'other'
+  is_mobility_by_name(garmin, name)
+                           -> True when an unclassifiable Garmin type's
+                              activity NAME marks it as mobility work
   pillar_for(t)            -> 'strength' | 'mobility' | 'long_effort' | None
   sport_group_for(t)       -> 'cycling' | 'running' | 'strength' | 'other'
   workout_family_for(t)    -> builder family ('cycling', 'running', 'strength',
@@ -285,6 +292,11 @@ def canonical_type(activity_type) -> str:
     return _normalize(activity_type)
 
 
+def is_known_type(activity_type) -> bool:
+    """True when the registry recognizes the name (canonical, Garmin, alias)."""
+    return _entry(activity_type) is not None
+
+
 def pillar_for(activity_type) -> str | None:
     """Training pillar a type contributes to, or None.
 
@@ -346,6 +358,41 @@ def types_match(plan_type, garmin_type) -> bool:
     if not plan_type or not garmin_type:
         return False
     return _match_key(plan_type) == _match_key(garmin_type)
+
+
+# Garmin logs mobility sessions as type 'other' with names like
+# "Cape Town Mobility" — the type carries no signal, the NAME does.
+MOBILITY_NAME_HINTS = ('mobility', 'stretch', 'yoga', 'pilates', 'foam roll')
+
+
+def is_mobility_by_name(garmin_type, activity_name) -> bool:
+    """True when an unclassifiable Garmin type's NAME marks it as mobility.
+
+    Only fires when the type itself is unknown to the registry (e.g. Garmin
+    'other') — a known type always speaks for itself, so 'walking' named
+    "Mobility walk" is still walking.
+    """
+    if not activity_name or _entry(garmin_type) is not None:
+        return False
+    name = str(activity_name).lower()
+    return any(hint in name for hint in MOBILITY_NAME_HINTS)
+
+
+def types_match_with_name(plan_type, garmin_type, activity_name=None) -> bool:
+    """types_match plus a name-hint fallback for the mobility family.
+
+    Examples:
+        types_match_with_name('mobility', 'yoga', None)              -> True
+        types_match_with_name('mobility', 'other', 'CT Mobility')    -> True
+        types_match_with_name('mobility', 'other', 'Random Workout') -> False
+        types_match_with_name('padel', 'other', 'CT Mobility')       -> False
+    """
+    if types_match(plan_type, garmin_type):
+        return True
+    entry = _entry(plan_type)
+    if entry is None or entry.pillar != 'mobility':
+        return False
+    return is_mobility_by_name(garmin_type, activity_name)
 
 
 def race_sport_for(race_type) -> str | None:

@@ -206,8 +206,9 @@ class TestComparePlannedActual:
         assert 'all_activities' in detail
         assert len(detail['all_activities']) == 2
 
-    def test_multi_activity_no_type_match_uses_first(self):
-        """When no activity matches planned type, falls back to first activity."""
+    def test_no_type_match_yields_missing_plus_unplanned(self):
+        """A taxonomy-known planned type NEVER pairs with non-matching actuals
+        (the June 2026 crosswire fix) — missing + unplanned instead."""
         plan = {
             'days': {
                 '2026-01-13': {'planned': {'type': 'swimming', 'duration_mins': 60}},
@@ -219,11 +220,14 @@ class TestComparePlannedActual:
         ]
         result = _compare_planned_actual(plan, activities, date(2026, 1, 15))
 
-        assert result['sessions_completed'] == 1
-        detail = result['details'][0]
-        assert detail['actual_type'] == 'running'  # First activity used as fallback
-        assert detail['status'] == 'type_mismatch'
-        assert len(detail['all_activities']) == 2
+        assert result['sessions_completed'] == 0
+        assert result['sessions_missed'] == 1
+        missing = [a for a in result['anomalies'] if a['flag'] == 'missing']
+        assert len(missing) == 1
+        assert missing[0]['planned_type'] == 'swimming'
+        unplanned = [a for a in result['anomalies'] if a['flag'] == 'unplanned']
+        assert {a['activity_type'] for a in unplanned} == {'running', 'cycling'}
+        assert not [a for a in result['anomalies'] if a['flag'] == 'type_mismatch']
 
     def test_single_matched_activity_minimal(self):
         """Single matched activity produces minimal detail (no all_activities, no type/duration)."""

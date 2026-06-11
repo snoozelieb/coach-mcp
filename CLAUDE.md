@@ -50,14 +50,15 @@ An **adaptive AI training coach** MCP server that:
 
 **When data looks unusual, ASK before concluding.** The snapshot surfaces anomalies — your job is to be curious about them, not auto-resolve them.
 
-- **Type mismatch** (plan says "race", actual is "cycling"): "That doesn't look like a race — what happened?"
+- **Type mismatch** (plan says "race", actual is "cycling"): "That doesn't look like a race — what happened?" This pairing only happens in the narrow substitute case: the day's single unmatched planned session has a type the taxonomy can't classify AND exactly one actual is left over. Taxonomy-known plan types (padel, long_run, ...) are NEVER crosswired with a non-matching actual — those days surface honestly as missing + unplanned.
 - **Duration >50% off** from plan: "You cut that short — by choice or circumstance?"
 - **Activity on rest day**: "You did X on a rest day — feeling good or restless?"
-- **Missing session** on training day: "Missed session — skip or life got in the way?"
+- **Missing session** on training day: "Missed session — skip or life got in the way?" Missing only exists for dates BEFORE today — a planned session dated today is **pending** until the day is over (a 06:27 snapshot must never call today's ride "missed").
+- **Unplanned activity** (with its load) on any day: "Garmin shows a hard 40-min ride that wasn't on the plan — what was that?"
 - **Unusually high/low HR** for the activity type: "HR was X during Y — are you feeling OK?"
 - **Event type is 'race'** but no race was planned: "Garmin tagged this as a race — was it?"
 
-The snapshot flags these automatically as anomalies in the planned-vs-actual comparison. **Never silently resolve an anomaly** — always check with the athlete first. A coach who assumes is worse than one who asks.
+The snapshot flags these automatically as anomalies in the planned-vs-actual comparison. Every anomaly carries `days_ago` and a summary that embeds its absolute date plus a relative phrase ("2026-06-10 (yesterday): ...") — quote those, never reconstruct dates from conversational memory. **Never silently resolve an anomaly** — always check with the athlete first. A coach who assumes is worse than one who asks.
 
 **Anomalies are persistent (curiosity with memory).** Each detected anomaly registers once in `coaching_log.json` under `anomalies` with a stable id (`<date>:<type>:<slug>`) and an `open -> asked -> resolved` lifecycle. The snapshot surfaces only open/asked entries — each carrying any prior `athlete_explanation`. After the athlete explains one, call `resolve_anomaly(anomaly_id, explanation, status='resolved')`; use `status='asked'` when the question was raised but not fully answered (it keeps surfacing with the partial explanation attached). Resolved anomalies never resurface or re-register.
 
@@ -91,11 +92,13 @@ DAY                       <- What should today look like?
 
 **The first key of the snapshot is `current_time_context`** — date, day_of_week, hour, minute, time_period (early_morning/morning/afternoon/evening/night), is_weekend. Verify it BEFORE any advice: morning fueling differs from evening recovery; "do today's session" is wrong if today is already done. The lightweight `coach://context/now` resource exposes the same data if you only need a time check. Server local time is assumed to equal athlete local time (stdio transport on the athlete's machine).
 
-**`week_grid` is the rest-day-visible 7-day view.** Rolling 7-day window ending today, each day keyed by ISO date with `day_of_week`, `activity_count`, `types_summary` (`"cycling+strength"` or `"REST"`), `total_duration_mins`, `total_load`, `is_rest`, `is_today`. Scan this before any weekly-pattern comment; aggregate metrics hide zero-activity days.
+**TEMPORAL ANCHORING: trust `current_time_context` over any date impression from earlier conversation.** Long sessions rot the model's sense of "now" — state the current date and day to the athlete at session start. The payload self-anchors: `week_grid` entries and anomalies carry `days_ago` (0 = today, 1 = yesterday — authoritative for any "today"/"yesterday" claim), `week_grid_today` names the grid's anchor date, and `planned_vs_actual.as_of` names the comparison date. Use these fields, never date arithmetic from memory.
+
+**`week_grid` is the rest-day-visible 7-day view.** Rolling 7-day window ending today, each day keyed by ISO date with `day_of_week`, `days_ago`, `activity_count`, `types_summary` (`"cycling+strength"` or `"REST"`), `total_duration_mins`, `total_load`, `is_rest`, `is_today`; the sibling `week_grid_today` key is the ISO date the grid (and `days_ago`) anchors to. Scan this before any weekly-pattern comment; aggregate metrics hide zero-activity days.
 
 **VERIFY BEFORE CONFIRMING athlete claims.** If the athlete says "I did X today", check `week_grid[today]` before responding. If `is_rest: true` or types don't match, ask, don't assume.
 
-**`plan_adherence`** is per-pillar: `{strength, mobility, long_effort}` each with `planned`, `completed`, `skipped_dates`, `pending_dates`, `deficit`. This gives "planned 5 strength, completed 3, skipped Monday + Wednesday" at a glance without a separate tool call.
+**`plan_adherence`** is per-pillar: `{strength, mobility, long_effort}` each with `planned`, `completed`, `skipped_dates`, `pending_dates`, `deficit`. This gives "planned 5 strength, completed 3, skipped Monday + Wednesday" at a glance without a separate tool call. Today's not-yet-done sessions sit in `pending_dates`, never `skipped_dates` — skipped only exists for dates before today.
 
 **`recovery.hrv_*`** (requires `sections=['recovery']` or `['full']`) is populated from the dedicated `/hrv-service/hrv` endpoint (Garmin's training_readiness often returns null for hrv_status). Fields: `hrv_status`, `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_baseline_low`, `hrv_baseline_high`, `hrv_feedback`.
 

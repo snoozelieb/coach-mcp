@@ -349,9 +349,10 @@ class TestSectionResolution:
 # ---------------------------------------------------------------------------
 
 CORE_MANDATED_KEYS = [
-    'current_time_context', 'flags', 'week_grid', 'fitness_metrics',
-    'acwr_warnings', 'injuries', 'plan_adherence', 'weekly_plan',
-    'planned_vs_actual', 'coaching_memory', 'sleep_gate', 'data_quality',
+    'current_time_context', 'flags', 'week_grid', 'week_grid_today',
+    'fitness_metrics', 'acwr_warnings', 'injuries', 'plan_adherence',
+    'weekly_plan', 'planned_vs_actual', 'coaching_memory', 'sleep_gate',
+    'data_quality',
 ]
 
 HEAVY_SECTION_KEYS = [
