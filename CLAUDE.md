@@ -447,8 +447,11 @@ are created in the resolved data directory.
 
 ### Garmin Authentication
 
-Native garminconnect **0.3.5** auth (vendored DI-token client, curl_cffi TLS impersonation
-for Cloudflare). No garth, no Playwright, no browser — the old fallback stack is deleted.
+Auth uses the **garminconnect 0.3.5** library directly (vendored DI-token client). This repo
+contains no custom Cloudflare/anti-bot code — Garmin's own SSO sits behind Cloudflare, and the
+library handles that natively via its `curl_cffi` dependency (standard browser-like TLS so a
+legitimate first-party login isn't falsely rate-limited). The old custom fallback stack
+(garth + a Playwright browser login) was deleted during the rebuild; we just call the library now.
 
 1. **Normal flow** (token-first): `coach/garmin_client.py` restores the saved session from
    `.garth/garmin_tokens.json` via a credential-less `Garmin().login(tokenstore=...)` — silent
