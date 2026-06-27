@@ -6,6 +6,15 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-27
+
+A reliability and coaching-correctness release. The ACWR injury gate now runs
+on the validated rolling 7d:28d model instead of the EWMA approximation, and a
+class of date/anomaly bugs that made the coach misread *what happened when* is
+fixed at the root (with the live failure that surfaced them captured as a
+regression test). No new features and no breaking changes for MCP clients —
+the tool surface, names, and config are identical to 1.0.0.
+
 ### Fixed
 - **Planned-vs-actual matcher no longer crosswires types** (live coaching
   failure, 2026-06-10): pairing now happens ONLY between a planned session
@@ -53,6 +62,11 @@ All notable changes to coach-mcp are documented here. The format follows
   (`acwr_rolling`, `acwr_rolling_status`, `acwr_shadow`) are removed.
   CTL/ATL/TSB math, the 0.8/1.3/1.5 thresholds, and the [10, 15, 25] volume
   steps are unchanged.
+- **Docs clarify that Cloudflare handling is a library dependency, not custom
+  code in this repo** — Garmin's SSO sits behind Cloudflare and the
+  `garminconnect` library handles it natively via its `curl_cffi` dependency;
+  this project's old garth + Playwright login fallback was deleted during the
+  1.0 rebuild.
 
 ### Added
 - `scripts/recompute_acwr_history.py`: supervised one-off migration that
