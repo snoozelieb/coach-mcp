@@ -16,10 +16,14 @@ All notable changes to coach-mcp are documented here. The format follows
   defaults to keeping everything.
 
 ### Added
-- `scripts/backfill_history.py` — supervised repair for history holes
-  (dry-run default, timestamped backup on `--apply`): rebuilds missing daily
-  CTL/ACWR snapshot entries locally from stored `daily_loads`, and re-fetches
-  missing sleep nights and readiness days per-date from Garmin.
+- **`backfill_history` MCP tool** (49th tool) — repairs holes in the
+  training diary from the conversation: the coach takes the date range from
+  chat, reports a dry run first (default), then applies after the athlete
+  confirms (backup to `data-backups/` before writing). Add-only and
+  idempotent: rebuilds missing daily CTL/ACWR snapshot entries locally from
+  stored `daily_loads` and re-fetches missing sleep nights / readiness days
+  per-date from Garmin. `scripts/backfill_history.py` is a thin CLI over
+  the same implementation (`--since` is required — no hardcoded dates).
 - Coaching doctrine resource (`coach://coaching/doctrine`): multi-sport
   guidance (shared sessions benefit all sports; never spike total-body ACWR
   chasing a sport-specific CTL target) and the bedtime-drift overtraining

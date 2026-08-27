@@ -186,7 +186,7 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 
 ## MCP surface
 
-48 tools — you don't call them directly; the coach uses them during
+49 tools — you don't call them directly; the coach uses them during
 conversation:
 
 | Category | Tools |
@@ -249,7 +249,7 @@ committed.
 # HTTP transport (streamable-http) instead of stdio
 COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
 
-# Code Mode (search/execute meta-tools instead of 48 individual tools)
+# Code Mode (search/execute meta-tools instead of 49 individual tools)
 pip install fastmcp[code-mode]
 COACH_CODE_MODE=1 garmin-coach-mcp
 
