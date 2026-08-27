@@ -1,5 +1,11 @@
 # Coach-MCP Upgrade Roadmap (FINAL — post intent-guardian + red-team review)
 
+> **STATUS (2026-08-27): executed.** Phases 0-4 all shipped (v1.0.0/v1.1.0); the
+> Diagnosis below describes the *pre-upgrade* state and every listed defect is
+> fixed. Kept as the historical record referenced from README.md. The
+> **Deferred backlog** section is the one part still live — it holds the
+> current triggers for deferred work.
+
 Project: C:\Users\schoonie\Documents\personal\coach-mcp — adaptive AI training coach MCP server.
 Basis: 45-agent review (7 dimensions, 32 adversarially-verified critical/high findings, all confirmed), then roadmap reviews by project-intent-guardian (verdict: aligned-with-changes) and red-team-reviewer (verdict: proceed-with-changes). All required changes incorporated.
 

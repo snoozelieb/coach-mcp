@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 # Long-form coaching doctrine. SERVER_INSTRUCTIONS in mcp_app.py must stay under
-# ~1,900 chars (Claude Code truncates at 2KB), so everything beyond the hard
-# mandates lives here and is read on demand via coach://coaching/doctrine.
+# the test-enforced 2,000-char budget (Claude Code truncates at 2KB), so
+# everything beyond the hard mandates lives here and is read on demand via
+# coach://coaching/doctrine.
 COACHING_DOCTRINE = """\
 # Coaching Doctrine
 
@@ -122,6 +123,12 @@ ACWR at every level is the classic rolling 7d:28d coupled-window model
 since 2026-06-10). fitness_metrics.acwr_ewma is the retired EWMA model,
 kept as a labeled reference only — never base load decisions on it.
 
+Multi-sport athletes: strength, mobility, and recovery sessions benefit ALL
+sports — schedule them regardless of current sport focus. Sport-specific key
+sessions are prioritized by race priority x time proximity
+(snapshot.sport_priorities), but total weekly load must still respect level 1
+— never spike total-body stress chasing a sport-specific CTL target.
+
 ## week_grid and plan_adherence
 
 - week_grid: rolling 7-day window keyed by ISO date — day_of_week, days_ago,
@@ -216,8 +223,10 @@ recovery.hrv_trend, and compliance.compliance_rate_pct:
 
 Sleep is a GATE for training, not just a metric: under sleep deficit,
 high-intensity intervals suffer most and early-AM workouts that cut into
-sleep are counterproductive. New athlete with empty adaptation patterns?
-Start conservative and log responses every week.
+sleep are counterproductive. sleep.bedtime_drift flagging bedtime drifting
+later by >15 min/wk is a meaningful overtraining signal, not trivia. New
+athlete with empty adaptation patterns? Start conservative and log responses
+every week.
 """
 
 

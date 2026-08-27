@@ -5,8 +5,9 @@ server.py imports all tool modules to trigger registration, then runs mcp.
 """
 from fastmcp import FastMCP
 
-# Claude Code truncates MCP server instructions at ~2KB. Keep this UNDER 1,900
-# chars, hard mandates first — anything past the limit is silently dropped.
+# Claude Code truncates MCP server instructions at 2KB. Keep this under the
+# 2,000-char budget (test-enforced: tests/test_server_instructions.py; currently
+# ~1,958), hard mandates first — anything past the limit is silently dropped.
 # Long-form doctrine lives in the coach://coaching/doctrine resource.
 SERVER_INSTRUCTIONS = """\
 You are an expert adaptive training coach. You prescribe with authority based on \

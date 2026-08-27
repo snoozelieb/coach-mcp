@@ -5,62 +5,17 @@ This script fetches all exercises from Garmin's public API and creates
 a local exercise library with muscle groups and injury prevention mappings.
 """
 import json
-import requests
+import sys
 from pathlib import Path
 
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from coach.config import DATA_DIR
+
 GARMIN_EXERCISES_URL = "https://connect.garmin.com/web-data/exercises/Exercises.json"
-DATA_DIR = Path(__file__).parent.parent / "data"
-OUTPUT_FILE = DATA_DIR / "exercises.json"
-
-
-# Muscle group mappings for common exercises
-MUSCLE_MAPPINGS = {
-    # Legs
-    "SQUAT": ["quadriceps", "glutes", "hamstrings"],
-    "LUNGE": ["quadriceps", "glutes", "hamstrings"],
-    "DEADLIFT": ["hamstrings", "glutes", "back", "core"],
-    "LEG_PRESS": ["quadriceps", "glutes"],
-    "LEG_EXTENSION": ["quadriceps"],
-    "LEG_CURL": ["hamstrings"],
-    "HAMSTRING_CURL": ["hamstrings"],
-    "CALF_RAISE": ["calves"],
-    "STEP_UP": ["quadriceps", "glutes"],
-    "HIP_THRUST": ["glutes", "hamstrings"],
-
-    # Upper Body - Push
-    "BENCH_PRESS": ["chest", "shoulders", "triceps"],
-    "PUSH_UP": ["chest", "shoulders", "triceps", "core"],
-    "SHOULDER_PRESS": ["shoulders", "triceps"],
-    "TRICEP": ["triceps"],
-    "DIP": ["chest", "triceps", "shoulders"],
-    "CHEST_FLY": ["chest"],
-
-    # Upper Body - Pull
-    "ROW": ["back", "biceps"],
-    "PULL_UP": ["back", "biceps"],
-    "LAT_PULLDOWN": ["back", "biceps"],
-    "BICEP": ["biceps"],
-    "FACE_PULL": ["rear_delts", "upper_back"],
-
-    # Core
-    "PLANK": ["core", "shoulders"],
-    "CRUNCH": ["abs"],
-    "SIT_UP": ["abs", "hip_flexors"],
-    "DEAD_BUG": ["core"],
-    "BIRD_DOG": ["core", "back"],
-    "RUSSIAN_TWIST": ["obliques", "core"],
-
-    # Olympic/Power
-    "OLYMPIC_LIFT": ["full_body"],
-    "CLEAN": ["full_body"],
-    "SNATCH": ["full_body"],
-
-    # Cardio/HIIT
-    "BURPEE": ["full_body"],
-    "JUMPING_JACK": ["full_body"],
-    "MOUNTAIN_CLIMBER": ["core", "shoulders"],
-    "BOX_JUMP": ["quadriceps", "glutes", "calves"],
-}
+OUTPUT_FILE = Path(DATA_DIR) / "exercises.json"
 
 # Injury prevention mappings - which exercises help which injuries
 INJURY_PREVENTION = {

@@ -9,7 +9,10 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`, which:
 
 The MCP Registry publish (step 3 below) is a separate, manual CLI step.
 
-## One-time setup (before the first release)
+## One-time setup (completed before v1.0.0 — kept for reference)
+
+> Both steps are done: the trusted publisher is registered on PyPI and the
+> mcp-name marker is in README.md. Nothing here recurs per release.
 
 ### a. Configure the PyPI trusted publisher
 
@@ -42,8 +45,8 @@ will fail and a follow-up PyPI release will be needed.
 ## Release
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 Watch the run under **Actions → Release**. When it finishes, verify

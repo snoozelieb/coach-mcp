@@ -10,7 +10,7 @@ Modes:
   python scripts/daily_loop.py          # Template-based brief (no LLM)
   python scripts/daily_loop.py --llm    # LLM-powered brief via the Anthropic API
 
-Run via Task Scheduler at 05:00 daily.
+Run via Task Scheduler ("CoachMCP Morning Audit") at 06:30 daily.
 """
 import asyncio
 import json
@@ -102,7 +102,8 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
     Execute the morning audit loop.
 
     Args:
-        use_llm: If True, use MCP sampling for LLM-powered brief generation.
+        use_llm: If True, generate the brief via the Anthropic API
+            (falls back to the template brief on any failure).
 
     Returns a summary of the audit results.
     """
@@ -192,7 +193,7 @@ async def _generate_llm_brief(
     except ImportError:
         logger.warning(
             "--llm requested but the anthropic SDK is not installed. "
-            "Install it with: pip install \"anthropic>=0.109\" "
+            "Install it with: pip install \"anthropic>=0.109.1,<1\" "
             "(listed in requirements.txt). Falling back to template brief."
         )
         return generate_morning_brief(context, compliance, audit)
