@@ -65,7 +65,8 @@ def resolve_data_dir() -> Path:
 
 
 def resolve_token_dir(data_dir: Path | None = None) -> str:
-    """Resolve the Garmin token store dir (str for garth compatibility).
+    """Resolve the Garmin token store dir (str — garminconnect's
+    login(tokenstore=...) API takes a path string).
 
     COACH_TOKEN_DIR wins; otherwise <repo>/.garth when the data dir resolved
     to a git checkout, else <user-dir>/garmin-tokens.
@@ -82,7 +83,16 @@ def resolve_token_dir(data_dir: Path | None = None) -> str:
 
 # Paths
 DATA_DIR = resolve_data_dir()
-TOKEN_DIR = resolve_token_dir(DATA_DIR)  # String for garth compatibility
+TOKEN_DIR = resolve_token_dir(DATA_DIR)  # String for garminconnect's tokenstore API
+
+# History retention windows (days), applied at persist time in coach/fitness.py.
+# None = keep everything. A coach keeps the athlete's full training diary —
+# the old fixed prunes (sleep 30d, readiness 60d, CTL/ACWR snapshots 90d)
+# silently erased history (14 sleep nights survived a year of coaching) and
+# were retired as a defect on 2026-08-27.
+SLEEP_HISTORY_RETENTION_DAYS: int | None = None
+READINESS_HISTORY_RETENTION_DAYS: int | None = None
+SNAPSHOT_RETENTION_DAYS: int | None = None
 
 # .env loading: current working dir / project tree first (highest precedence —
 # load_dotenv never overrides already-set values), then the resolved data dir

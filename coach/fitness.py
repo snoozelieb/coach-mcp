@@ -32,6 +32,9 @@ from .config import (
     CTL_TARGETS,
     TSS_PER_HOUR_ESTIMATE,
     MAX_WEEKLY_LOAD_INCREASE_PCT,
+    SLEEP_HISTORY_RETENTION_DAYS,
+    READINESS_HISTORY_RETENTION_DAYS,
+    SNAPSHOT_RETENTION_DAYS,
     POLARIZATION_TARGETS,
     SLEEP_DEEP_PCT_MIN,
     SLEEP_DEEP_PCT_EXCELLENT,
@@ -678,10 +681,9 @@ def update_fitness_history(
     snapshots.append(snapshot)
     snapshots.sort(key=lambda s: s.get('date', ''))
 
-    # Keep last 90 days of snapshots
-    cutoff = (today - timedelta(days=90)).isoformat()
-    snapshots = [s for s in snapshots if s['date'] >= cutoff]
-    history['snapshots'] = snapshots
+    # Retention is config-driven; default keeps the full trajectory
+    history['snapshots'] = _apply_retention(
+        snapshots, today, SNAPSHOT_RETENTION_DAYS)
 
     # Dedicated activity-ingestion marker. save_fitness_history bumps
     # last_updated on EVERY save (including sleep/readiness persistence),
@@ -910,6 +912,21 @@ def detect_bedtime_drift(sleep_nights: list[dict], min_nights: int = 8) -> dict[
     }
 
 
+def _apply_retention(entries: list, today: date, retention_days: int | None,
+                     date_key: str = 'date') -> list:
+    """Sort history entries by date and apply a retention window.
+
+    None = keep everything. History is the athlete's training diary; the old
+    fixed prunes (sleep 30d, readiness 60d, snapshots 90d) erased it and were
+    retired as a defect — the config.*_RETENTION_DAYS defaults are None.
+    """
+    entries = sorted(entries, key=lambda r: r.get(date_key, ''))
+    if retention_days is None:
+        return entries
+    cutoff = (today - timedelta(days=retention_days)).isoformat()
+    return [r for r in entries if r.get(date_key, '') >= cutoff]
+
+
 def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None,
                        *, today: date) -> dict[str, Any]:
     """
@@ -917,7 +934,8 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
 
     Stores: date, bedtime, wake_time, duration_hrs, score, deep_pct, rem_pct,
     light_pct, awake_mins, avg_hr, respiration, sleep_stress.
-    Maintains a rolling 30-day window (auto-prunes older entries).
+    Retention is config-driven (SLEEP_HISTORY_RETENTION_DAYS; default None =
+    keep the full training diary).
 
     Args:
         sleep_records: List of sleep record dicts from get_sleep_summary
@@ -953,12 +971,8 @@ def persist_sleep_data(sleep_records: list[dict], history: dict[str, Any] = None
         })
         existing_dates.add(rec_date)
 
-    # Prune to 30 days
-    cutoff = (today - timedelta(days=30)).isoformat()
-    existing = [r for r in existing if r.get('date', '') >= cutoff]
-    existing.sort(key=lambda r: r.get('date', ''))
-
-    history['sleep_history'] = existing
+    history['sleep_history'] = _apply_retention(
+        existing, today, SLEEP_HISTORY_RETENTION_DAYS)
     return history
 
 
@@ -967,7 +981,8 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
     """
     Persist daily readiness data to fitness_history.json → readiness_history.
 
-    Modeled on persist_sleep_data(). Maintains a rolling 60-day window.
+    Modeled on persist_sleep_data(). Retention is config-driven
+    (READINESS_HISTORY_RETENTION_DAYS; default None = keep everything).
 
     Args:
         readiness_record: Dict with {date, score, level, hrv_status, body_battery}
@@ -993,12 +1008,8 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
             'body_battery': readiness_record.get('body_battery'),
         })
 
-    # Prune to 60 days
-    cutoff = (today - timedelta(days=60)).isoformat()
-    existing = [r for r in existing if r.get('date', '') >= cutoff]
-    existing.sort(key=lambda r: r.get('date', ''))
-
-    history['readiness_history'] = existing
+    history['readiness_history'] = _apply_retention(
+        existing, today, READINESS_HISTORY_RETENTION_DAYS)
     return history
 
 

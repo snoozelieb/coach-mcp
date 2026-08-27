@@ -6,6 +6,32 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **History retention no longer deletes the training diary**: the fixed
+  rolling prunes (sleep 30 days, readiness 60 days, CTL/ACWR snapshots
+  90 days) silently erased the athlete's history — after a year of coaching
+  only 14 sleep nights and 4 readiness entries survived. Retention is now
+  config-driven (`SLEEP_HISTORY_RETENTION_DAYS` /
+  `READINESS_HISTORY_RETENTION_DAYS` / `SNAPSHOT_RETENTION_DAYS`) and
+  defaults to keeping everything.
+
+### Added
+- `scripts/backfill_history.py` — supervised repair for history holes
+  (dry-run default, timestamped backup on `--apply`): rebuilds missing daily
+  CTL/ACWR snapshot entries locally from stored `daily_loads`, and re-fetches
+  missing sleep nights and readiness days per-date from Garmin.
+- Coaching doctrine resource (`coach://coaching/doctrine`): multi-sport
+  guidance (shared sessions benefit all sports; never spike total-body ACWR
+  chasing a sport-specific CTL target) and the bedtime-drift overtraining
+  signal — both previously lived only in dev docs.
+
+### Changed
+- Dev docs restructured: CLAUDE.md slimmed to development-only facts (585 →
+  191 lines) with coaching doctrine single-sourced in the server surfaces;
+  project Claude Code skills added under `.claude/skills/` (release,
+  new-tool, capture-fixtures, acwr-recompute) and — together with the
+  pre-existing mcp-builder — un-ignored so all five ship with the repo.
+
 ## [1.1.0] - 2026-08-27
 
 A reliability and coaching-correctness release. The ACWR injury gate now runs
@@ -158,3 +184,7 @@ First publishable release — the end of a five-phase modernization
 ---
 
 Pre-1.0 history (the 0.x checkout-only era) lives in the git log.
+
+[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/snoozelieb/coach-mcp/releases/tag/v1.0.0

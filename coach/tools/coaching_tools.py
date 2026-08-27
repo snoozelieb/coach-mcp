@@ -5,15 +5,9 @@ Registers MCP tools for:
 - get_coaching_score
 - get_coaching_snapshot
 
-Also contains helper functions:
-- _compare_planned_actual
-- _get_strength_sync_summary
-- _parse_readiness_for_snapshot
-- _build_adaptation_patterns
-- _derive_sleep_trend_direction
-- _derive_hrv_trend
-- _derive_compliance_rate_pct
-- _analyze_sport_priorities
+Also contains ~20 private helpers for snapshot assembly (sections, week_grid,
+sleep gate, planned-vs-actual comparison, season lifecycle, sport priorities,
+coaching score).
 """
 
 from collections import defaultdict
@@ -2035,9 +2029,10 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             recovery = {'status': 'unavailable', 'note': 'Could not fetch readiness data'}
 
         # 6b. Sleep — ranged fetch: only nights missing from the persisted
-        # sleep_history (persist_sleep_data maintains a 30-day window), capped
-        # at the last 7 nights. Persistence runs on EVERY call regardless of
-        # sections; the summary is computed from persisted + fresh nights.
+        # sleep_history (persist_sleep_data keeps the full diary; retention is
+        # config-driven), capped at the last 7 nights. Persistence runs on
+        # EVERY call regardless of sections; the summary is computed from
+        # persisted + fresh nights.
         known_sleep_dates = {r.get('date') for r in history.get('sleep_history', [])}
         fetched_sleep = []
         sleep_fetch_error = None

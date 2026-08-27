@@ -323,19 +323,30 @@ class TestPersistSleepData:
         dup = next(r for r in result['sleep_history'] if r['date'] == two_days_ago)
         assert dup['score'] == 82
 
-    def test_prunes_old_records(self):
+    def test_default_retention_keeps_full_history(self):
+        # Retention defaults to None (keep everything) — old nights are the
+        # training diary, never silently pruned.
         history = {
             'sleep_history': [
-                {'date': '2025-12-01', 'duration_hrs': 7.0, 'score': 70},  # >30 days ago
+                {'date': '2025-12-01', 'duration_hrs': 7.0, 'score': 70},
             ],
         }
         records = [
             {'date': date.today().isoformat(), 'duration_hrs': 7.5, 'score': 85},
         ]
         result = persist_sleep_data(records, history, today=date.today())
-        # Old record should be pruned
         dates = [r['date'] for r in result['sleep_history']]
-        assert '2025-12-01' not in dates
+        assert '2025-12-01' in dates and len(dates) == 2
+
+    def test_configured_retention_window_applies(self, monkeypatch):
+        import coach.fitness as fitness
+        monkeypatch.setattr(fitness, 'SLEEP_HISTORY_RETENTION_DAYS', 30)
+        old = (date.today() - timedelta(days=40)).isoformat()
+        history = {'sleep_history': [{'date': old, 'duration_hrs': 7.0}]}
+        records = [{'date': date.today().isoformat(), 'duration_hrs': 7.5}]
+        result = persist_sleep_data(records, history, today=date.today())
+        dates = [r['date'] for r in result['sleep_history']]
+        assert old not in dates and len(dates) == 1
 
     def test_sorts_by_date(self):
         history = {'sleep_history': []}
@@ -344,7 +355,6 @@ class TestPersistSleepData:
             {'date': '2026-02-04', 'duration_hrs': 7.5},
             {'date': '2026-02-05', 'duration_hrs': 6.8},
         ]
-        # Frozen today keeps these fixed-date records inside the 30-day window
         result = persist_sleep_data(records, history, today=date(2026, 2, 7))
         dates = [r['date'] for r in result['sleep_history']]
         assert dates == sorted(dates)
@@ -681,7 +691,6 @@ class TestGetDayContext:
 
 class TestPersistReadinessData:
     def test_adds_new_record(self):
-        # Relative date — persist_readiness_data prunes records older than 60 days
         rec_date = (date.today() - timedelta(days=1)).isoformat()
         history = {'readiness_history': []}
         rec = {'date': rec_date, 'score': 72, 'level': 'MODERATE', 'hrv_status': 'BALANCED', 'body_battery': 55}
@@ -690,7 +699,6 @@ class TestPersistReadinessData:
         assert result['readiness_history'][0]['score'] == 72
 
     def test_deduplicates_by_date(self):
-        # Relative date — persist_readiness_data prunes records older than 60 days
         rec_date = (date.today() - timedelta(days=1)).isoformat()
         history = {
             'readiness_history': [
@@ -702,7 +710,7 @@ class TestPersistReadinessData:
         assert len(result['readiness_history']) == 1
         assert result['readiness_history'][0]['score'] == 72  # Original preserved
 
-    def test_prunes_old_records(self):
+    def test_default_retention_keeps_old_records(self):
         old_date = (date.today() - timedelta(days=65)).isoformat()
         recent_date = date.today().isoformat()
         history = {
@@ -712,8 +720,7 @@ class TestPersistReadinessData:
         }
         rec = {'date': recent_date, 'score': 72}
         result = persist_readiness_data(rec, history, today=date.today())
-        assert len(result['readiness_history']) == 1
-        assert result['readiness_history'][0]['date'] == recent_date
+        assert [r['date'] for r in result['readiness_history']] == [old_date, recent_date]
 
     def test_missing_date_ignored(self):
         history = {'readiness_history': []}
