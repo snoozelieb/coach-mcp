@@ -5,7 +5,7 @@ prompt templates, and resources, then runs the MCP server.
 All tool implementations live in coach/tools/.
 
 Entry points:
-    coach-mcp             Console script (pip/uvx install) -> main()
+    garmin-coach-mcp      Console script (pip/uvx install; coach-mcp is an alias) -> main()
     python server.py      Repo-checkout shim at the project root -> main()
 
 Environment variables:

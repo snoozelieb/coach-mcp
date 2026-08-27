@@ -2,7 +2,8 @@
 Web utilities for fetching and parsing HTML content.
 
 Provides HTMLStripper (strips HTML tags) and fetch_page_text() helper
-used by research_race, research_injury, research_exercise, and research_sport.
+used by races(action='research'), research_injury, research_exercise, and
+research_sport.
 """
 from html.parser import HTMLParser
 from io import StringIO

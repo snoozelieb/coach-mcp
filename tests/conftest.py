@@ -675,13 +675,6 @@ class FakeGarminClient:
         return self._respond('get_activity_splits',
                              make_activity_splits, activity_id)
 
-    def get_activity_details(self, activity_id, **kwargs):
-        return self._respond(
-            'get_activity_details',
-            lambda aid, **kw: {'activityId': aid, 'metricDescriptors': [],
-                               'activityDetailMetrics': []},
-            activity_id, **kwargs)
-
     def get_activity_exercise_sets(self, activity_id):
         return self._respond('get_activity_exercise_sets',
                              make_exercise_sets, activity_id)

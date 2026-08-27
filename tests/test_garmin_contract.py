@@ -38,13 +38,12 @@ REPO_ROOT = Path(__file__).parent.parent
 # Static inventory: every Garmin-level method the codebase calls, with the
 # exact (args, kwargs) shape used at the call site. Grep-derived from:
 #   lambda c[,:]... c.get_/c.upload_...   (garmin_api_call call sites)
-#   coach/garmin_client.py, scripts/garmin_login.py, scripts/investigate_fibula.py
+#   coach/garmin_client.py, scripts/garmin_login.py
 # ---------------------------------------------------------------------------
 GARMIN_CALL_SHAPES: dict[str, tuple[tuple, dict]] = {
     # data_tools / fitness_tools / coaching_tools / athlete_tools / strength_tools
     "get_activities_by_date": (("2026-01-01", "2026-01-07"), {}),
     "get_activity_splits": (("12345",), {}),
-    "get_activity_details": (("12345",), {"maxchart": 2000, "maxpoly": 2000}),
     "get_activity_exercise_sets": (("12345",), {}),
     "get_activity_hr_in_timezones": (("12345",), {}),
     "get_personal_record": ((), {}),

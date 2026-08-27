@@ -228,7 +228,7 @@ REGISTRY: tuple = (
 # Race type -> sport. Union of the three previously-diverging maps
 # (config.RACE_TYPE_SPORT_MAP, coaching_tools._analyze_sport_priorities,
 # and CTL_TARGETS race-type keys), plus the race types suggested by
-# race_tools.add_race docs.
+# race_tools' races(action='add') docs (private _add_race).
 RACE_TYPE_TO_SPORT: dict = {
     # cycling
     'multi_day_mtb': 'cycling', 'road_cycling': 'cycling', 'mtb': 'cycling',

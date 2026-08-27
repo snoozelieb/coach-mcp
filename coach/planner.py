@@ -4,7 +4,7 @@ LLM Planning support - context building and plan management.
 The LLM is the brain that generates plans. This module provides:
 - Context assembly for LLM reasoning
 - Plan persistence (read/write weekly_plan.json)
-- Suggestion management (read/write suggestions.json)
+- Coaching-log access (decisions/approvals persist in coaching_log.json)
 """
 import json
 from datetime import date, timedelta

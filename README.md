@@ -21,7 +21,7 @@ All health data and credentials stay on your machine — see
 You need Python 3.12+, a free Garmin Connect account, and an MCP client
 (Claude Code, Claude Desktop, or Cursor).
 
-### Option A: uvx (after PyPI release)
+### Option A: uvx (recommended)
 
 No install step — your MCP client runs the server on demand:
 
@@ -220,7 +220,8 @@ Everything stays on your machine:
 
 - **Credentials**: `GARMIN_EMAIL`/`GARMIN_PASSWORD` live in your MCP client
   config or a local `.env`. Garmin OAuth tokens are cached in a local token
-  store (`.garth/garmin_tokens.json`).
+  store (`.garth/` in a source checkout, a per-user `garmin-tokens` directory
+  for installed copies; override with `COACH_TOKEN_DIR`).
 - **Health data**: all coaching data (profile, plans, fitness history, sleep,
   coaching memory) is local JSON in your data directory. There is no backend,
   no telemetry, no analytics.
@@ -245,7 +246,7 @@ committed.
 ## Advanced
 
 ```bash
-# HTTP / SSE transport instead of stdio
+# HTTP transport (streamable-http) instead of stdio
 COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
 
 # Code Mode (search/execute meta-tools instead of 48 individual tools)
@@ -256,7 +257,7 @@ COACH_CODE_MODE=1 garmin-coach-mcp
 python scripts/daily_loop.py          # template-based brief
 python scripts/daily_loop.py --llm    # LLM brief (needs ANTHROPIC_API_KEY)
 
-# Tests (1,260 tests; clean checkouts use committed sanitized fixtures)
+# Tests (1,333 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```

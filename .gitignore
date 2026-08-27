@@ -65,8 +65,10 @@ wheels/
 *.swo
 *~
 
-# Claude Code local settings
-.claude/
+# Claude Code local state (skills are shared and committed; the rest —
+# settings.local.json, agent-memory — stays personal/local)
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store
