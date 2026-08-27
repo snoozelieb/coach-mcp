@@ -3,6 +3,11 @@ name: CI
 on:
   push:
   pull_request:
+  # Manual trigger — also the recovery path when GitHub's 60-day inactivity
+  # rule auto-disables this workflow (it did on 2026-08-10: the schedule
+  # trigger makes the whole workflow eligible, and disabling kills the push
+  # trigger too; re-enable with `gh workflow enable ci.yml`).
+  workflow_dispatch:
   schedule:
     # Weekly Monday run catches date-rot: tests whose hardcoded or relative
     # dates drift into the past even when no code changes.
