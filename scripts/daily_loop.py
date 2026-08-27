@@ -28,14 +28,19 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging. The FileHandler is best-effort: if a scheduler wrapper
+# redirects output into daily_loop.log itself (cmd's >> holds the file with no
+# write sharing on Windows), opening it here raises PermissionError — log to
+# console only in that case rather than crashing before the run starts.
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+try:
+    _handlers.insert(0, logging.FileHandler(str(Path(__file__).resolve().parent.parent / 'daily_loop.log')))
+except OSError:
+    pass
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(str(Path(__file__).resolve().parent.parent / 'daily_loop.log')),
-        logging.StreamHandler()
-    ]
+    handlers=_handlers,
 )
 logger = logging.getLogger(__name__)
 
