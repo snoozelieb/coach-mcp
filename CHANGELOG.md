@@ -6,7 +6,7 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-06-27
+## [1.1.0] - 2026-08-27
 
 A reliability and coaching-correctness release. The ACWR injury gate now runs
 on the validated rolling 7d:28d model instead of the EWMA approximation, and a
@@ -16,6 +16,14 @@ regression test). No new features and no breaking changes for MCP clients —
 the tool surface, names, and config are identical to 1.0.0.
 
 ### Fixed
+- **Morning-audit crash loop**: `scripts/daily_loop.py` no longer dies at
+  import when `daily_loop.log` is held by another writer. The Task Scheduler
+  action's cmd `>>` redirect into the same file the script's own
+  `logging.FileHandler` opens held the log without write sharing (Windows),
+  so every scheduled run since the task's 2026-06-10 registration crashed
+  with `PermissionError` before doing any work. The file handler is now
+  best-effort (console-only fallback) and the shipped task guidance redirects
+  scheduler output to a separate `daily_loop_task.log`.
 - **Planned-vs-actual matcher no longer crosswires types** (live coaching
   failure, 2026-06-10): pairing now happens ONLY between a planned session
   and an actual whose types satisfy `taxonomy.types_match`, with a new
@@ -67,6 +75,12 @@ the tool surface, names, and config are identical to 1.0.0.
   `garminconnect` library handles it natively via its `curl_cffi` dependency;
   this project's old garth + Playwright login fallback was deleted during the
   1.0 rebuild.
+- **Docs aligned with MCP spec 2026-07-28** (the stateless-core release):
+  `COACH_TRANSPORT=sse` is documented as legacy-only (the HTTP+SSE transport
+  was formally deprecated upstream), and the deferred elicitation re-add is
+  redesigned around the MRTR pattern instead of the removed server-initiated
+  `ctx.elicit()` flow. No behavior changes — this stdio server needs no
+  migration.
 
 ### Added
 - `scripts/recompute_acwr_history.py`: supervised one-off migration that
