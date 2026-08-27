@@ -14,7 +14,8 @@ Environment variables:
     COACH_TOKEN_DIR       Garmin token store override
     COACH_CODE_MODE=1     Enable Code Mode (search/execute meta-tools).
                           Requires: pip install fastmcp[code-mode]
-    COACH_TRANSPORT=http  Transport: "stdio" (default), "http", "streamable-http", "sse"
+    COACH_TRANSPORT=http  Transport: "stdio" (default), "http", "streamable-http"
+                          ("sse" is legacy — HTTP+SSE was deprecated by MCP spec 2026-07-28)
     FASTMCP_HOST=0.0.0.0 HTTP host (default: 127.0.0.1)
     FASTMCP_PORT=8000     HTTP port (default: 5000)
 """
