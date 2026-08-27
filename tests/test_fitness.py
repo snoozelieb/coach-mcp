@@ -36,7 +36,9 @@ from coach.fitness import (
     calculate_readiness_baselines,
     derive_adaptation_thresholds,
     detect_bedtime_drift,
+    backfill_fitness_history,
 )
+from conftest import FakeGarminClient, patch_garmin_everywhere
 
 
 # ── Garmin Training Load ─────────────────────────────────────────
@@ -951,3 +953,64 @@ class TestDetectBedtimeDrift:
         result = detect_bedtime_drift(nights)
         assert result['current_avg_bedtime'].startswith('22:')
         assert ':' in result['current_avg_bedtime']
+
+
+# ── Training-diary backfill ──────────────────────────────────────
+
+class TestBackfillFitnessHistory:
+    def _seed(self, days=35, load=50.0):
+        today = date.today()
+        daily = {}
+        for i in range(days):
+            d = (today - timedelta(days=i)).isoformat()
+            daily[d] = {'total': load, 'by_sport': {'cycling': load},
+                        'activities': []}
+        history = {'schema_version': 2, 'daily_loads': daily,
+                   'snapshots': [], 'sleep_history': [],
+                   'readiness_history': []}
+        save_fitness_history(history)
+        return today
+
+    def test_dry_run_reports_without_writing(self, monkeypatch):
+        today = self._seed()
+        client = FakeGarminClient()
+        patch_garmin_everywhere(monkeypatch, client)
+        since = today - timedelta(days=9)
+        report = backfill_fitness_history(since, today, today=today, apply=False)
+        assert report['dry_run'] is True
+        assert report['missing']['snapshots'] == 10
+        assert report['missing']['sleep'] == 10
+        assert report['missing']['readiness'] == 10
+        # Dry-run never hits Garmin and never writes
+        assert client.call_counts.get('get_sleep_data', 0) == 0
+        assert client.call_counts.get('get_training_readiness', 0) == 0
+        assert load_fitness_history()['snapshots'] == []
+
+    def test_apply_fills_and_is_idempotent(self, monkeypatch):
+        import coach.fitness as fitness
+        monkeypatch.setattr(fitness, 'BACKFILL_THROTTLE_SECS', 0)
+        today = self._seed()
+        client = FakeGarminClient()
+        patch_garmin_everywhere(monkeypatch, client)
+        since = today - timedelta(days=4)
+        report = backfill_fitness_history(since, today, today=today, apply=True)
+        assert report['added']['snapshots'] == 5
+        assert report['added']['sleep'] + report['unavailable']['sleep'] == 5
+        assert report['added']['readiness'] + report['unavailable']['readiness'] == 5
+        assert report['auth_error'] is None
+        assert 'data-backups' in report['backup']
+        saved = load_fitness_history()
+        assert len(saved['snapshots']) == 5
+        assert [s['date'] for s in saved['snapshots']] == sorted(
+            s['date'] for s in saved['snapshots'])
+        assert saved['snapshots'][0]['total']['ctl'] > 0
+        # Add-only idempotency: a second apply adds nothing new
+        again = backfill_fitness_history(since, today, today=today, apply=True)
+        assert again['added']['snapshots'] == 0
+        assert again['added']['sleep'] == 0
+
+    def test_tool_validates_dates(self):
+        from coach.tools.fitness_tools import backfill_history
+        assert 'error' in backfill_history(since='not-a-date')
+        far = (date.today() - timedelta(days=500)).isoformat()
+        assert 'Range too large' in backfill_history(since=far)['error']

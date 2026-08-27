@@ -77,6 +77,7 @@ IDEMPOTENT_WRITE_TOOLS = {
     'update_methodology',
     'update_weekly_plan',
     # idempotent refresh/ingest/cache (also hit Garmin or web)
+    'backfill_history',     # add-only: repeat runs over the same range add nothing
     'get_coaching_snapshot',
     'refresh_athlete_baseline',
     'refresh_fitness_history',
@@ -99,6 +100,7 @@ NON_IDEMPOTENT_WRITE_TOOLS = {
 OPEN_WORLD_TOOLS = {
     # Garmin
     'analyze_ftp_test',
+    'backfill_history',
     'generate_strength_workout',
     'get_activities_range',
     'get_coaching_snapshot',

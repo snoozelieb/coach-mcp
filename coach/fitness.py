@@ -14,7 +14,10 @@ Implements science-based metrics:
 Based on research from TrainingPeaks, Firstbeat, and Norwegian Olympic methodology.
 """
 import json
+import shutil
+import time
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 from collections import defaultdict
 
@@ -46,7 +49,7 @@ from .config import (
     SLEEP_TARGET_DEFAULT_HRS,
     get_sport_group,
 )
-from .garmin_client import garmin_api_call
+from .garmin_client import garmin_api_call, GarminAuthRequiredError
 from .parsers import epoch_ms_to_local_iso
 import logging
 
@@ -1011,6 +1014,194 @@ def persist_readiness_data(readiness_record: dict, history: dict[str, Any] = Non
     history['readiness_history'] = _apply_retention(
         existing, today, READINESS_HISTORY_RETENTION_DAYS)
     return history
+
+
+# ── Training-diary backfill ──────────────────────────────────────────────
+# Shared implementation behind the backfill_history MCP tool and
+# scripts/backfill_history.py. Add-only: existing entries are never replaced.
+
+BACKFILL_THROTTLE_SECS = 0.3
+_SNAPSHOT_SPORTS = ('cycling', 'running', 'strength')
+
+
+def _compact_date_ranges(dates: list[str]) -> str:
+    """Render sorted ISO dates as 'a..b, c, d..e' for readable reports."""
+    if not dates:
+        return '(none)'
+    out, run_start, prev = [], dates[0], dates[0]
+    for ds in dates[1:]:
+        if date.fromisoformat(ds) - date.fromisoformat(prev) == timedelta(days=1):
+            prev = ds
+            continue
+        out.append(run_start if run_start == prev else f'{run_start}..{prev}')
+        run_start = prev = ds
+    out.append(run_start if run_start == prev else f'{run_start}..{prev}')
+    return ', '.join(out)
+
+
+def _build_snapshot_entry(daily_loads: dict, as_of: date) -> dict:
+    """Build one v2 snapshot entry as of `as_of` — same math and shape as
+    update_fitness_history writes on ingest."""
+    metrics = calculate_fitness_metrics(_extract_total_loads(daily_loads), as_of)
+    entry = {
+        'date': metrics['as_of_date'],
+        'total': {
+            'ctl': metrics['ctl'],
+            'atl': metrics['atl'],
+            'tsb': metrics['tsb'],
+            'acwr': metrics['acwr'],
+        },
+    }
+    for sport in _SNAPSHOT_SPORTS:
+        sport_loads = _extract_sport_loads(daily_loads, sport)
+        if any(v > 0 for v in sport_loads.values()):
+            sm = calculate_fitness_metrics(sport_loads, as_of)
+            entry[sport] = {
+                'ctl': sm['ctl'], 'atl': sm['atl'],
+                'tsb': sm['tsb'], 'acwr': sm['acwr'],
+            }
+    return entry
+
+
+def _backup_fitness_history(today: date) -> str:
+    """Copy fitness_history.json to data-backups/ with a collision-safe,
+    clock-discipline-friendly name (date + sequence, no wall-clock time)."""
+    backups_dir = Path(DATA_DIR).parent / 'data-backups'
+    backups_dir.mkdir(exist_ok=True)
+    src = Path(DATA_DIR) / FITNESS_HISTORY_FILE
+    for seq in range(1, 1000):
+        target = backups_dir / f'fitness_history-{today:%Y%m%d}-{seq:03d}.bak.json'
+        if not target.exists():
+            shutil.copy2(src, target)
+            return str(target)
+    raise RuntimeError('backup sequence exhausted for today')
+
+
+def backfill_fitness_history(since: date, until: date, *, today: date,
+                             apply: bool = False,
+                             skip_garmin: bool = False) -> dict[str, Any]:
+    """Repair holes in the training diary (fitness_history.json).
+
+    1. Snapshots (local, no network): recompute missing daily CTL/ACWR
+       entries from stored daily_loads via _build_snapshot_entry.
+    2. Sleep (Garmin): per-date get_sleep_data for missing nights.
+    3. Readiness (Garmin): per-date get_training_readiness + get_hrv_data
+       overlay for missing days.
+
+    Add-only and idempotent: existing entries are never replaced, so a
+    repeat run over the same range adds nothing. apply=False (default) is a
+    dry-run report; apply=True first backs fitness_history.json up to
+    data-backups/, then writes atomically via save_fitness_history. Per-date
+    Garmin failures are skipped and counted; an auth failure stops further
+    fetches but keeps what was already gathered.
+    """
+    history = load_fitness_history()
+    daily_loads = history.get('daily_loads', {})
+    have = {
+        'snapshots': {s.get('date') for s in history.get('snapshots', [])},
+        'sleep': {r.get('date') for r in history.get('sleep_history', [])},
+        'readiness': {r.get('date') for r in history.get('readiness_history', [])},
+    }
+    all_dates = [(since + timedelta(days=i)).isoformat()
+                 for i in range((until - since).days + 1)]
+    missing = {k: [ds for ds in all_dates if ds not in have[k]] for k in have}
+
+    report: dict[str, Any] = {
+        'range': {'since': since.isoformat(), 'until': until.isoformat()},
+        'dry_run': not apply,
+        'missing': {
+            'snapshots': len(missing['snapshots']),
+            'sleep': len(missing['sleep']),
+            'readiness': len(missing['readiness']),
+            'snapshot_dates': _compact_date_ranges(missing['snapshots']),
+            'sleep_dates': _compact_date_ranges(missing['sleep']),
+            'readiness_dates': _compact_date_ranges(missing['readiness']),
+        },
+    }
+    if not apply:
+        report['note'] = (
+            'Dry-run: nothing written. Re-run with apply to backfill '
+            f"(~{0 if skip_garmin else len(missing['sleep']) + 2 * len(missing['readiness'])} "
+            'Garmin calls).')
+        return report
+
+    report['backup'] = _backup_fitness_history(today)
+
+    snapshots = history.get('snapshots', [])
+    for ds in missing['snapshots']:
+        snapshots.append(_build_snapshot_entry(daily_loads, date.fromisoformat(ds)))
+    snapshots.sort(key=lambda s: s.get('date', ''))
+    history['snapshots'] = snapshots
+
+    added = {'snapshots': len(missing['snapshots']), 'sleep': 0, 'readiness': 0}
+    unavailable = {'sleep': 0, 'readiness': 0}
+    auth_error = None
+
+    if not skip_garmin:
+        fetched_sleep = []
+        for ds in missing['sleep']:
+            try:
+                payload = garmin_api_call(lambda c, _ds=ds: c.get_sleep_data(_ds))
+            except GarminAuthRequiredError as e:
+                auth_error = str(e)
+                break
+            except Exception:
+                logger.warning('backfill: sleep fetch failed for %s', ds, exc_info=True)
+                unavailable['sleep'] += 1
+                continue
+            record, _need = parse_sleep_payload(payload, ds)
+            if record:
+                fetched_sleep.append(record)
+                added['sleep'] += 1
+            else:
+                unavailable['sleep'] += 1
+            time.sleep(BACKFILL_THROTTLE_SECS)
+        if fetched_sleep:
+            history = persist_sleep_data(fetched_sleep, history, today=today)
+
+        if auth_error is None:
+            from .parsers import parse_training_readiness
+            for ds in missing['readiness']:
+                try:
+                    readiness = garmin_api_call(
+                        lambda c, _ds=ds: c.get_training_readiness(_ds))
+                    time.sleep(BACKFILL_THROTTLE_SECS)
+                    try:
+                        hrv = garmin_api_call(lambda c, _ds=ds: c.get_hrv_data(_ds))
+                    except Exception:
+                        hrv = None
+                except GarminAuthRequiredError as e:
+                    auth_error = str(e)
+                    break
+                except Exception:
+                    logger.warning('backfill: readiness fetch failed for %s', ds,
+                                   exc_info=True)
+                    unavailable['readiness'] += 1
+                    continue
+                parsed = parse_training_readiness(readiness or {}, hrv_data=hrv)
+                if parsed.get('score') is None and parsed.get('hrv_status') is None:
+                    unavailable['readiness'] += 1
+                else:
+                    history = persist_readiness_data({
+                        'date': ds,
+                        'score': parsed.get('score'),
+                        'level': parsed.get('level'),
+                        'hrv_status': parsed.get('hrv_status'),
+                        'body_battery': None,
+                    }, history, today=today)
+                    added['readiness'] += 1
+                time.sleep(BACKFILL_THROTTLE_SECS)
+
+    save_fitness_history(history)
+    report['added'] = added
+    report['unavailable'] = unavailable
+    report['auth_error'] = auth_error
+    report['totals'] = {
+        'snapshots': len(history.get('snapshots', [])),
+        'sleep': len(history.get('sleep_history', [])),
+        'readiness': len(history.get('readiness_history', [])),
+    }
+    return report
 
 
 def calculate_readiness_baselines(sleep_history: list, readiness_history: list,

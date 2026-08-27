@@ -73,7 +73,7 @@ not the bundled v1 in the `mcp` SDK. Upgrading an env from fastmcp <3.3 requires
 `pip uninstall fastmcp fastmcp-slim` then a fresh install — the 3.3 distribution
 split breaks in-place upgrades.
 
-- **48 tools** across 11 modules in `coach/tools/`; every tool declares
+- **49 tools** across 11 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
   is the contract (unclassified tools fail the suite by design).
 - **5 prompts** (`coach/prompts.py`), **6 resources** (`coach/resources.py`,
@@ -102,7 +102,7 @@ coach/
 ├── workout_builder.py     # Plan sessions → Garmin workouts
 ├── mcp_app.py             # Shared FastMCP instance + SERVER_INSTRUCTIONS
 ├── prompts.py, resources.py
-└── tools/                 # 48 MCP tools: data, fitness, athlete, planning,
+└── tools/                 # 49 MCP tools: data, fitness, athlete, planning,
                            # coaching (snapshot), strength, injury, research,
                            # decision, race, interactive
 scripts/                   # daily_loop, garmin_login, capture_fixtures,

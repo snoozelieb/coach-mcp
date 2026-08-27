@@ -7,6 +7,7 @@ Registers MCP tools for:
   get_intensity_distribution, get_daily_metrics, get_training_readiness,
   and get_personal_records tools; bodies moved to private impls)
 - refresh_fitness_history
+- backfill_history (repair holes in the training diary — dry-run first)
 - get_onboarding_guide
 - get_athlete
 """
@@ -21,7 +22,8 @@ from ..parsers import parse_activities, parse_training_readiness, parse_personal
 from ..planner import load_athlete, load_methodology, load_json_file, save_json_file
 from ..fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_athlete_hr_zones, get_fitness_trend,
-                     update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics)
+                     update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics,
+                     backfill_fitness_history)
 from ..config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
 from datetime import date, timedelta
 import json
@@ -397,6 +399,63 @@ def refresh_fitness_history(days: int = 180) -> str:
     except Exception as e:
         logger.exception("refresh_fitness_history failed")
         return json.dumps({'error': str(e)})
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
+def backfill_history(since: str, until: str | None = None,
+                     dry_run: bool = True, skip_garmin: bool = False) -> dict:
+    """
+    Repair holes in the training diary (fitness_history.json).
+
+    Use when history has gaps — e.g. after a period with no coaching
+    contact or a dead morning audit (the snapshot's data_quality staleness
+    flags are the usual tell). Three repairs in one pass, ADD-ONLY
+    (existing entries are never replaced, so re-running is safe):
+
+    1. Missing daily CTL/ACWR snapshot entries — recomputed locally from
+       stored daily_loads (run refresh_fitness_history first if the loads
+       themselves are missing).
+    2. Missing sleep nights — re-fetched per-date from Garmin.
+    3. Missing readiness days — re-fetched per-date from Garmin (with HRV
+       overlay).
+
+    ALWAYS run the default dry_run=True first and show the athlete what is
+    missing; only call again with dry_run=False after they confirm. Apply
+    mode backs fitness_history.json up to data-backups/ before writing and
+    throttles Garmin calls (a large range takes a few minutes).
+
+    Args:
+        since: Range start, 'YYYY-MM-DD' (take it from the conversation —
+            e.g. the start of the known gap). Required.
+        until: Range end, 'YYYY-MM-DD' (default: today; future is clamped).
+        dry_run: True (default) reports what is missing without writing.
+        skip_garmin: True rebuilds only the local snapshot entries — no
+            sleep/readiness fetches.
+
+    Returns:
+        Dict report: missing counts + compact date ranges; in apply mode
+        also backup path, added/unavailable counts, and new totals.
+    """
+    try:
+        today = date.today()
+        try:
+            since_d = date.fromisoformat(since)
+            until_d = date.fromisoformat(until) if until else today
+        except ValueError as e:
+            return {'error': f'Invalid date ({e}) — use YYYY-MM-DD'}
+        until_d = min(until_d, today)
+        if since_d > until_d:
+            return {'error': f'since ({since_d}) is after until ({until_d})'}
+        if (until_d - since_d).days > 366:
+            return {'error': 'Range too large — backfill at most 366 days per '
+                             'call (chunk longer ranges)'}
+        return backfill_fitness_history(
+            since_d, until_d, today=today,
+            apply=not dry_run, skip_garmin=skip_garmin)
+    except Exception as e:
+        logger.exception("backfill_history failed")
+        return {'error': str(e)}
 
 
 def _intensity_distribution(days: int = 28, *, today: date) -> dict:

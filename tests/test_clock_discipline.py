@@ -88,6 +88,7 @@ ALLOWLIST = {
     # [boundary] @mcp.tool bodies
     ('coach/tools/fitness_tools.py', 'refresh_athlete_baseline'),
     ('coach/tools/fitness_tools.py', 'refresh_fitness_history'),
+    ('coach/tools/fitness_tools.py', 'backfill_history'),
     ('coach/tools/fitness_tools.py', 'query_metrics'),
     ('coach/tools/injury_tools.py', 'update_injury_status'),
     # [stamp] write-time diagnosis date on the injury record (and its
