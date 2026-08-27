@@ -63,9 +63,9 @@ Exit criteria: athlete is actually coached again; suite + CI green; no live dead
 
 ## Deferred backlog (explicit, with triggers)
 - Post-session debrief auto-prefill loop; living athlete dossier (record_athlete_insight); proactive push daemon (needs filelock + non-crashing daily_loop first) — revisit after Phase 3.
-- Elicitation re-add (ctx.elicit for check-ins/approvals) — after surface stabilizes; data-first fallback already works.
+- Elicitation re-add — REDESIGN REQUIRED (noted 2026-08-27): MCP spec 2026-07-28 removed server-initiated `elicitation/create`; elicitation now works via the MRTR pattern (tool returns `resultType: "input_required"`, client retries with `inputResponses`). Re-add only when on a 2026-07-28-capable framework (FastMCP 4 GA or mcp SDK v2); the data-first fallback (question-set returns) is already the right app-layer shape.
 - SQLite migration — only on the explicit triggers in Phase 1.3.
-- MCP Tasks (experimental) and sampling — client support unproven/absent; track only.
+- MCP Tasks and sampling — spec 2026-07-28 moved tasks out of core into the `io.modelcontextprotocol/tasks` extension and Deprecated Sampling wholesale (SEP-2577; migration is direct LLM provider APIs — which `daily_loop --llm` already does). Do not build on either.
 
 ## Execution discipline (red-team mandates)
 - Backup before every migrating step; migrations dry-runnable; .bak retention.

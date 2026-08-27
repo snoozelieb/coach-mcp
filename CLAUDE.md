@@ -334,9 +334,9 @@ Uses **standalone FastMCP v3.4.x** (`from fastmcp import FastMCP`, pinned `fastm
 | **Resources** | 6 resources | `coach/resources.py` — coach://athlete/profile, coach://plan/current, coach://config/training, coach://coaching/decisions, coach://context/now, coach://coaching/doctrine |
 | **Context** | 2 async tools | `get_coaching_snapshot`, `refresh_athlete_baseline` use `ctx: Context` for progress reporting |
 | **Sampling** | (removed) | `ctx.sample()` unsupported by Claude Code — `generate_smart_brief` now returns structured data for the coach to render |
-| **Elicitation** | (removed) | Claude Code NOW supports elicitation (it didn't when this was removed) — re-adding `ctx.elicit()` flows is planned for Phase 2 of docs/UPGRADE_ROADMAP.md; `interactive_check_in` currently returns a question set |
+| **Elicitation** | (removed) | MCP spec 2026-07-28 removed server-initiated `elicitation/create` (replaced by the MRTR pattern: tool returns `resultType: "input_required"`, client retries with `inputResponses`). Any re-add must target MRTR on a 2026-07-28-capable framework, not FastMCP 3's `ctx.elicit()`; `interactive_check_in` returning a question set is already the app-layer approximation |
 | **Code Mode** | Optional | `COACH_CODE_MODE=1` — replaces tools with search/schema/execute meta-tools |
-| **Transport** | stdio (default) | `COACH_TRANSPORT=http|sse|streamable-http` for remote deployment |
+| **Transport** | stdio (default) | `COACH_TRANSPORT=http|streamable-http` for remote deployment (`sse` still accepted but the HTTP+SSE transport is spec-deprecated since 2026-07-28 — don't use) |
 
 ## Architecture
 
@@ -424,7 +424,7 @@ client's `env` block for installed copies). `ANTHROPIC_API_KEY` is optional — 
 
 Optional environment variables:
 - `COACH_DATA_DIR` — explicit data directory override (see resolution order below)
-- `COACH_TRANSPORT` — MCP transport: `stdio` (default), `http`, `streamable-http`, `sse`
+- `COACH_TRANSPORT` — MCP transport: `stdio` (default), `http`, `streamable-http` (`sse` remains accepted for legacy setups only — HTTP+SSE was formally deprecated by MCP spec 2026-07-28)
 - `COACH_CODE_MODE` — Set to `1` to enable Code Mode transform
 - `FASTMCP_HOST` / `FASTMCP_PORT` — HTTP bind address (default: 127.0.0.1:5000)
 
