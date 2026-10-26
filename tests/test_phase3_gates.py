@@ -427,7 +427,9 @@ class TestPushHasNoPurposeGate:
             raise Exception("Garmin unavailable")
         monkeypatch.setattr(planning_mod, 'garmin_api_call', _fail)
 
-        result = push_plan_to_garmin()
+        preview = push_plan_to_garmin()
+        assert preview['status'] == 'preview'  # no purpose gate on push
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
 
         # Got past every gate to the (failing) upload stage — no purpose gate.
         assert result.get('error') != 'purpose_gate'

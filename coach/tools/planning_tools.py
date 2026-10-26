@@ -22,8 +22,12 @@ from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAP
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
 from datetime import date, timedelta
 from pydantic import ValidationError
+import hashlib
 import json
 import logging
+import secrets
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -1127,266 +1131,385 @@ def update_weekly_plan(plan: dict | None = None,
         return {'error': str(e)}
 
 
-@mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': False, 'destructiveHint': True,
+# ---------------------------------------------------------------------------
+# Push consent: preview -> single-use confirm token -> write
+# ---------------------------------------------------------------------------
+
+PUSH_TOKEN_TTL_SECS = 600
+_push_tokens: dict[str, tuple[str, float]] = {}   # token -> (plan digest, issued at)
+_push_token_lock = threading.Lock()
+
+
+def _push_digest(plan: dict, previous_ids: list, override: bool) -> str:
+    """Hash of what the push depends on: the planned sessions per day, the
+    ids that will be deleted, and the override flag. Audit verdicts
+    (status/actual) and athlete claims are excluded on purpose, so the 06:30
+    audit does not invalidate a 06:25 preview."""
+    days = plan.get('days') or {}
+    material = {
+        'days': {d: (v.get('planned') if isinstance(v, dict) else v)
+                 for d, v in sorted(days.items())},
+        'previous_ids': sorted(str(i) for i in previous_ids),
+        'override_injury_gate': bool(override),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
+
+
+def _issue_push_token(digest: str) -> str:
+    now = time.monotonic()
+    with _push_token_lock:
+        for token, (_digest, issued) in list(_push_tokens.items()):
+            if now - issued > PUSH_TOKEN_TTL_SECS:
+                _push_tokens.pop(token, None)
+        token = secrets.token_hex(8)
+        _push_tokens[token] = (digest, now)
+    return token
+
+
+def _consume_push_token(token: str, digest: str) -> dict | None:
+    """Pop the token (single use) and validate it. None when the push may proceed."""
+    with _push_token_lock:
+        entry = _push_tokens.pop(str(token), None)
+    hint = 'Call push_plan_to_garmin() without a token for a fresh preview.'
+    if entry is None:
+        return {'error': 'confirm_token_invalid',
+                'message': ('Unknown or already used confirm_token — tokens are '
+                            'single-use and live 10 minutes. Nothing was pushed.'),
+                'hint': hint}
+    stored_digest, issued = entry
+    if time.monotonic() - issued > PUSH_TOKEN_TTL_SECS:
+        return {'error': 'confirm_token_expired',
+                'message': 'The preview is older than 10 minutes. Nothing was pushed.',
+                'hint': hint}
+    if stored_digest != digest:
+        return {'error': 'confirm_token_mismatch',
+                'message': ('The plan\'s sessions or its pushed workouts changed since '
+                            'the preview. Nothing was pushed.'),
+                'hint': hint}
+    return None
+
+
+def _expand_push_sessions(day_data: dict) -> list[dict]:
+    """Flatten a day's planned session(s), expanding nested 'sessions' lists."""
+    planned = day_data.get('planned')
+    if not planned:
+        return []
+    sessions = planned if isinstance(planned, list) else [planned]
+    expanded = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        if isinstance(session.get('sessions'), list):
+            parent_exercises = session.get('exercises', [])
+            parent_intensity = session.get('intensity', 'easy')
+            for sub in session.get('sessions', []):
+                if not isinstance(sub, dict):
+                    continue
+                if sub.get('time') == 'optional':
+                    continue  # pool_sauna-style optional extras are never pushed
+                sub_type = str(sub.get('type', '')).lower()
+                if sub_type == 'strength' and 'description' not in sub:
+                    focus = sub.get('focus', '')
+                    sub['description'] = (f"{focus.replace('_', ' ').title()} Strength"
+                                          if focus else "Strength Training")
+                elif sub_type == 'rehab' and 'description' not in sub:
+                    sub['description'] = "Ankle Rehab"
+                elif 'description' not in sub:
+                    sub['description'] = sub.get('notes', session.get('description', ''))
+                if 'intensity' not in sub:
+                    sub['intensity'] = parent_intensity
+                if sub_type == 'strength' and parent_exercises:
+                    sub['exercises'] = parent_exercises
+                if 'protocol' in sub or 'protocol' in session:
+                    sub['protocol'] = sub.get('protocol', session.get('protocol', []))
+                if session.get('structure') and sub_type in ['indoor_cycling', 'wattbike', 'trainer']:
+                    sub['structure'] = session['structure']
+                    for key in ('ftp', 'power_targets', 'technique_goals'):
+                        if session.get(key):
+                            sub[key] = session[key]
+                expanded.append(sub)
+        else:
+            expanded.append(session)
+    return expanded
+
+
+def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict]]:
+    """(to_push, skipped): to_push entries carry the session for build_workout."""
+    from ..workout_builder import get_workout_type_name
+    to_push, skipped = [], []
+    for date_str, day_data in sorted((plan.get('days') or {}).items()):
+        if not isinstance(day_data, dict) or not day_data.get('planned'):
+            skipped.append({'date': date_str, 'reason': 'rest day'})
+            continue
+        for session in _expand_push_sessions(day_data):
+            workout_type = get_workout_type_name(session)
+            if workout_type == 'skipped':
+                skipped.append({'date': date_str, 'type': session.get('type'),
+                                'reason': 'rest day - not pushed'})
+                continue
+            if workout_type == 'unknown':
+                skipped.append({'date': date_str, 'type': session.get('type'),
+                                'reason': 'unknown workout type'})
+                continue
+            to_push.append({
+                'date': date_str,
+                'type': session.get('type'),
+                'workout_type': workout_type,
+                'name': session.get('description') or session.get('name') or session.get('type'),
+                'duration_mins': session.get('duration_mins'),
+                'session': session,
+            })
+    return to_push, skipped
+
+
+@mcp.tool(meta={"anthropic/alwaysLoad": True, "anthropic/requiresUserInteraction": True},
+          annotations={'readOnlyHint': False, 'destructiveHint': True,
                        'idempotentHint': False, 'openWorldHint': True})
-def push_plan_to_garmin(override_injury_gate: bool = False) -> dict:
+def push_plan_to_garmin(override_injury_gate: bool = False,
+                        confirm_token: str | None = None,
+                        athlete_statement: str | None = None,
+                        override_rationale: str | None = None) -> dict:
     """
-    Push the current 7-day plan to Garmin Connect calendar.
+    Push the current 7-day plan to Garmin Connect in TWO steps: a preview,
+    then a confirm with the single-use token the preview returned.
 
-    AUTOMATICALLY DELETES existing workouts created during plan period
-    before pushing to prevent duplicates.
+    STEP 1 — PREVIEW (no confirm_token): nothing is written. Returns the
+    sessions that will be pushed per date (type, workout type, name), the
+    previously pushed workouts that will be DELETED first (duplicate
+    prevention, checked against the Garmin library), grounding_warnings,
+    injury violations, and a confirm_token valid for 10 minutes. Show the
+    athlete what will land on the watch; this tool carries
+    anthropic/requiresUserInteraction — the athlete says yes before step 2.
 
-    Converts each session to a Garmin workout (running, cycling, strength, yoga),
-    uploads it, and schedules it to the appropriate date.
+    STEP 2 — CONFIRM (confirm_token from step 1): deletes the listed
+    workouts, builds and uploads each session (running, cycling, strength,
+    yoga, pilates, swimming, padel; rest days skipped), schedules it to its
+    date and records the new workout ids on the plan. A token is rejected
+    when it is unknown or already used ('confirm_token_invalid'), older than
+    10 minutes ('confirm_token_expired'), or when the plan's sessions or its
+    pushed ids changed since the preview ('confirm_token_mismatch') — ask for
+    a fresh preview. Audit verdicts and athlete claims do not invalidate it.
 
-    Supported workout types:
-    - Running: timed segments with warmup/main/cooldown
-    - Cycling: timed segments with warmup/main/cooldown
-    - Strength: exercises with sets/reps, rest uses LAP BUTTON
-    - Yoga/Mobility: scheduled as Yoga activity type
-    - Pilates: scheduled as Pilates activity type
+    GATES: snapshot_required / snapshot_stale (SNAPSHOT FIRST, both steps).
+    injury_gate: the push is rejected when a non-rest session's type
+    intersects an active/improving injury's restricted_activities;
+    override_injury_gate=True needs athlete_statement (the athlete's own
+    words) and override_rationale, logged as a 'gate_override' decision on
+    confirm ('override_requires_confirmation' without them).
 
-    Rest days are skipped.
-
-    INJURY GATE: the push is rejected when any non-rest session's type
-    intersects an active/improving injury's restricted_activities. Only set
-    override_injury_gate=True with the athlete's informed consent.
+    BOOKKEEPING: a workout that failed to delete stays tracked (no silent
+    duplicates); an uploaded workout whose scheduling failed stays tracked
+    and is reported under errors; pushed_workout_ids is updated whenever
+    anything was deleted or uploaded.
 
     Args:
         override_injury_gate: Bypass the injury restriction check (default False)
+        confirm_token: The token from the preview — omit for a preview
+        athlete_statement: The athlete's own words agreeing to an override
+        override_rationale: Why the coach agrees, citing the evidence
 
     Returns:
-        Structured summary with count of pushed workouts, dates, and any errors.
+        Preview: {'status': 'preview', 'sessions', 'skipped',
+        'workouts_to_delete', 'grounding_warnings', 'injury_violations',
+        'confirm_token', 'expires_in_minutes', 'next'}.
+        Confirm: {'status': 'success', 'duplicates_deleted', 'pushed',
+        'skipped', 'errors', 'summary'}, or a structured error.
     """
-    from ..workout_builder import build_workout, get_workout_type_name
-
+    from ..workout_builder import build_workout
     try:
-        plan = get_current_plan()
+        today = date.today()
+        gate = require_snapshot('push_plan_to_garmin', today)
+        if gate:
+            return gate
+        statement = (athlete_statement or '').strip()
+        why = (override_rationale or '').strip()
+        if override_injury_gate and not (statement and why):
+            return {
+                'error': 'override_requires_confirmation',
+                'message': ("override_injury_gate needs the athlete's own words "
+                            "(athlete_statement) and override_rationale — nothing "
+                            "was pushed."),
+                'hint': ("Quote the athlete's agreement in athlete_statement and give "
+                         "the evidence in override_rationale."),
+            }
 
+        plan = get_current_plan()
         if not plan or 'days' not in plan:
             return {'error': 'No weekly plan found. Generate a plan first.'}
 
         # Injury write-gate: never push sessions that violate active/improving
-        # injury restrictions unless explicitly overridden.
+        # injury restrictions unless explicitly overridden with consent.
         injuries = load_athlete().get('injury_history', [])
         violations = _injury_gate_violations(plan.get('days', {}), injuries)
-        injury_gate_note = None
-        if violations:
-            if not override_injury_gate:
-                return {
-                    'error': 'injury_gate',
-                    'message': 'Plan contains sessions restricted by active/improving injuries — push blocked',
-                    'violations': violations,
-                    'hint': ('Fix the plan via update_weekly_plan, or pass '
-                             'override_injury_gate=True with a logged rationale '
-                             'after confirming with the athlete.'),
-                }
-            logger.warning(
-                "Injury gate OVERRIDDEN in push_plan_to_garmin: %s", violations
-            )
-            injury_gate_note = {
-                'injury_gate_overridden': True,
+        if violations and not override_injury_gate:
+            return {
+                'error': 'injury_gate',
+                'message': 'Plan contains sessions restricted by active/improving injuries — push blocked',
                 'violations': violations,
+                'hint': ('Fix the plan via update_weekly_plan, or pass '
+                         'override_injury_gate=True with athlete_statement and '
+                         'override_rationale after confirming with the athlete.'),
             }
 
-        # DUPLICATE PREVENTION: Delete previously pushed workouts by stored IDs
-        previous_ids = plan.get('pushed_workout_ids', [])
-        deleted_count = 0
+        previous_ids = list(plan.get('pushed_workout_ids', []) or [])
+        digest = _push_digest(plan, previous_ids, override_injury_gate)
+        to_push, skipped = _build_push_manifest(plan)
 
+        # ---------------- STEP 1: preview (read-only) ----------------
+        if confirm_token is None:
+            library_note = None
+            if previous_ids:
+                try:
+                    existing = garmin_api_call(lambda c: c.get_workouts())
+                    existing_ids = {w.get('workoutId') for w in (existing or [])}
+                    to_delete = [wid for wid in previous_ids if wid in existing_ids]
+                except Exception as e:
+                    logger.warning("Preview: could not read the Garmin workout library",
+                                   exc_info=True)
+                    to_delete = previous_ids
+                    library_note = f'library check unavailable ({e}); all tracked ids listed'
+            else:
+                to_delete = []
+            preview = {
+                'status': 'preview',
+                'sessions': [{k: v for k, v in entry.items() if k != 'session'}
+                             for entry in to_push],
+                'skipped': skipped,
+                'workouts_to_delete': to_delete,
+                'grounding_warnings': _grounding_warnings(plan.get('days', {}), today),
+                'injury_violations': violations,
+                'confirm_token': _issue_push_token(digest),
+                'expires_in_minutes': PUSH_TOKEN_TTL_SECS // 60,
+                'next': ('Show the athlete the sessions and the deletions. When they '
+                         'agree, call push_plan_to_garmin(confirm_token=...) with the '
+                         'same override arguments. Nothing has been written yet.'),
+            }
+            if library_note:
+                preview['library_check'] = library_note
+            return preview
+
+        # ---------------- STEP 2: confirm ----------------
+        token_error = _consume_push_token(confirm_token, digest)
+        if token_error:
+            return token_error
+
+        injury_gate_note = None
+        if violations:
+            logger.warning("Injury gate OVERRIDDEN in push_plan_to_garmin: %s", violations)
+            injury_gate_note = {'injury_gate_overridden': True, 'violations': violations}
+
+        # DUPLICATE PREVENTION: delete only the specific workouts we pushed
+        # last time and that still exist. Never delete the entire Garmin
+        # workout library.
+        actually_deleted: list = []
+        delete_failures: list = []
+        gone_externally: list = []
         if previous_ids:
-            # Delete only the specific workouts we pushed last time. Never
-            # delete the entire Garmin workout library — that would wipe
-            # manually-created workouts and any history outside this plan.
             existing_workouts = garmin_api_call(lambda c: c.get_workouts())
-            existing_ids = {w.get('workoutId') for w in existing_workouts}
+            existing_ids = {w.get('workoutId') for w in (existing_workouts or [])}
             for wid in previous_ids:
-                if wid in existing_ids:
-                    try:
-                        garmin_api_call(
-                            lambda c, wid=wid: c.client.delete(
-                                'connectapi', f'/workout-service/workout/{wid}', api=True
-                            )
+                if wid not in existing_ids:
+                    gone_externally.append(wid)
+                    continue
+                try:
+                    garmin_api_call(
+                        lambda c, wid=wid: c.client.delete(
+                            'connectapi', f'/workout-service/workout/{wid}', api=True
                         )
-                        deleted_count += 1
-                    except Exception:
-                        pass
+                    )
+                    actually_deleted.append(wid)
+                except Exception as e:
+                    logger.warning("Could not delete workout %s: %s", wid, e)
+                    delete_failures.append(wid)
 
         results = {
             'status': 'success',
-            'duplicates_deleted': deleted_count,
+            'duplicates_deleted': len(actually_deleted),
             'pushed': [],
-            'skipped': [],
+            'skipped': list(skipped),
             'errors': [],
         }
+        if delete_failures:
+            results['delete_failures'] = delete_failures
         if injury_gate_note:
             results['injury_gate'] = injury_gate_note
 
-        for date_str, day_data in plan['days'].items():
-            # Get the planned session(s)
-            planned = day_data.get('planned')
-            if not planned:
-                results['skipped'].append({'date': date_str, 'reason': 'rest day'})
+        uploaded_ids: list = []
+        for entry in to_push:
+            date_str, session, workout_type = entry['date'], entry['session'], entry['workout_type']
+            workout = build_workout(session, date_str)
+            if not workout:
+                results['skipped'].append({'date': date_str, 'type': session.get('type'),
+                                           'reason': 'could not convert to workout'})
+                continue
+            try:
+                if workout_type == 'cycling':
+                    upload_result = garmin_api_call(lambda c, w=workout: c.upload_cycling_workout(w))
+                    workout_name = workout.workoutName
+                elif workout_type == 'running':
+                    upload_result = garmin_api_call(lambda c, w=workout: c.upload_running_workout(w))
+                    workout_name = workout.workoutName
+                elif workout_type in ['yoga', 'strength', 'swimming', 'pilates', 'padel']:
+                    upload_result = garmin_api_call(lambda c, w=workout: c.upload_workout(w))
+                    workout_name = workout.get('workoutName', 'Workout')
+                else:
+                    results['skipped'].append({'date': date_str, 'type': workout_type,
+                                               'reason': 'upload method not implemented'})
+                    continue
+                workout_id = (upload_result or {}).get('workoutId')
+                if not workout_id:
+                    results['errors'].append({'date': date_str, 'type': workout_type,
+                                              'error': 'No workout ID returned from upload'})
+                    continue
+                uploaded_ids.append(workout_id)  # tracked from this moment on
+            except Exception as e:
+                results['errors'].append({'date': date_str, 'type': workout_type, 'error': str(e)})
                 continue
 
-            # Handle both single session and list of sessions
-            sessions = planned if isinstance(planned, list) else [planned]
+            try:
+                schedule_workout(workout_id, date_str)
+            except Exception as e:
+                # Uploaded but unscheduled: keep the id so the next push
+                # cleans it up, and say so.
+                results['errors'].append({'date': date_str, 'type': workout_type,
+                                          'workout_id': workout_id,
+                                          'error': f'uploaded but scheduling failed: {e}'})
+                continue
 
-            # Expand sessions with nested 'sessions' array into individual sub-sessions
-            expanded_sessions = []
-            for session in sessions:
-                if 'sessions' in session and isinstance(session.get('sessions'), list):
-                    # Get parent-level fields (for nested sessions)
-                    parent_exercises = session.get('exercises', [])
-                    parent_intensity = session.get('intensity', 'easy')
-                    # Extract sub-sessions
-                    for sub in session.get('sessions', []):
-                        # Skip optional sessions like pool_sauna
-                        if sub.get('time') == 'optional':
-                            continue
-                        # Generate proper description for strength sub-sessions
-                        if sub.get('type', '').lower() == 'strength' and 'description' not in sub:
-                            focus = sub.get('focus', '')
-                            if focus:
-                                # Convert focus like "lower_posterior" to "Lower Posterior Strength"
-                                focus_name = focus.replace('_', ' ').title()
-                                sub['description'] = f"{focus_name} Strength"
-                            else:
-                                sub['description'] = "Strength Training"
-                        # Generate proper description for rehab sub-sessions
-                        elif sub.get('type', '').lower() == 'rehab' and 'description' not in sub:
-                            sub['description'] = "Ankle Rehab"
-                        # Copy parent description if sub doesn't have one (non-strength/rehab)
-                        elif 'description' not in sub:
-                            sub['description'] = sub.get('notes', session.get('description', ''))
-                        # Copy parent intensity if sub doesn't have one
-                        if 'intensity' not in sub:
-                            sub['intensity'] = parent_intensity
-                        # Copy exercises to strength sub-sessions
-                        if sub.get('type', '').lower() == 'strength' and parent_exercises:
-                            sub['exercises'] = parent_exercises
-                        # Copy protocol for test sessions (FTP, threshold tests)
-                        if 'protocol' in sub or 'protocol' in session:
-                            sub['protocol'] = sub.get('protocol', session.get('protocol', []))
-                        # Copy structure to indoor cycling sub-sessions (for technique/interval workouts)
-                        if session.get('structure') and sub.get('type', '').lower() in ['indoor_cycling', 'wattbike', 'trainer']:
-                            sub['structure'] = session['structure']
-                            # Also copy FTP and power_targets if present
-                            if session.get('ftp'):
-                                sub['ftp'] = session['ftp']
-                            if session.get('power_targets'):
-                                sub['power_targets'] = session['power_targets']
-                            if session.get('technique_goals'):
-                                sub['technique_goals'] = session['technique_goals']
-                        expanded_sessions.append(sub)
-                else:
-                    expanded_sessions.append(session)
+            result_entry = {'date': date_str, 'type': workout_type,
+                            'workout_id': workout_id, 'name': workout_name}
+            if workout_type == 'strength' and isinstance(workout, dict):
+                result_entry['exercise_count'] = workout.get('exercise_count', 0)
+            results['pushed'].append(result_entry)
 
-            for session in expanded_sessions:
-                workout_type = get_workout_type_name(session)
-
-                if workout_type == 'skipped':
-                    results['skipped'].append({
-                        'date': date_str,
-                        'type': session.get('type'),
-                        'reason': 'rest day - not pushed'
-                    })
-                    continue
-
-                if workout_type == 'unknown':
-                    results['skipped'].append({
-                        'date': date_str,
-                        'type': session.get('type'),
-                        'reason': 'unknown workout type'
-                    })
-                    continue
-
-                # Build the Garmin workout
-                workout = build_workout(session, date_str)
-
-                if not workout:
-                    results['skipped'].append({
-                        'date': date_str,
-                        'type': session.get('type'),
-                        'reason': 'could not convert to workout'
-                    })
-                    continue
-
-                try:
-                    # Upload the workout based on type
-                    if workout_type == 'cycling':
-                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_cycling_workout(w))
-                        workout_name = workout.workoutName
-                    elif workout_type == 'running':
-                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_running_workout(w))
-                        workout_name = workout.workoutName
-                    elif workout_type in ['yoga', 'strength', 'swimming', 'pilates', 'padel']:
-                        # Yoga, strength, swimming, pilates, padel use generic upload with dict format
-                        upload_result = garmin_api_call(lambda c, w=workout: c.upload_workout(w))
-                        workout_name = workout.get('workoutName', 'Workout')
-                    else:
-                        results['skipped'].append({
-                            'date': date_str,
-                            'type': workout_type,
-                            'reason': 'upload method not implemented'
-                        })
-                        continue
-
-                    # Get the workout ID from the upload result
-                    workout_id = upload_result.get('workoutId')
-
-                    if not workout_id:
-                        results['errors'].append({
-                            'date': date_str,
-                            'type': workout_type,
-                            'error': 'No workout ID returned from upload'
-                        })
-                        continue
-
-                    # Schedule the workout to the date
-                    schedule_workout(workout_id, date_str)
-
-                    result_entry = {
-                        'date': date_str,
-                        'type': workout_type,
-                        'workout_id': workout_id,
-                        'name': workout_name
-                    }
-
-                    # Add exercise count for strength workouts
-                    if workout_type == 'strength' and isinstance(workout, dict):
-                        result_entry['exercise_count'] = workout.get('exercise_count', 0)
-
-                    results['pushed'].append(result_entry)
-
-                except Exception as e:
-                    results['errors'].append({
-                        'date': date_str,
-                        'type': workout_type,
-                        'error': str(e)
-                    })
-
-        # Store pushed workout IDs for cleanup on next push. Accumulate
-        # across pushes so partial pushes don't clobber earlier history:
-        # carry forward prior IDs that weren't just deleted, then add the
-        # newly-pushed ones.
-        pushed_ids = [p['workout_id'] for p in results['pushed'] if 'workout_id' in p]
-        if pushed_ids:
-            prior_ids = set(plan.get('pushed_workout_ids', []))
-            deleted_ids = set(previous_ids) if previous_ids else set()
-            plan['pushed_workout_ids'] = list((prior_ids - deleted_ids) | set(pushed_ids))
-            # Merge only this field: a plan the coach saved during the
-            # (long) push must not be overwritten with the pre-push copy.
+        # Tracked ids: what is still on Garmin from before, plus everything
+        # uploaded now (scheduled or not). Merge only this field so a plan
+        # saved during the push is not overwritten.
+        if uploaded_ids or actually_deleted or gone_externally:
+            tracked = ((set(previous_ids) - set(actually_deleted) - set(gone_externally))
+                       | set(uploaded_ids))
+            plan['pushed_workout_ids'] = sorted(tracked, key=str)
             merge_plan_fields({'pushed_workout_ids': plan['pushed_workout_ids']})
 
-        # Build summary message
+        if injury_gate_note:
+            decision = append_decision(
+                'gate_override',
+                f"Plan pushed to Garmin despite injury restrictions on "
+                f"{len(violations)} session(s)",
+                why, athlete_statement=statement,
+                extra={'tool': 'push_plan_to_garmin', 'violations': violations},
+                today=today)
+            results['decision_logged'] = decision.get('id')
+
         pushed_count = len(results['pushed'])
         if pushed_count > 0:
             dates = [p['date'] for p in results['pushed']]
-            types_pushed = set(p['type'] for p in results['pushed'])
-            results['summary'] = f"Pushed {pushed_count} workout(s) to Garmin ({', '.join(types_pushed)}): {dates[0]} to {dates[-1]}"
+            types_pushed = sorted({p['type'] for p in results['pushed']})
+            results['summary'] = (f"Pushed {pushed_count} workout(s) to Garmin "
+                                  f"({', '.join(types_pushed)}): {dates[0]} to {dates[-1]}")
         else:
             results['summary'] = "No workouts pushed (all sessions were rest days)"
-
         return results
 
     except Exception as e:

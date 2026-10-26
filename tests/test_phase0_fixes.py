@@ -765,7 +765,13 @@ class TestInjuryWriteGate:
             raise Exception("Garmin unavailable")
         monkeypatch.setattr(planning_mod, 'garmin_api_call', _fail)
 
-        result = push_plan_to_garmin(override_injury_gate=True)
+        consent = dict(athlete_statement='I accept the risk',
+                       override_rationale='test override')
+        preview = push_plan_to_garmin(override_injury_gate=True, **consent)
+        assert preview['status'] == 'preview'
+        assert preview['injury_violations']
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'],
+                                     override_injury_gate=True, **consent)
 
         # Gate bypassed: we got past it to the (failing) upload stage
         assert result.get('error') != 'injury_gate'

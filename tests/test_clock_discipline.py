@@ -106,6 +106,7 @@ ALLOWLIST = {
     ('coach/tools/planning_tools.py', 'update_weekly_plan'),
     ('coach/tools/planning_tools.py', 'get_week_constraints'),
     ('coach/tools/planning_tools.py', 'training_program'),
+    ('coach/tools/planning_tools.py', 'push_plan_to_garmin'),
     ('coach/tools/race_tools.py', 'races'),
     ('coach/tools/research_tools.py', 'research_exercise'),
     ('coach/tools/strength_tools.py', 'sync_strength_session'),

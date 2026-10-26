@@ -33,6 +33,17 @@ from conftest import FakeGarminClient, patch_garmin_everywhere
 
 TODAY = date.today()
 
+CONSENT = dict(athlete_statement='I understand the risk and want to run',
+               override_rationale='physio-approved easy run with consent')
+
+
+def _push(**kwargs):
+    """The two-step push: preview, then confirm with the token."""
+    preview = push_plan_to_garmin(**kwargs)
+    if 'confirm_token' not in preview:
+        return preview  # gate / consent / plan error
+    return push_plan_to_garmin(confirm_token=preview['confirm_token'], **kwargs)
+
 D0 = TODAY.isoformat()
 D1 = (TODAY + timedelta(days=1)).isoformat()
 D2 = (TODAY + timedelta(days=2)).isoformat()
@@ -196,7 +207,7 @@ class TestPushHappyPath:
     def test_push_summary_and_persisted_ids(self, push_env):
         data_env, client = push_env
 
-        result = push_plan_to_garmin()
+        result = _push()
 
         assert result['status'] == 'success'
         assert result['errors'] == []
@@ -211,7 +222,7 @@ class TestPushHappyPath:
     def test_each_workout_scheduled_on_its_plan_date(self, push_env):
         _, client = push_env
 
-        result = push_plan_to_garmin()
+        result = _push()
 
         scheduled = dict(client.scheduled)  # {workout_id: date}
         assert len(scheduled) == 4
@@ -221,7 +232,7 @@ class TestPushHappyPath:
     def test_rest_and_unknown_types_are_skipped_not_errors(self, push_env):
         _, client = push_env
 
-        result = push_plan_to_garmin()
+        result = _push()
 
         skipped = {s['date']: s['reason'] for s in result['skipped']}
         assert 'rest day' in skipped[D4]
@@ -232,7 +243,7 @@ class TestPushHappyPath:
 
     def test_cycling_payload_single_z2_block_with_hr_target(self, push_env):
         _, client = push_env
-        push_plan_to_garmin()
+        _push()
 
         workout = _uploads_by_kind(client)['cycling']
         assert '(Outdoor)' in workout.workoutName
@@ -253,7 +264,7 @@ class TestPushHappyPath:
 
     def test_running_payload_repeat_block_with_pace_targets(self, push_env):
         _, client = push_env
-        push_plan_to_garmin()
+        _push()
 
         workout = _uploads_by_kind(client)['running']
         segment = workout.workoutSegments[0]
@@ -285,7 +296,7 @@ class TestPushHappyPath:
 
     def test_strength_payload_exercises_sets_reps_weights(self, push_env):
         _, client = push_env
-        result = push_plan_to_garmin()
+        result = _push()
 
         # strength shares the generic upload path with yoga — find by sport
         workout = [w for kind, w in client.uploaded
@@ -317,7 +328,7 @@ class TestPushHappyPath:
 
     def test_yoga_payload_timed_block(self, push_env):
         _, client = push_env
-        push_plan_to_garmin()
+        _push()
 
         # yoga shares the generic upload path with strength — find it by sport
         yoga = [w for kind, w in client.uploaded
@@ -330,7 +341,7 @@ class TestPushHappyPath:
 
     def test_strength_and_yoga_both_use_generic_upload(self, push_env):
         _, client = push_env
-        push_plan_to_garmin()
+        _push()
 
         assert client.call_counts['upload_cycling_workout'] == 1
         assert client.call_counts['upload_running_workout'] == 1
@@ -345,10 +356,10 @@ class TestRePush:
     def test_repush_deletes_prior_workouts_and_replaces_ids(self, push_env):
         data_env, client = push_env
 
-        first = push_plan_to_garmin()
+        first = _push()
         first_ids = [p['workout_id'] for p in first['pushed']]
 
-        second = push_plan_to_garmin()
+        second = _push()
 
         assert second['duplicates_deleted'] == len(first_ids)
         assert sorted(client.deleted_workout_ids) == sorted(first_ids)
@@ -359,7 +370,7 @@ class TestRePush:
 
     def test_repush_checks_library_before_deleting(self, push_env):
         _, client = push_env
-        first = push_plan_to_garmin()
+        first = _push()
         first_ids = [p['workout_id'] for p in first['pushed']]
 
         # Athlete manually deleted one workout on Garmin Connect meanwhile
@@ -369,7 +380,7 @@ class TestRePush:
             if w['workoutId'] != manually_removed
         ]
 
-        second = push_plan_to_garmin()
+        second = _push()
 
         assert second['duplicates_deleted'] == len(first_ids) - 1
         assert manually_removed not in client.deleted_workout_ids
@@ -403,7 +414,7 @@ class TestInjuryGate:
     def test_push_blocked_by_active_running_restriction(self, injured_env):
         _, client = injured_env
 
-        result = push_plan_to_garmin()
+        result = _push()
 
         assert result['error'] == 'injury_gate'
         violations = result['violations']
@@ -418,7 +429,7 @@ class TestInjuryGate:
     def test_override_pushes_with_logged_note(self, injured_env):
         data_env, client = injured_env
 
-        result = push_plan_to_garmin(override_injury_gate=True)
+        result = _push(override_injury_gate=True, **CONSENT)
 
         assert result['status'] == 'success'
         assert result['injury_gate']['injury_gate_overridden'] is True
@@ -427,3 +438,130 @@ class TestInjuryGate:
         assert [p['type'] for p in result['pushed']] == [
             'cycling', 'running', 'strength', 'yoga']
         assert len(client.scheduled) == 4
+
+
+# ---------------------------------------------------------------------------
+# Consent at the protocol level: preview, single-use token, change detection
+# ---------------------------------------------------------------------------
+
+class TestPreviewAndToken:
+    def test_preview_writes_nothing_and_lists_the_work(self, push_env):
+        data_env, client = push_env
+
+        preview = push_plan_to_garmin()
+
+        assert preview['status'] == 'preview'
+        assert preview['confirm_token']
+        assert [(s['date'], s['workout_type']) for s in preview['sessions']] == [
+            (D0, 'cycling'), (D1, 'running'), (D2, 'strength'), (D3, 'yoga')]
+        assert preview['workouts_to_delete'] == []
+        assert {s['date'] for s in preview['skipped']} >= {D4, D5}
+        assert client.uploaded == [] and client.scheduled == []
+        assert 'pushed_workout_ids' not in _read_plan(data_env) or \
+            not _read_plan(data_env)['pushed_workout_ids']
+
+    def test_token_is_single_use(self, push_env):
+        _, client = push_env
+        preview = push_plan_to_garmin()
+        first = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+        assert first['status'] == 'success'
+        replay = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+        assert replay['error'] == 'confirm_token_invalid'
+        assert len(client.uploaded) == 4  # nothing pushed twice
+
+    def test_unknown_token_pushes_nothing(self, push_env):
+        _, client = push_env
+        result = push_plan_to_garmin(confirm_token='deadbeefdeadbeef')
+        assert result['error'] == 'confirm_token_invalid'
+        assert client.uploaded == []
+
+    def test_changed_sessions_invalidate_the_token(self, push_env):
+        _, client = push_env
+        preview = push_plan_to_garmin()
+        plan = _full_plan()
+        plan['days'][D0]['planned']['duration_mins'] = 999
+        assert update_weekly_plan(plan=plan)['status'] == 'success'
+
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+
+        assert result['error'] == 'confirm_token_mismatch'
+        assert client.uploaded == []
+
+    def test_audit_verdicts_do_not_invalidate_the_token(self, push_env):
+        _, client = push_env
+        preview = push_plan_to_garmin()
+        planner.merge_plan_days({D0: {'status': 'completed', 'actual': [{'type': 'cycling'}]}})
+
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+
+        assert result['status'] == 'success'
+        assert len(client.uploaded) == 4
+
+    def test_expired_token_is_rejected(self, push_env, monkeypatch):
+        _, client = push_env
+        preview = push_plan_to_garmin()
+        monkeypatch.setattr(planning_mod, 'PUSH_TOKEN_TTL_SECS', -1)
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+        assert result['error'] == 'confirm_token_expired'
+        assert client.uploaded == []
+
+    def test_preview_lists_previous_workouts_that_will_be_deleted(self, push_env):
+        _, client = push_env
+        first = _push()
+        first_ids = [p['workout_id'] for p in first['pushed']]
+        preview = push_plan_to_garmin()
+        assert sorted(preview['workouts_to_delete']) == sorted(first_ids)
+        assert client.deleted_workout_ids == []  # the preview deleted nothing
+
+    def test_requires_user_interaction_and_still_loads_upfront(self):
+        import asyncio
+        from coach.mcp_app import mcp
+        tool = asyncio.run(mcp.get_tool('push_plan_to_garmin'))
+        assert tool.meta['anthropic/requiresUserInteraction'] is True
+        assert tool.meta['anthropic/alwaysLoad'] is True
+        assert len(tool.description) <= 4096
+
+
+class TestBookkeeping:
+    def test_schedule_failure_keeps_the_uploaded_id_tracked(self, push_env, monkeypatch):
+        data_env, client = push_env
+        calls = {'n': 0}
+        real_schedule = planning_mod.schedule_workout
+
+        def flaky_schedule(workout_id, date_str):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise RuntimeError('calendar write failed')
+            return real_schedule(workout_id, date_str)
+
+        monkeypatch.setattr(planning_mod, 'schedule_workout', flaky_schedule)
+
+        result = _push()
+
+        assert result['status'] == 'success'
+        assert len(result['pushed']) == 3
+        failed = [e for e in result['errors'] if 'scheduling failed' in e['error']]
+        assert len(failed) == 1 and failed[0]['workout_id']
+        tracked = _read_plan(data_env)['pushed_workout_ids']
+        assert failed[0]['workout_id'] in tracked
+        assert len(tracked) == 4  # every upload is tracked for the next cleanup
+
+    def test_override_logs_a_gate_override_decision(self, push_env, monkeypatch):
+        data_env, client = push_env
+        _seed_athlete(data_env, injuries=[RUNNING_INJURY])
+
+        result = _push(override_injury_gate=True, **CONSENT)
+
+        assert result['status'] == 'success'
+        decision = planner.load_coaching_log()['decisions'][-1]
+        assert decision['id'] == result['decision_logged']
+        assert decision['type'] == 'gate_override'
+        assert decision['tool'] == 'push_plan_to_garmin'
+        assert decision['athlete_statement'] == CONSENT['athlete_statement']
+
+    def test_override_without_consent_is_refused_before_any_write(self, push_env):
+        data_env, client = push_env
+        _seed_athlete(data_env, injuries=[RUNNING_INJURY])
+        result = push_plan_to_garmin(override_injury_gate=True)
+        assert result['error'] == 'override_requires_confirmation'
+        assert client.uploaded == []
