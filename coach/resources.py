@@ -24,8 +24,9 @@ COACHING_DOCTRINE = """\
 # Coaching Doctrine
 
 Read this before planning any sessions. The hard mandates (snapshot first,
-injury hard gate, verify before confirming) are in the server instructions;
-this resource carries the full operating doctrine.
+injury hard gate, verify before confirming, verify before prescribing) are
+in the server instructions; this resource carries the full operating
+doctrine.
 
 ## Canonical Coaching Flow
 
@@ -38,22 +39,27 @@ this resource carries the full operating doctrine.
    (d) week_grid — rest days and what actually happened each day
    (e) planned_vs_actual.anomalies + plan_adherence.skipped_dates
    (f) fitness_metrics.acwr_status.safe
+   (g) capacity — demonstrated per-sport recent sessions; the grounding
+       data every duration prescription anchors to
 2. ATHLETE CLAIM VERIFICATION -> "I did X today" -> check week_grid[today]
    BEFORE confirming. If is_rest=true or types mismatch, ask — don't assume.
-3. PLAN BUILDING -> get_week_constraints() (guardrails, includes injury
-   restrictions) + get_weekly_prescription() (volume + intensity targets) ->
-   build the plan (every session must respect
-   snapshot.injuries[*].restricted_activities, every non-rest session needs a
-   purpose) -> update_weekly_plan(plan=...) -> push_plan_to_garmin().
+3. PLAN BUILDING -> snapshot.capacity (REQUIRED grounding input) +
+   get_week_constraints() (guardrails: injury restrictions, template ranges
+   WITH recent_capacity beside them) + get_weekly_prescription() (volume +
+   intensity targets + recent_capacity) -> build the plan (every session
+   must respect snapshot.injuries[*].restricted_activities, every non-rest
+   session needs a purpose, every duration anchors to demonstrated
+   capacity) -> update_weekly_plan(plan=...) -> address every entry in the
+   response's grounding_warnings -> push_plan_to_garmin().
 4. DRILL-DOWNS when the snapshot isn't enough -> snapshot sections (below) or
-   query_metrics(kind='fitness'|'intensity'|'daily'|'readiness'|
-   'personal_records', days=N, for_date=...) and
-   get_activities_range(start, end).
+   query_metrics(kind='fitness'|'sport_history'|'intensity'|'daily'|
+   'readiness'|'personal_records', days=N, for_date=..., sport=...) and
+   get_activities_range(start, end, activity_type=...).
 5. MUTATIONS -> log_coaching_decision, record_athlete_response,
    propose_coaching_action -> approve_proposal / reject_proposal,
    update_athlete, set_ftp, set_threshold_pace, update_phase,
-   update_weekly_plan, update_injury_status, races(action='add'|'update'),
-   remove_race (destructive, standalone).
+   update_weekly_plan, training_program(action='set'), update_injury_status,
+   races(action='add'|'update'), remove_race (destructive, standalone).
 
 ## Temporal Anchoring (date discipline)
 
@@ -75,9 +81,10 @@ only exists for dates before today.
 
 get_coaching_snapshot() defaults to a compact CORE payload: time context,
 flags, week_grid, ACWR status (+ legacy EWMA reference) and load hierarchy,
-injuries, plan_adherence, today/tomorrow plan, coaching memory (recent
-decisions, pending approvals, decisions due review), open planned-vs-actual
-anomalies, the compact sleep_gate signal, and data_quality. Request named
+demonstrated per-sport capacity, injuries, plan_adherence, today/tomorrow
+plan, coaching memory (recent decisions, pending approvals, decisions due
+review), open planned-vs-actual anomalies, the compact sleep_gate signal,
+data_quality, and (when a program is stored) the training_program pointer. Request named
 sections for detail — e.g. sections=['sleep'] BEFORE any sleep-quality
 coaching (full per-night breakdown), sections=['recovery'] for HRV/readiness
 detail, sections=['plan'] for full plan days + per-session comparison,
@@ -106,6 +113,49 @@ purpose AND injury reports both in one error. For athlete-discretion days,
 keep the plan truthful: set intensity 'discretion' plus a `constraints` list
 (e.g. constraints: ['Z2 only', 'no running']) instead of inventing a session
 the athlete didn't commit to.
+
+## Grounding Prescriptions (VERIFY BEFORE PRESCRIBING)
+
+Aggregate metrics cannot anchor a duration prescription: CTL 100 with a
+45-minute longest recent run is still a 45-minute runner. The baseline for
+every prescribed duration, weekly volume, and progression starting point is
+the athlete's ACTUAL completed training:
+
+- snapshot.capacity (core payload): per-sport demonstrated capacity —
+  longest session (28d + full window), typical session, sessions/week,
+  weekly minutes trend, last session with distance/pace.
+- query_metrics(kind='sport_history', sport=...): the per-session list
+  behind those numbers (durations, distances, paces) from local history.
+- get_activities_range(start, end, activity_type=...): raw Garmin records
+  when the local window isn't deep enough.
+
+Rules:
+- A progression's week 1 starts AT demonstrated recent capacity, never at a
+  template floor. Starting BELOW capacity is legitimate only as a stated,
+  deliberate regression (taper, rehab, bone-load protocol) with the reason
+  recorded (plan rationale / capacity_anchor.rationale_if_below).
+- update_weekly_plan returns grounding_warnings (capacity_regression /
+  session_spike / no_demonstrated_history) comparing the plan's longest
+  session per sport against demonstrated capacity. The save succeeds, but
+  every warning must be addressed with the athlete before pushing.
+- Mandate 3 catches ATHLETE fiction ("I ran this morning" that Garmin
+  can't see); this rule catches COACH fiction — asserting a starting
+  capacity the athlete's history contradicts.
+
+## Multi-Week Programs (training_program)
+
+The rolling 7-day plan is the EXECUTION window; anything longer (a race
+build, a return-to-run block) is stored via training_program(action='set')
+so the server can gate it — a program that lives only in chat prose is
+invisible to every gate. A program carries name, sport, start_date, weeks
+(the long_session_mins ladder) and a REQUIRED capacity_anchor: the
+demonstrated longest recent session the program starts from. The server
+verifies the anchor against actual history and REJECTS mismatched claims
+(capacity_anchor_mismatch) and unexplained week-1 regressions
+(capacity_anchor). Each week, derive that week's sessions from the program
+into update_weekly_plan (its purpose/injury/grounding checks still run).
+training_program(action='get') returns the stored program with the current
+week; the snapshot carries a training_program pointer whenever one exists.
 
 ## Load Hierarchy (injury prevention — check in order)
 
@@ -214,8 +264,11 @@ surface them to the athlete; they are never auto-fixed.
 ## Personalizing Load Decisions
 
 volume_data.load_increase_pcts gives [conservative, standard, aggressive]
-(e.g. [10, 15, 25]). Choose using adaptation_patterns, sleep.trend_direction,
-recovery.hrv_trend, and compliance.compliance_rate_pct:
+(e.g. [10, 15, 25]). The percentages apply to the athlete's ACTUAL completed
+volume (volume_data.last_week_tss, capacity.by_sport weekly minutes) —
+never to a template or assumed starting point. Choose the rate using
+adaptation_patterns, sleep.trend_direction, recovery.hrv_trend, and
+compliance.compliance_rate_pct:
 - Red flags (sleep < 6.5 hr, HRV declining, compliance < 60%) -> conservative
 - Green signals (sleep > 7.5 hr and improving, compliance > 85%,
   HRV improving) -> aggressive
@@ -326,7 +379,7 @@ def coaching_decisions_resource() -> str:
 @mcp.resource(
     "coach://coaching/doctrine",
     name="coaching_doctrine",
-    description="Full coaching doctrine: canonical flow, load hierarchy, week_grid/plan_adherence usage, multi-session days, structured-run schema, injury protocol, approval workflow — read before planning sessions",
+    description="Full coaching doctrine: canonical flow, load hierarchy, capacity grounding (verify before prescribing), multi-week programs, week_grid/plan_adherence usage, multi-session days, structured-run schema, injury protocol, approval workflow — read before planning sessions",
     mime_type="text/markdown",
 )
 def coaching_doctrine_resource() -> str:

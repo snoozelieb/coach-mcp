@@ -1257,6 +1257,7 @@ class TestBuildSwimmingWorkout:
         assert steps[0]["endConditionValue"] == 200.0
         assert steps[1]["stepType"] == STEP_INTERVAL
         assert steps[2]["stepType"] == STEP_COOLDOWN
+        assert all(s["endCondition"] == END_DISTANCE for s in steps)
 
     def test_custom_pool_length(self):
         session = {"type": "swim", "duration_mins": 30, "pool_length_m": 50.0}
@@ -1274,6 +1275,12 @@ class TestBuildPadelWorkout:
         assert result["sportType"] == PADEL_SPORT
         assert result["estimatedDurationInSecs"] == 90 * 60
         assert result["workoutName"] == "Padel Session"
+
+    def test_padel_sport_is_padel_activity_type(self):
+        # 226 = Garmin's paddelball activity type; 219 is the racket_sports
+        # category it once shipped with (id and key must name the same type).
+        assert PADEL_SPORT["sportTypeId"] == 226
+        assert PADEL_SPORT["sportTypeKey"] == "paddelball"
 
     def test_custom_description(self):
         session = {"type": "padel", "duration_mins": 90, "description": "Wednesday Padel Match"}
@@ -1518,3 +1525,23 @@ class TestGarminCategoryMap:
         # Custom exercise — name cleared, shown in description instead
         assert ex["exerciseName"] == ""
         assert "One Arm Bench Row" in ex["description"]
+
+
+# ─── Garmin end-condition ids ───────────────────────────────────────
+
+class TestEndConditionIds:
+    """Garmin Connect workout-API ids, confirmed by a live upload round-trip.
+
+    END_DISTANCE once shipped as 1 (lap.button's id): Garmin stored every
+    distance step — all structured swims, distance-based run steps — as a
+    lap-button step and silently dropped the distance."""
+
+    def test_ids_match_garmin(self):
+        assert END_LAP_BUTTON["conditionTypeId"] == 1
+        assert END_TIME["conditionTypeId"] == 2
+        assert END_DISTANCE["conditionTypeId"] == 3
+        assert END_REPS["conditionTypeId"] == 10
+
+    def test_ids_are_unique(self):
+        ids = [c["conditionTypeId"] for c in (END_LAP_BUTTON, END_TIME, END_DISTANCE, END_REPS)]
+        assert len(set(ids)) == len(ids), "two end conditions share a Garmin id"

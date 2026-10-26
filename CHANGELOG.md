@@ -7,6 +7,44 @@ All notable changes to coach-mcp are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **Distance-based workout steps reached the watch as lap-button steps**:
+  `END_DISTANCE` was sent with `conditionTypeId` 1, which is Garmin's
+  lap-button id (distance is 3). Garmin stored every distance step that way
+  and dropped the distance, so every structured swim and every run step
+  given in `distance_m` (e.g. 6×800m) waited for a lap press instead of
+  ending at the distance. Confirmed with a live upload round-trip before
+  and after the fix. Tests now pin the end-condition ids and require them
+  to be unique, a check that would have caught this.
+- **Pillar compliance diagnostics never saw a single activity.** The week
+  builder filtered persisted activities on `act['date']`, but they have no
+  date of their own (the day is the `daily_loads` key). So every pillar was
+  scored a chronic miss in both the snapshot and `get_week_constraints`,
+  which pushed the planner to add work the athlete was already doing.
+  - Weeks are now the last four *completed* weeks, rebuilt with
+    `_activities_from_history`.
+  - Pillar types match through the taxonomy: `padel` counts Garmin
+    `paddelball`, and `running` counts trail and treadmill runs.
+  - The live `athlete.json` target keys are scored: session minimums,
+    km/week and km ranges.
+  - Targets that can't be scored from activities (e.g. `daily`) report
+    `not_tracked` instead of a fake miss.
+- **Mobility sessions Garmin logs as type `other`** (e.g. "Cape Town
+  Mobility") now count toward weekly mobility compliance, matched by name.
+  Activity names are now persisted in `daily_loads` so pillars can be scored
+  offline.
+- **Personal records all parsed as `unknown`.** Real Garmin records leave
+  `prTypeLabelKey` empty and carry only a `typeId`. They are now labelled
+  from Garmin's PR-type catalog (`parsers.PR_TYPES`), with a sport and a unit
+  (seconds, metres or watts, checked against the linked activities).
+- **Every activity type from a real 10-year Garmin history is now known to
+  the taxonomy.** This includes Garmin's renamed `_v2` keys: `rowing_v2`,
+  `tennis_v2`, `kayaking_v2`, `stand_up_paddleboarding_v2` and `surfing_v2`.
+  A planned "rowing" session now matches `rowing_v2` instead of raising a
+  false type-mismatch anomaly.
+- `PADEL_SPORT` paired the racket-sports category id (219) with padel's key.
+  It is now padel's own id (226). Behaviour is unchanged: Garmin's workout
+  service has no padel sport, so padel workouts are stored without one (see
+  CLAUDE.md Known Issues).
 - **History retention no longer deletes the training diary**: the fixed
   rolling prunes (sleep 30 days, readiness 60 days, CTL/ACWR snapshots
   90 days) silently erased the athlete's history — after a year of coaching
@@ -14,8 +52,57 @@ All notable changes to coach-mcp are documented here. The format follows
   config-driven (`SLEEP_HISTORY_RETENTION_DAYS` /
   `READINESS_HISTORY_RETENTION_DAYS` / `SNAPSHOT_RETENTION_DAYS`) and
   defaults to keeping everything.
+- The snapshot read `athlete.json` directly, bypassing the
+  `athlete_baseline.json` merge that `load_athlete()` performs, so
+  Garmin-derived capacity never reached compliance scoring. It now uses
+  `load_athlete()`.
 
 ### Added
+- **Capacity grounding — the fourth hard mandate, VERIFY BEFORE PRESCRIBING.**
+  Aggregate load (CTL/ACWR) says how much load is safe, not what session
+  durations the athlete has actually demonstrated, so every prescription now
+  anchors to completed training rather than a template:
+  - `snapshot.capacity` (core payload, no Garmin call) — per-sport
+    demonstrated capacity derived from persisted `daily_loads`: longest
+    session (28 days + full window), typical session, sessions/week,
+    weekly-minutes trend and the last session with distance/pace
+    (`fitness.capacity_by_sport` / `derive_sport_capacity`; buckets from
+    `taxonomy.capacity_bucket_for` — cycling, running, strength, swimming;
+    games and mobility are never duration-progressed).
+  - `update_weekly_plan` returns advisory `grounding_warnings`
+    (`capacity_regression`, `session_spike`, `no_demonstrated_history`)
+    comparing the plan's longest session per sport with demonstrated
+    capacity. The save succeeds; every warning must be addressed with the
+    athlete before pushing.
+  - `get_week_constraints` and `get_weekly_prescription` carry
+    `recent_capacity` beside their generic template ranges;
+    `refresh_athlete_baseline` stores per-sport `by_sport` capacity.
+  - `query_metrics(kind='sport_history', sport=..., days=...)` — the
+    per-session list (durations, distances, paces) and capacity behind
+    those numbers, from local history. `get_activities_range` gained a
+    taxonomy-aware `activity_type` filter. Persisted activity details now
+    keep `distance_km`, `avg_pace_min_km` and `name` so both work offline.
+  - `SERVER_INSTRUCTIONS` states the mandate; the doctrine resource gained
+    "Grounding Prescriptions" and "Multi-Week Programs" sections.
+- **`training_program` MCP tool** (50th tool) — the multi-week macro plan
+  the rolling weekly plan executes, stored in `training_program.json`
+  (`action='get'|'set'`; prior programs are archived in the file's history).
+  A program is validated against a typed schema (`schemas.TrainingProgram`)
+  and **gated in code**: the required `capacity_anchor` must agree within
+  25% with the server-derived demonstrated longest session
+  (`capacity_anchor_mismatch`); a week 1 below 60% of demonstrated capacity
+  must state `rationale_if_below` (`capacity_anchor`); the sport must be
+  duration-prescribed; the injury gate runs on the program sport
+  (`override_injury_gate` mirrors `update_weekly_plan`); start dates are
+  sanity-checked; week-over-week jumps above 25% come back as
+  `progression_rate` warnings. The snapshot carries a `training_program`
+  pointer (name, sport, status, current week) whenever a program exists.
+- `race_program` prompt (6th prompt) — capacity-anchored multi-week program
+  builder that ends in `training_program(action='set')`.
+- Methodology: a `road_running` race template (5k to marathon) whose session
+  guidance anchors to demonstrated capacity. Taxonomy: `strides` plan alias;
+  `tennis`, `basketball`, `kayaking`, `stand_up_paddleboarding`, `surfing`,
+  `meditation`, `multi_sport` and `incident_detected` activity types.
 - **`backfill_history` MCP tool** (49th tool) — repairs holes in the
   training diary from the conversation: the coach takes the date range from
   chat, reports a dry run first (default), then applies after the athlete
@@ -35,6 +122,19 @@ All notable changes to coach-mcp are documented here. The format follows
   project Claude Code skills added under `.claude/skills/` (release,
   new-tool, capture-fixtures, acwr-recompute) and — together with the
   pre-existing mcp-builder — un-ignored so all five ship with the repo.
+- **garminconnect 0.3.5 → 0.3.17** (exact pin). Picks up upstream's
+  token-storage and auth security hardening (atomic, symlink-safe token
+  writes; fail-closed MFA resume), the `display_name` retry fix that kept
+  sleep/RHR/PR endpoints working after a transient profile fetch, and capped
+  activity pagination. Verified before bumping: full suite, a payload diff
+  of the workouts coach pushes (only change: HR/power targets serialize as
+  floats, e.g. `120.0`), and a read-only live run of every Garmin read the
+  coach makes. The token file format is unchanged, so rolling back is a
+  plain re-pin. The contract test now pins the token file name by
+  behavior instead of library source text.
+- `.gitignore` now treats everything under `data/` as private by default
+  (only the shipped `methodology.json` template is tracked), so new data
+  files such as `training_program.json` can't be committed by accident.
 
 ## [1.1.0] - 2026-08-27
 

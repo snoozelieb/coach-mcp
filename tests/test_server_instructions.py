@@ -24,11 +24,15 @@ class TestServerInstructions:
         )
 
     def test_hard_mandates_present(self):
-        """The three hard mandates must survive in the compressed text."""
+        """The four hard mandates must survive in the compressed text."""
         assert "get_coaching_snapshot" in SERVER_INSTRUCTIONS
         assert "current_time_context" in SERVER_INSTRUCTIONS
         assert "restricted_activities" in SERVER_INSTRUCTIONS
         assert "week_grid" in SERVER_INSTRUCTIONS
+        # Mandate 4 — grounding (the coach-fiction mirror of mandate 3)
+        assert "VERIFY BEFORE PRESCRIBING" in SERVER_INSTRUCTIONS
+        assert "snapshot.capacity" in SERVER_INSTRUCTIONS
+        assert "sport_history" in SERVER_INSTRUCTIONS
 
     def test_points_to_doctrine_resource(self):
         assert DOCTRINE_URI in SERVER_INSTRUCTIONS
@@ -87,3 +91,11 @@ class TestDoctrineResource:
         # Approval workflow
         assert "propose_coaching_action" in text
         assert "approve_proposal" in text
+        # Grounding (VERIFY BEFORE PRESCRIBING)
+        assert "VERIFY BEFORE PRESCRIBING" in text
+        assert "snapshot.capacity" in text
+        assert "grounding_warnings" in text
+        assert "sport_history" in text
+        # Multi-week programs
+        assert "training_program" in text
+        assert "capacity_anchor" in text

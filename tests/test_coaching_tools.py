@@ -11,6 +11,7 @@ from coach.tools.coaching_tools import (
     _build_adaptation_patterns,
     _build_snapshot_flags,
     _build_compliance_diagnostics,
+    _compliance_diagnostics_from_history,
     _derive_sleep_trend_direction,
     _derive_hrv_trend,
     _derive_compliance_rate_pct,
@@ -1105,6 +1106,107 @@ class TestBuildComplianceDiagnostics:
         result = _build_compliance_diagnostics(weekly_4wk, normalized)
         assert result['per_pillar']['strength']['met_weeks'] == 4
         assert result['per_pillar']['endurance']['met_weeks'] == 4
+
+
+class TestComplianceDiagnosticsFromHistory:
+    """The REAL persisted shape: daily_loads activities carry no 'date' (the
+    day is the key) and Garmin type keys rather than pillar spellings. The
+    old week builder filtered on act['date'], so every pillar always scored
+    0/4 — a chronic miss — whatever the athlete did."""
+
+    @staticmethod
+    def _completed_week_days(weeks_back: int) -> list:
+        today = date.today()
+        monday = today - timedelta(days=today.weekday() + 7 * weeks_back)
+        return [(monday + timedelta(days=i)).isoformat() for i in range(7)]
+
+    def _history(self, per_week: list) -> dict:
+        """per_week[i] maps weekday index -> stored activities for the i-th
+        most recent COMPLETED week."""
+        daily_loads = {}
+        for weeks_back, days in enumerate(per_week, start=1):
+            week = self._completed_week_days(weeks_back)
+            for weekday, acts in days.items():
+                daily_loads[week[weekday]] = {'total': 0.0, 'by_sport': {},
+                                              'activities': acts}
+        return daily_loads
+
+    def test_dateless_persisted_activities_are_counted(self):
+        pillars = {'strength': {'target_type': 'sessions',
+                                'target_sessions_per_week': 2,
+                                'types': ['strength_training']}}
+        lift = {'id': 1, 'type': 'strength_training', 'duration_mins': 45}
+        daily_loads = self._history([{0: [lift], 3: [dict(lift, id=2)]}] * 4)
+        result = _compliance_diagnostics_from_history(daily_loads, pillars, date.today())
+        assert result['per_pillar']['strength']['met_weeks'] == 4
+        assert result['per_pillar']['strength']['chronic_miss'] is False
+
+    def test_in_progress_week_never_counts_as_a_miss(self):
+        pillars = {'strength': {'target_type': 'sessions',
+                                'target_sessions_per_week': 1,
+                                'types': ['strength_training']}}
+        daily_loads = self._history(
+            [{1: [{'id': 1, 'type': 'strength_training', 'duration_mins': 40}]}] * 4)
+        # Nothing logged yet this week; it must not be scored at all.
+        result = _compliance_diagnostics_from_history(daily_loads, pillars, date.today())
+        assert result['per_pillar']['strength'] == {
+            'met_weeks': 4, 'total_weeks': 4, 'chronic_miss': False}
+
+    def test_garmin_types_and_live_target_keys(self):
+        """Pillar spellings from a live athlete.json against the Garmin types
+        actually recorded: padel->paddelball, running->trail_running,
+        mobility->'other' named "...Mobility", km and km-range targets."""
+        pillars = {
+            'fun': {'target_type': 'sessions', 'target_sessions_per_week': 1,
+                    'types': ['padel', 'ultimate_disc']},
+            'running': {'target_type': 'distance_km', 'target_km_per_week': 18,
+                        'types': ['running']},
+            'cycling': {'target_type': 'distance_km_range',
+                        'target_km_per_week_min': 50, 'target_km_per_week_max': 100,
+                        'types': ['cycling']},
+            'mobility': {'target_type': 'minutes', 'target_mins_per_week': 60,
+                         'types': ['yoga', 'pilates', 'stretching']},
+        }
+        week = {
+            0: [{'id': 1, 'type': 'paddelball', 'duration_mins': 90}],
+            2: [{'id': 2, 'type': 'trail_running', 'duration_mins': 120,
+                 'distance_km': 20.0}],
+            4: [{'id': 3, 'type': 'mountain_biking', 'duration_mins': 180,
+                 'distance_km': 55.0}],
+            5: [{'id': 4, 'type': 'other', 'duration_mins': 60,
+                 'name': 'Cape Town Mobility'}],
+        }
+        result = _compliance_diagnostics_from_history(
+            self._history([week] * 4), pillars, date.today())
+        for name in pillars:
+            assert result['per_pillar'][name]['met_weeks'] == 4, name
+
+    def test_range_targets_score_against_minimum(self):
+        pillars = {'strength': {'target_type': 'sessions',
+                                'target_sessions_per_week_min': 3,
+                                'target_sessions_per_week_max': 4,
+                                'types': ['strength_training']}}
+        lift = {'type': 'strength_training', 'duration_mins': 45}
+        met = {0: [lift], 2: [lift], 4: [lift]}
+        missed = {0: [lift], 2: [lift]}
+        result = _compliance_diagnostics_from_history(
+            self._history([met, missed, met, missed]), pillars, date.today())
+        assert result['per_pillar']['strength']['met_weeks'] == 2
+
+    def test_unscorable_target_is_not_tracked_not_a_miss(self):
+        pillars = {
+            'daily_rehab': {'target_type': 'daily', 'target_frequency': 'daily',
+                            'types': ['strength_training']},
+            'strength': {'target_type': 'sessions', 'target_sessions_per_week': 1,
+                         'types': ['strength_training']},
+        }
+        result = _compliance_diagnostics_from_history(self._history([{}] * 4),
+                                                      pillars, date.today())
+        rehab = result['per_pillar']['daily_rehab']
+        assert rehab['met_weeks'] is None
+        assert rehab['chronic_miss'] is False
+        assert 'not_tracked' in rehab
+        assert result['lowest_compliance_pillar'] == 'strength'
 
 
 # ---------------------------------------------------------------------------

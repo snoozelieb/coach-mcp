@@ -72,6 +72,7 @@ IDEMPOTENT_WRITE_TOOLS = {
     'set_exercise_preference',
     'set_ftp',
     'set_threshold_pace',
+    'training_program',     # action='set' overwrites keyed state; 'get' reads
     'update_decision_status',
     'update_injury_status',
     'update_methodology',

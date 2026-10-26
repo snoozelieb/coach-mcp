@@ -711,3 +711,36 @@ class TestSafetyRulesDayCounting:
         result = check_safety_rules([], {'type': 'interval_training'},
                                     constraints=self.CONSTRAINTS, today=TODAY)
         assert result['safe'] is True
+
+
+class TestRealGarminTypes:
+    """Every Garmin typeKey from a real multi-year account history is known.
+    'other' is deliberately unknown: its sessions classify by NAME."""
+
+    REAL_GARMIN_TYPES = (
+        'running', 'cycling', 'lap_swimming', 'strength_training',
+        'indoor_cycling', 'yoga', 'trail_running', 'paddelball', 'pilates',
+        'walking', 'e_bike_fitness', 'breathwork', 'ultimate_disc',
+        'mountain_biking', 'treadmill_running', 'e_bike_mountain', 'hiking',
+        'kayaking_v2', 'multi_sport', 'indoor_cardio', 'open_water_swimming',
+        'stand_up_paddleboarding_v2', 'meditation', 'incident_detected',
+        'rowing_v2', 'basketball', 'surfing_v2', 'indoor_rowing', 'tennis_v2',
+    )
+
+    @pytest.mark.parametrize('garmin_type', REAL_GARMIN_TYPES)
+    def test_known(self, garmin_type):
+        assert taxonomy.is_known_type(garmin_type)
+
+    def test_generic_other_stays_unknown(self):
+        assert not taxonomy.is_known_type('other')
+
+    @pytest.mark.parametrize('v2_key, sport', [
+        ('rowing_v2', 'rowing'), ('tennis_v2', 'tennis'),
+        ('kayaking_v2', 'kayaking'), ('surfing_v2', 'surfing'),
+        ('stand_up_paddleboarding_v2', 'stand_up_paddleboarding'),
+    ])
+    def test_v2_keys_match_their_sport(self, v2_key, sport):
+        """A planned 'rowing' session must match Garmin's 'rowing_v2' instead
+        of raising a false type-mismatch anomaly."""
+        assert canonical_type(v2_key) == sport
+        assert types_match(sport, v2_key)

@@ -51,6 +51,7 @@ from .config import (
 )
 from .garmin_client import garmin_api_call, GarminAuthRequiredError
 from .parsers import epoch_ms_to_local_iso
+from .taxonomy import capacity_bucket_for
 import logging
 
 logger = logging.getLogger(__name__)
@@ -626,7 +627,7 @@ def update_fitness_history(
             load = calculate_training_load(act)
             sport = get_sport_group(act.get('type', ''))
             by_sport[sport] += load
-            activity_details.append({
+            detail = {
                 'id': act.get('activity_id'),
                 'type': act.get('type', 'unknown'),
                 'sport': sport,
@@ -634,7 +635,18 @@ def update_fitness_history(
                 'load': load,
                 'avg_hr': act.get('avg_hr'),
                 'norm_power': act.get('norm_power'),
-            })
+            }
+            # Capacity grounding needs distance/pace, not just load —
+            # persisted so derive_sport_capacity works fully offline.
+            if act.get('distance_km') is not None:
+                detail['distance_km'] = act.get('distance_km')
+            if act.get('avg_pace_min_km') is not None:
+                detail['avg_pace_min_km'] = act.get('avg_pace_min_km')
+            # The name classifies sessions Garmin logs as type 'other'
+            # (e.g. "Cape Town Mobility") when pillars are scored offline.
+            if act.get('name'):
+                detail['name'] = act.get('name')
+            activity_details.append(detail)
 
         total_load = sum(by_sport.values())
         daily_loads[date_str] = {
@@ -706,6 +718,150 @@ def _extract_total_loads(daily_loads: dict[str, Any]) -> dict[str, float]:
         else:
             flat[date_str] = float(val)  # v1 fallback
     return flat
+
+
+# ---------------------------------------------------------------------------
+# Demonstrated capacity (the VERIFY BEFORE PRESCRIBING data layer)
+# ---------------------------------------------------------------------------
+# Aggregate load metrics (CTL/ACWR) cannot anchor a duration prescription —
+# an athlete with CTL 100 might have a longest recent run of 45 minutes.
+# These helpers surface what the athlete has ACTUALLY done per sport so
+# progressions start from demonstrated capacity, never from a template.
+
+CAPACITY_RECENT_WINDOW_DAYS = 28
+CAPACITY_DEFAULT_WINDOW_DAYS = 90
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _session_ref(act: dict[str, Any]) -> dict[str, Any]:
+    """Compact reference to one session (longest/last markers)."""
+    ref = {
+        'date': act.get('date'),
+        'type': act.get('type'),
+        'duration_mins': round(act.get('duration_mins') or 0, 1),
+    }
+    if act.get('distance_km') is not None:
+        ref['distance_km'] = act.get('distance_km')
+    if act.get('avg_pace_min_km') is not None:
+        ref['avg_pace_min_km'] = act.get('avg_pace_min_km')
+    return ref
+
+
+def capacity_by_sport(activities: list[dict[str, Any]], today: date,
+                      window_days: int = CAPACITY_DEFAULT_WINDOW_DAYS,
+                      ) -> dict[str, Any]:
+    """Per-sport demonstrated capacity from completed sessions.
+
+    Buckets come from taxonomy.capacity_bucket_for (cycling / running /
+    strength / swimming); games and mobility work are intensity-bound, not
+    duration-progressed, and never appear.
+
+    Args:
+        activities: parsed or persisted activity records carrying at least
+            date, type, duration_mins (distance_km / avg_pace_min_km used
+            when present)
+        today: current date, resolved at the tool boundary (clock discipline)
+        window_days: history window (persisted daily_loads carry ~90 days)
+
+    Returns:
+        {bucket: {longest_session_28d, longest_session_window,
+                  typical_session_mins_28d, sessions_28d,
+                  sessions_per_week_4wk, weekly_mins_4wk (oldest first),
+                  last_session}}
+    """
+    window_start = (today - timedelta(days=window_days - 1)).isoformat()
+    recent_start = (
+        today - timedelta(days=CAPACITY_RECENT_WINDOW_DAYS - 1)).isoformat()
+    today_iso = today.isoformat()
+
+    by_bucket: dict[str, list] = defaultdict(list)
+    for act in activities or []:
+        act_date = act.get('date') or ''
+        if not (window_start <= act_date <= today_iso):
+            continue
+        if (act.get('duration_mins') or 0) <= 0:
+            continue
+        bucket = capacity_bucket_for(act.get('type'))
+        if bucket is not None:
+            by_bucket[bucket].append(act)
+
+    capacity = {}
+    for bucket, acts in by_bucket.items():
+        acts.sort(key=lambda a: a.get('date') or '')
+        recent = [a for a in acts if (a.get('date') or '') >= recent_start]
+        longest_window = max(acts, key=lambda a: a.get('duration_mins') or 0)
+        longest_recent = (
+            max(recent, key=lambda a: a.get('duration_mins') or 0)
+            if recent else None)
+
+        weekly_mins = []
+        for week in range(3, -1, -1):  # oldest week first
+            w_start = (today - timedelta(days=week * 7 + 6)).isoformat()
+            w_end = (today - timedelta(days=week * 7)).isoformat()
+            total = sum(
+                a.get('duration_mins') or 0 for a in acts
+                if w_start <= (a.get('date') or '') <= w_end)
+            weekly_mins.append(round(total, 0))
+
+        typical = _median([a.get('duration_mins') or 0 for a in recent])
+        capacity[bucket] = {
+            'longest_session_28d': (
+                _session_ref(longest_recent) if longest_recent else None),
+            'longest_session_window': _session_ref(longest_window),
+            'typical_session_mins_28d': (
+                round(typical, 1) if typical is not None else None),
+            'sessions_28d': len(recent),
+            'sessions_per_week_4wk': round(len(recent) / 4, 1),
+            'weekly_mins_4wk': weekly_mins,
+            'last_session': _session_ref(acts[-1]),
+        }
+    return capacity
+
+
+def derive_sport_capacity(daily_loads: dict[str, Any], today: date,
+                          window_days: int = CAPACITY_DEFAULT_WINDOW_DAYS,
+                          ) -> dict[str, Any]:
+    """capacity_by_sport over persisted daily_loads (no Garmin call)."""
+    activities = []
+    for day_iso, day_data in (daily_loads or {}).items():
+        if not isinstance(day_data, dict):
+            continue
+        for act in day_data.get('activities') or []:
+            entry = dict(act)
+            entry.setdefault('date', day_iso)
+            activities.append(entry)
+    return {
+        'window_days': window_days,
+        'as_of': today.isoformat(),
+        'by_sport': capacity_by_sport(activities, today, window_days),
+    }
+
+
+def demonstrated_max_mins(capacity_entry: dict[str, Any] | None,
+                          ) -> tuple[float | None, str | None]:
+    """(minutes, window_label) grounding reference for one sport bucket.
+
+    Prefers the recent 28-day longest session (current tissue tolerance);
+    falls back to the full-window longest when the sport went quiet.
+    """
+    if not capacity_entry:
+        return None, None
+    recent = capacity_entry.get('longest_session_28d')
+    if recent and recent.get('duration_mins'):
+        return recent['duration_mins'], '28d'
+    window = capacity_entry.get('longest_session_window')
+    if window and window.get('duration_mins'):
+        return window['duration_mins'], 'window'
+    return None, None
 
 
 def _extract_sport_loads(daily_loads: dict[str, Any], sport: str) -> dict[str, float]:

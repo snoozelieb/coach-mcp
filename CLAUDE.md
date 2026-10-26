@@ -8,8 +8,9 @@ Development context for Claude Code (claude.ai/code) sessions in this repository
 > Claude Code truncates MCP instructions at 2KB) and the long-form
 > `coach://coaching/doctrine` resource (uncapped, fetched on demand; completeness
 > pinned by `tests/test_server_instructions.py`). When coaching from this repo,
-> follow those surfaces — snapshot first, injury hard gate, verify athlete claims —
-> and read the doctrine resource before planning sessions. Do **not** copy doctrine
+> follow those surfaces — the four hard mandates (snapshot first, injury hard gate,
+> verify before confirming, verify before prescribing) — and read the doctrine
+> resource before planning sessions. Do **not** copy doctrine
 > into this file: the duplicate is the copy that drifts.
 
 ## Project Overview
@@ -26,6 +27,11 @@ and sessions matching an active/improving injury's `restricted_activities` (inju
 gate — taxonomy-aware, re-run on the full plan at push); plans entirely in the past
 or with days >21 in the future are rejected; anomalies and season auto-proposals
 are idempotent by stable id / event-tag, so rejections are remembered forever.
+Capacity grounding is code too: `snapshot.capacity` is derived from persisted
+`daily_loads` (`coach/fitness.py`: `capacity_by_sport`, `derive_sport_capacity`);
+`update_weekly_plan` returns `grounding_warnings` (advisory), while
+`training_program(action='set')` *rejects* a program whose capacity anchor the
+history contradicts, and runs the injury gate as well.
 See `coach/tools/planning_tools.py` and `coach/tools/decision_tools.py`.
 
 ### Removed / consolidated tools
@@ -49,6 +55,7 @@ Consolidated in Phase 2 (same behavior, new entry point — bodies moved, not re
 | `get_training_readiness(for_date)` | `query_metrics(kind='readiness', for_date=...)` |
 | `get_personal_records()` | `query_metrics(kind='personal_records')` |
 
+`query_metrics` has since gained `kind='sport_history'` (new, not a renamed tool).
 `remove_race` stays standalone (destructive — clients must see destructiveHint
 per-tool). `get_activities_range` stays standalone (explicit range semantics).
 `get_compliance_report` stays — minimal check whose math matches `snapshot.compliance`.
@@ -64,6 +71,8 @@ COACH_CODE_MODE=1 python server.py            # Run with Code Mode (search/execu
 python -m pytest -v                           # Run all tests
 python scripts/daily_loop.py                  # Morning audit (scheduled 06:30 via Task Scheduler "CoachMCP Morning Audit")
 python scripts/garmin_login.py                # Manual Garmin token recovery (native auth + MFA)
+python scripts/setup_wizard.py                # Interactive first-run profile setup
+python scripts/backfill_history.py --since YYYY-MM-DD --check   # Diary-hole repair (dry run; --apply to write)
 ```
 
 ## MCP Framework
@@ -73,10 +82,10 @@ not the bundled v1 in the `mcp` SDK. Upgrading an env from fastmcp <3.3 requires
 `pip uninstall fastmcp fastmcp-slim` then a fresh install — the 3.3 distribution
 split breaks in-place upgrades.
 
-- **49 tools** across 11 modules in `coach/tools/`; every tool declares
+- **50 tools** across 11 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
   is the contract (unclassified tools fail the suite by design).
-- **5 prompts** (`coach/prompts.py`), **6 resources** (`coach/resources.py`,
+- **6 prompts** (`coach/prompts.py`), **6 resources** (`coach/resources.py`,
   including `coach://coaching/doctrine` and `coach://context/now`).
 - Planning tools return structured dicts; `update_weekly_plan` takes a typed `plan`
   dict validated by pydantic (`coach/schemas.py`; `plan_json` is a deprecated alias).
@@ -90,11 +99,12 @@ split breaks in-place upgrades.
 ```
 server.py                  # Entry shim → coach/server.py (transport/code-mode config)
 coach/
+├── server.py              # main(): transport + Code Mode selection, tool registration
 ├── config.py              # Shared config, thresholds, data-dir resolution, pattern registry
-├── taxonomy.py            # Canonical sport/session vocabulary (single source)
-├── schemas.py             # Pydantic plan schemas (WeeklyPlan)
+├── taxonomy.py            # Canonical sport/session vocabulary + capacity buckets (single source)
+├── schemas.py             # Pydantic schemas (WeeklyPlan, TrainingProgram)
 ├── storage.py             # Atomic, locked, migrating JSON writes
-├── fitness.py             # CTL/ATL/TSB (EWMA) + ACWR (rolling 7d:28d primary)
+├── fitness.py             # CTL/ATL/TSB (EWMA), ACWR (rolling 7d:28d), per-sport capacity, backfill
 ├── garmin_client.py       # Token-first auth, MFA hard stop, 600s AUTH_REQUIRED latch
 ├── parsers.py             # Pure parsing of Garmin responses; setup gate
 ├── planner.py             # Context building, plan lifecycle (prune + archive)
@@ -102,12 +112,14 @@ coach/
 ├── workout_builder.py     # Plan sessions → Garmin workouts
 ├── mcp_app.py             # Shared FastMCP instance + SERVER_INSTRUCTIONS
 ├── prompts.py, resources.py
-└── tools/                 # 49 MCP tools: data, fitness, athlete, planning,
+├── web_utils.py           # HTML fetch/strip for the research tools
+├── defaults/              # methodology.json shipped with the package
+└── tools/                 # 50 MCP tools: data, fitness, athlete, planning,
                            # coaching (snapshot), strength, injury, research,
                            # decision, race, interactive
 scripts/                   # daily_loop, garmin_login, capture_fixtures,
                            # recompute_acwr_history, setup_wizard, ... (non-exhaustive)
-tests/                     # pytest suite (~1,300 tests; see Testing below)
+tests/                     # pytest suite (see Testing below)
 ```
 
 `get_coaching_snapshot()` is a **read-modify-write pipeline**, not a read: every
@@ -126,9 +138,15 @@ with the package (seeded on first run, never overwritten).
 | `methodology.json` | HOW — safety rules, race templates, personas |
 | `training_config.json` | WHAT — events, periodization, goals |
 | `weekly_plan.json` | CURRENT — rolling 7-day plan (history in `plan_history.json`) |
-| `fitness_history.json` | Daily loads, CTL/ATL snapshots, sleep history |
+| `training_program.json` | MACRO — multi-week program with capacity anchor (`training_program` tool) |
+| `fitness_history.json` | Daily loads (source of `snapshot.capacity`), CTL/ATL snapshots, sleep history |
 | `coaching_log.json` | MEMORY — decisions, patterns, approvals, anomalies |
 | `exercise_library.json` | Cached exercise form cues for Garmin notes |
+| `exercises.json` | Exercise catalogue used by strength/research tools and the workout builder |
+
+`backfill_history` (tool and script) copies `fitness_history.json` into a sibling
+`data-backups/` directory before applying. Like `data/`, it holds personal data and
+must never be committed.
 
 ## Environment
 
@@ -138,11 +156,13 @@ Optional: `COACH_DATA_DIR`, `COACH_TOKEN_DIR`, `COACH_TRANSPORT`, `COACH_CODE_MO
 `COACH_LLM_MODEL` (daily_loop --llm model), `FASTMCP_HOST`/`FASTMCP_PORT`.
 
 Data dir resolution (installed copies must never write into site-packages):
-`COACH_DATA_DIR` env var → `data/` next to a source checkout → per-user data dir.
+`COACH_DATA_DIR` env var → `data/` next to a source checkout → per-user data dir
+(`%LOCALAPPDATA%` on Windows, `$XDG_DATA_HOME` elsewhere). `FASTMCP_HOST`/`FASTMCP_PORT`
+are read by FastMCP itself, not by repo code.
 
 ### Garmin Authentication
 
-garminconnect 0.3.5 directly — no custom Cloudflare code (the library's `curl_cffi`
+garminconnect 0.3.17 (exact pin) directly — no custom Cloudflare code (the library's `curl_cffi`
 handles Garmin's SSO natively). Token-first restore from `.garth/garmin_tokens.json`;
 on failure ONE non-interactive credential login (MFA is a hard stop — never blocks
 on input); tools then raise `GarminAuthRequiredError` whose message names the fix
@@ -152,7 +172,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,333 tests across 38 files (CI: GitHub Actions on push/PR + weekly cron;
+1,422 tests across 39 files (CI: GitHub Actions on push/PR + weekly cron;
 installs `requirements-dev.txt`). Four patterns are THE way tests are written:
 
 - **FakeGarminClient** (`tests/conftest.py`) — canonical fake for ALL Garmin
@@ -186,6 +206,8 @@ ACWR history migration).
 
 ## Known Issues / TODO
 
-### 3. Rehab sessions not pushed to Garmin calendar
-- Rehab sessions skipped with "unknown workout type" when pushing to Garmin
-- Need to add rehab as supported workout type or bundle into strength sessions
+- **Padel workouts have no sport type on Garmin.** Garmin's workout service has
+  no padel/racket sport (`workout-service/workout/types` lists 12 sports), so
+  padel pushes are stored with sport `(0, None)`. Recorded padel activities are
+  type 226 `paddelball` and classify correctly. Keep `PADEL_SPORT` as is; see
+  the comment in `coach/workout_builder.py` before changing it.

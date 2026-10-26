@@ -285,8 +285,10 @@ def classify_activity(
     # Strength activities
     is_strength = activity_type in strength_types
 
-    # Mobility activities
-    is_mobility = activity_type in mobility_types
+    # Mobility activities (Garmin logs many mobility sessions as type 'other'
+    # with names like "Cape Town Mobility" — the name decides for those)
+    is_mobility = (activity_type in mobility_types
+                   or taxonomy.is_mobility_by_name(activity_type, activity.get('name')))
 
     # Long effort (configurable mins of cardio)
     long_effort_min = thresholds.get('long_effort_min_mins', LONG_EFFORT_MIN_MINS)

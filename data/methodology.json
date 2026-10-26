@@ -293,6 +293,41 @@
         "taper": "Reduce volume, maintain intensity."
       }
     },
+    "road_running": {
+      "description": "Road running races (5k to marathon). Aerobic durability plus race-pace economy. Session durations ALWAYS anchor to the athlete's demonstrated recent capacity (snapshot.capacity), never to the template alone.",
+      "key_sessions": [
+        {
+          "type": "long_run",
+          "frequency": "weekly",
+          "priority": "critical",
+          "notes": "Anchor week 1 at the athlete's demonstrated longest recent run and progress 10-15%/week from THERE. Racing up to 10k needs no run beyond ~60-70 min; half needs ~100 min; marathon builds toward 2.5-3 hrs."
+        },
+        {
+          "type": "tempo_run",
+          "frequency": "weekly in build/peak",
+          "priority": "high",
+          "notes": "Sustained efforts at threshold. Start 2x6 min, build toward 3x8 min. Only after 2+ weeks of stable easy volume."
+        },
+        {
+          "type": "strides",
+          "frequency": "1-2x/week after easy runs",
+          "priority": "medium",
+          "notes": "6x15-20s relaxed fast on flat ground. Neuromuscular economy at almost no added load \u2014 safe even during volume-restricted blocks."
+        },
+        {
+          "type": "strength",
+          "frequency": "2x/week",
+          "priority": "high",
+          "notes": "Single-leg loading, calf capacity, hip stability. Bone and tendon tolerance is built here, not in the running."
+        }
+      ],
+      "phase_guidance": {
+        "base": "Easy aerobic volume, 3 runs/week max for injury-prone athletes. Long run grows from demonstrated capacity, not toward a template number.",
+        "build": "Introduce one quality session/week (tempo). Long run keeps growing 10-15%/week with a cutback week every 3rd-4th week.",
+        "peak": "Race-pace touches inside the long run. Longest run lands 2-3 weeks out.",
+        "taper": "Volume down 30-40% over the final 1-2 weeks; keep short race-pace strides. Fresh legs beat extra fitness."
+      }
+    },
     "tournament": {
       "description": "Multi-game tournament (Ultimate, Padel). High intensity with short recovery between games.",
       "key_sessions": [

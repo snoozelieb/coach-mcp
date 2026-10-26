@@ -12,6 +12,7 @@ from ..garmin_client import garmin_api_call
 from ..parsers import (parse_resting_heart_rate, parse_body_battery,
                      parse_activities, parse_personal_records,
                      parse_training_readiness)
+from ..taxonomy import types_match
 from datetime import date
 import json
 import logging
@@ -37,13 +38,25 @@ def _personal_records() -> dict:
 
 
 @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
-def get_activities_range(start_date: str, end_date: str = None) -> str:
+def get_activities_range(start_date: str, end_date: str = None,
+                         activity_type: str = None) -> str:
     """
-    Fetches activities between two dates from Garmin.
+    Fetches activities between two dates from Garmin — the raw history a
+    prescription must be grounded in.
+
+    Use this (or query_metrics(kind='sport_history'), which works offline
+    from local history) BEFORE designing any progression, long-session
+    ladder, or multi-week program: the athlete's actual recent sessions —
+    durations, distances, paces — are the only valid anchor for a starting
+    point (VERIFY BEFORE PRESCRIBING). snapshot.capacity summarizes this
+    data; this tool is the full per-activity record.
 
     Args:
         start_date: Start date in YYYY-MM-DD format
         end_date: End date in YYYY-MM-DD format (defaults to today)
+        activity_type: Optional sport filter — 'running', 'cycling',
+            'strength', 'swimming' or any known alias ('run', 'ride', ...).
+            Taxonomy-aware: 'running' also matches trail/treadmill runs.
 
     Returns:
         JSON array of activities with: date, name, type, duration_mins,
@@ -66,6 +79,10 @@ def get_activities_range(start_date: str, end_date: str = None) -> str:
 
         activities = garmin_api_call(lambda c: c.get_activities_by_date(start_date, end_date))
         parsed = parse_activities(activities)
+
+        if activity_type:
+            parsed = [a for a in parsed
+                      if types_match(activity_type, a.get('type'))]
 
         return json.dumps(parsed, indent=2)
 

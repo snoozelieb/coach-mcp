@@ -223,6 +223,54 @@ class WeeklyPlan(LenientModel):
 
 
 # ---------------------------------------------------------------------------
+# training_program.json — TrainingProgram (multi-week progression)
+# ---------------------------------------------------------------------------
+# Unlike the data-file models above, TrainingProgram is an INPUT contract
+# (like WeeklyPlan for update_weekly_plan): the training_program tool
+# validates against it before saving, so the fields a progression cannot be
+# gated without — name, sport, start_date, weeks, capacity_anchor — are
+# required. Extra keys still pass through untouched (LenientModel).
+
+class ProgramWeek(LenientModel):
+    """One week of a multi-week program (1-based `week` index)."""
+    week: int | None = None
+    start_date: str | None = None
+    focus: str | None = None
+    long_session_mins: float | None = None
+    volume_target_hrs: float | None = None
+    notes: str | None = None
+
+
+class CapacityAnchor(LenientModel):
+    """VERIFY BEFORE PRESCRIBING, code-enforced: the program must state the
+    demonstrated capacity it anchors to, and the server verifies the claim
+    against actual history (derive_sport_capacity) on save."""
+    sport: str
+    demonstrated_longest_session_mins: float
+    window_days: int | None = None
+    source: str | None = None            # e.g. 'snapshot.capacity'
+    rationale_if_below: str | None = None  # required when week 1 sits far
+                                           # below demonstrated capacity
+
+
+class TrainingProgram(LenientModel):
+    """data/training_program.json 'program' — typed input contract for the
+    training_program tool."""
+    schema_version: int | None = None
+    name: str
+    sport: str
+    start_date: str
+    weeks: list[ProgramWeek]
+    capacity_anchor: CapacityAnchor
+    goal_event: dict[str, Any] | None = None
+    review_checkpoints: list[dict[str, Any]] | None = None
+    rationale: str | None = None
+    status: str | None = None
+    created: str | None = None
+    last_updated: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # training_config.json — TrainingConfig
 # ---------------------------------------------------------------------------
 
@@ -429,6 +477,9 @@ class BaselineCapacity(LenientModel):
     typical_week: dict[str, float] | None = None
     total_activities: int | None = None
     weeks_analyzed: int | None = None
+    # Per-sport demonstrated capacity (fitness.capacity_by_sport over the
+    # 6-month refresh window) — longest/typical session per capacity bucket
+    by_sport: dict[str, Any] | None = None
 
 
 class PersonalRecord(LenientModel):

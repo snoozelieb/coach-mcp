@@ -461,6 +461,42 @@ class TestParsePersonalRecords:
         assert result[0]['record_type'] == 'pr_running_fastest_5k_time'
         assert result[0]['value_formatted'] == '22:00'
 
+    def test_real_garmin_shape_labelled_from_type_id(self):
+        """Real Garmin records are a plain list with prTypeLabelKey EMPTY and
+        only a typeId (no unitKey) — they used to parse as 'unknown'.
+        Values here are made up."""
+        records = [
+            {'typeId': 3, 'prTypeLabelKey': None, 'value': 1500.0,
+             'activityId': 1, 'prStartTimeGmtFormatted': '2025-01-02T07:00:00.0'},
+            {'typeId': 7, 'prTypeLabelKey': None, 'value': 30500.5, 'activityId': 2},
+            {'typeId': 9, 'prTypeLabelKey': None, 'value': 1200.0, 'activityId': 3},
+            {'typeId': 10, 'prTypeLabelKey': None, 'value': 250.0, 'activityId': 4},
+            {'typeId': 12, 'prTypeLabelKey': None, 'value': 30000.0, 'activityId': 0},
+            {'typeId': 15, 'prTypeLabelKey': None, 'value': 12.0, 'activityId': 0},
+            {'typeId': 17, 'prTypeLabelKey': None, 'value': 800.0, 'activityId': 5},
+            {'typeId': 25, 'prTypeLabelKey': None, 'value': 1900.0, 'activityId': 6},
+            {'typeId': 30, 'prTypeLabelKey': None, 'value': 100000.0, 'activityId': 7},
+        ]
+        by_type = {r['record_type']: r for r in parse_personal_records(records)}
+
+        five_k = by_type['pr.label.5k.run']
+        assert (five_k['sport'], five_k['unit'], five_k['value_formatted']) == ('running', 's', '25:00')
+        assert five_k['date'] == '2025-01-02'
+        assert by_type['pr.label.farthest.run']['value_formatted'] == '30.50 km'
+        assert by_type['pr.label.max.elev']['value_formatted'] == '1200 m'
+        assert by_type['pr.label.max.power']['value_formatted'] == '250 W'
+        assert by_type['pr.label.steps.best.day']['value_formatted'] == '30,000'
+        assert by_type['pr.label.steps.longest.streak']['value_formatted'] == '12 days'
+        assert by_type['pr.label.longest.poolswim']['value_formatted'] == '800 m'
+        assert by_type['pr.label.1500m.poolswim']['value_formatted'] == '31:40'
+        # No verified unit for strength max-rep weights: value passes through
+        squat = by_type['pr.label.max.rep.weight.squat']
+        assert (squat['unit'], squat['value_formatted']) == (None, 100000.0)
+
+    def test_unknown_type_id_stays_unknown(self):
+        result = parse_personal_records([{'typeId': 9999, 'prTypeLabelKey': None, 'value': 1.0}])
+        assert result[0]['record_type'] == 'unknown'
+
     def test_handles_none_type_key(self):
         """Records with no type key default to 'unknown'."""
         result = parse_personal_records([{'value': 42}])

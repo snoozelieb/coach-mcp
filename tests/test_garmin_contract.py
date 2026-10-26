@@ -15,7 +15,7 @@ This file makes any such dependency rename fail loudly in CI instead:
   library even if nobody updates the static tables below.
 
 No network access: tests only construct ``Garmin()`` (pure attribute setup —
-verified against the installed 0.3.5 source) and inspect signatures/source.
+verified against the installed 0.3.5 and 0.3.17 source) and inspect signatures/source.
 """
 import inspect
 import re
@@ -191,11 +191,18 @@ class TestClientTransportContract:
                 f"codebase uses (args={args}, kwargs={kwargs}): {e}"
             )
 
-    def test_tokenstore_file_name_stable(self):
+    def test_tokenstore_file_name_stable(self, tmp_path):
         """Token persistence and scripts/garmin_login.py docs reference
-        .garth/garmin_tokens.json — pin the on-disk file name."""
-        assert "garmin_tokens.json" in inspect.getsource(Client.dump)
-        assert "garmin_tokens.json" in inspect.getsource(Client.load)
+        .garth/garmin_tokens.json — pin the on-disk file name.
+
+        Pinned behaviorally (dump into a directory, check the file name), not by
+        source text: 0.3.17 moved the name out of Client.dump/load into a
+        shared token_file_path() helper, which broke a source-text check
+        without changing behavior."""
+        store = tmp_path / "tokenstore"  # tmp_path also holds the sandbox data/
+        store.mkdir()
+        Client().dump(str(store))
+        assert [p.name for p in store.iterdir()] == ["garmin_tokens.json"]
 
 
 class TestGarminAttributeContract:

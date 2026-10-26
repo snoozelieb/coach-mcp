@@ -23,7 +23,8 @@ from ..planner import load_athlete, load_methodology, load_json_file, save_json_
 from ..fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_athlete_hr_zones, get_fitness_trend,
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics,
-                     backfill_fitness_history)
+                     backfill_fitness_history, capacity_by_sport, derive_sport_capacity)
+from ..taxonomy import capacity_bucket_for, CAPACITY_BUCKETS
 from ..config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
 from datetime import date, timedelta
 import json
@@ -112,6 +113,15 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
 
         # Calculate baseline from activities
         baseline = calculate_baseline(activities)
+
+        # Per-sport demonstrated capacity over the refresh window — the
+        # cross-sport weekly-hour aggregates above cannot anchor a session
+        # duration; these can (longest/typical session per sport).
+        try:
+            baseline['by_sport'] = capacity_by_sport(
+                activities, today, window_days=PROFILE_HISTORY_DAYS)
+        except Exception:
+            logger.warning("Baseline by_sport capacity failed", exc_info=True)
 
         await ctx.report_progress(2, 5, "Fetching Garmin profile")
 
@@ -284,7 +294,10 @@ def _fitness_status(days: int = 90, *, today: date) -> dict:
         if metrics['acwr_status'] == 'optimal':
             insights.append("Training load in sweet spot (ACWR 0.8-1.3)")
         elif metrics['acwr_status'] == 'low':
-            recommendations.append("Load is low - safe to increase training")
+            recommendations.append(
+                "Load is low - safe to increase training. Size the increase "
+                "from demonstrated capacity (kind='sport_history' or "
+                "snapshot.capacity), not from a template")
         elif metrics['acwr_status'] == 'elevated':
             recommendations.append("Load spike detected - be cautious with intensity")
         elif metrics['acwr_status'] == 'danger':
@@ -516,25 +529,111 @@ def _intensity_distribution(days: int = 28, *, today: date) -> dict:
         return {'error': str(e)}
 
 
+def _sport_history(sport: str | None, days: int, today: date) -> dict:
+    """Per-sport session history + demonstrated capacity, from local
+    fitness_history — no Garmin call, no date arithmetic required.
+
+    `today` is required — the query_metrics boundary resolves it (clock
+    discipline).
+    """
+    try:
+        history = load_fitness_history()
+        daily_loads = history.get('daily_loads', {})
+        if not daily_loads:
+            return {'status': 'no_data',
+                    'action': 'Run refresh_fitness_history() to backfill '
+                              'from Garmin'}
+
+        window = max(7, min(int(days or 90), 365))
+        capacity = derive_sport_capacity(daily_loads, today,
+                                         window_days=window)
+        by_sport = capacity.get('by_sport', {})
+
+        if not sport:
+            return {
+                'window_days': window,
+                'as_of': capacity.get('as_of'),
+                'by_sport': by_sport,
+                'note': ('Demonstrated capacity per sport (VERIFY BEFORE '
+                         'PRESCRIBING — anchor every prescribed duration '
+                         'and progression here). Pass sport=... for the '
+                         'per-session list.'),
+            }
+
+        bucket = capacity_bucket_for(sport)
+        if bucket is None:
+            return {'error': f"'{sport}' has no capacity bucket. Valid "
+                             f"sports: {', '.join(CAPACITY_BUCKETS)} "
+                             "(aliases like 'run' or 'ride' work too)"}
+
+        start_iso = (today - timedelta(days=window - 1)).isoformat()
+        today_iso = today.isoformat()
+        sessions = []
+        for day_iso in sorted(daily_loads, reverse=True):
+            if not (start_iso <= day_iso <= today_iso):
+                continue
+            day_data = daily_loads.get(day_iso)
+            if not isinstance(day_data, dict):
+                continue
+            for act in day_data.get('activities') or []:
+                if capacity_bucket_for(act.get('type')) != bucket:
+                    continue
+                entry = {'date': day_iso, 'type': act.get('type'),
+                         'duration_mins': act.get('duration_mins'),
+                         'load': act.get('load')}
+                for key in ('distance_km', 'avg_pace_min_km'):
+                    if act.get(key) is not None:
+                        entry[key] = act[key]
+                sessions.append(entry)
+
+        capped = sessions[:40]
+        note = 'Most recent first'
+        if len(sessions) > len(capped):
+            note += f' (showing {len(capped)} of {len(sessions)})'
+        note += '. Older/deeper history: get_activities_range(start, end).'
+        return {
+            'sport': bucket,
+            'window_days': window,
+            'as_of': capacity.get('as_of'),
+            'capacity': by_sport.get(bucket),
+            'sessions_found': len(sessions),
+            'sessions': capped,
+            'note': note,
+        }
+    except Exception as e:
+        logger.exception("query_metrics(kind='sport_history') failed")
+        return {'error': str(e)}
+
+
 @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
 def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
-                                'personal_records'],
+                                'personal_records', 'sport_history'],
                   days: int = 30,
-                  for_date: str | None = None) -> dict:
+                  for_date: str | None = None,
+                  sport: str | None = None) -> dict:
     """
     Read-only metrics drill-down — one tool for the metric queries that used
     to be separate tools (get_fitness_status, get_intensity_distribution,
     get_daily_metrics, get_training_readiness, get_personal_records).
 
-    The coaching snapshot already carries the CURRENT ACWR/recovery/sleep
-    signals — use this tool for drill-downs: custom windows, historical
-    dates, or the full PR list.
+    The coaching snapshot carries the CURRENT signals (ACWR, recovery,
+    sleep, capacity summary) — use this tool for drill-downs: custom
+    windows, historical dates, the full PR list, and per-sport session
+    history. kind='sport_history' is the REQUIRED input before designing
+    any progression or multi-week program: it returns the actual sessions
+    a ladder must anchor to.
 
     When to use each kind:
     - 'fitness': CTL/ATL/TSB/ACWR, overall + per-sport (cycling, running,
       strength), from local fitness history (no Garmin call). `days` sets
       the trend window (the old standalone defaulted to 90). Use for
       custom-window ACWR checks and sport-specific spike detection.
+    - 'sport_history': demonstrated per-sport capacity (longest/typical
+      recent sessions, weekly minutes) from local fitness history — no
+      Garmin call. Pass sport='running' (aliases work) for the per-session
+      list with durations, distances, and paces; omit sport for the
+      all-sports capacity summary. Pass days=90 for the full local
+      history depth. USE BEFORE PRESCRIBING progressions.
     - 'intensity': HR-zone distribution vs the 80/20 polarized model over
       `days` (28 = monthly view). Fetches activities from Garmin. Use for
       zone analysis and gray-zone detection.
@@ -547,8 +646,11 @@ def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
 
     Args:
         kind: Which metric family to query (see above).
-        days: Analysis window for kind='fitness' / 'intensity' (default 30).
+        days: Analysis window for kind='fitness' / 'intensity' /
+            'sport_history' (default 30; sport_history clamps to 7-365).
         for_date: Date for kind='readiness' (defaults to today).
+        sport: For kind='sport_history' — which sport's sessions to list
+            (omit for the all-sports capacity summary).
 
     Returns:
         A dict per kind; {'error': ...} on failure.
@@ -557,6 +659,8 @@ def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
         today = date.today()  # tool boundary — threaded into the helpers
         if kind == 'fitness':
             return _fitness_status(days, today=today)
+        if kind == 'sport_history':
+            return _sport_history(sport, days, today)
         if kind == 'intensity':
             return _intensity_distribution(days, today=today)
         if kind == 'daily':
@@ -567,7 +671,8 @@ def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
             return _personal_records()
 
         return {'error': f"Unknown kind '{kind}'. Valid kinds: fitness, "
-                         "intensity, daily, readiness, personal_records"}
+                         "intensity, daily, readiness, personal_records, "
+                         "sport_history"}
 
     except Exception as e:
         logger.exception("query_metrics(kind=%s) failed", kind)

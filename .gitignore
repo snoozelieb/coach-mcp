@@ -6,23 +6,19 @@
 data-backups/
 data/*.bak
 
-# Personal data files (created by setup wizard)
-data/athlete.json
-data/athlete_baseline.json
-data/training_config.json
-data/weekly_plan.json
-data/suggestions.json
-data/coaching_log.json
-data/fitness_history.json
-data/exercise_library.json
-data/exercises.json
-data/plan_history.json
-
-# Investigation output (large JSON files)
-data/investigation/
+# Personal data: everything under data/ is private by default (athlete profile,
+# plans, training_program, fitness/sleep history, coaching memory, investigation
+# output, backups). Only the generic methodology template is committed — new
+# data files are ignored automatically instead of needing a line here.
+data/*
+!data/methodology.json
 
 # MCP builder scaffolding
 .agents/
+
+# MCP registry publisher CLI (local tool binary, downloaded per release)
+mcp-publisher
+mcp-publisher.exe
 
 # Temp files from Claude Code
 tmpclaude-*

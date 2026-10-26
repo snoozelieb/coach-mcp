@@ -108,6 +108,7 @@ METHODOLOGY_FILE = "methodology.json"
 WEEKLY_PLAN_FILE = "weekly_plan.json"
 COACHING_LOG_FILE = "coaching_log.json"
 FITNESS_HISTORY_FILE = "fitness_history.json"
+TRAINING_PROGRAM_FILE = "training_program.json"  # Multi-week program (training_program tool)
 EXERCISE_LIBRARY_FILE = "exercise_library.json"  # Cached exercise form cues
 
 # Fitness tracking constants (based on TrainingPeaks/Firstbeat research)

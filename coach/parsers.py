@@ -379,11 +379,99 @@ def calculate_baseline(activities: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# Garmin's personal-record catalog (personalrecord-service/personalrecordtype/
+# prtypes). Real records leave prTypeLabelKey EMPTY and carry only typeId, so
+# without this table every PR parsed as 'unknown'. typeId -> (key, sport,
+# measure). Measures were checked against the activities PRs link to: time in
+# seconds, distance and elevation in metres, power in watts. Strength max-rep
+# weights have no verified unit, so their measure is None.
+PR_TYPES: dict[int, tuple[str, str, str | None]] = {
+    1: ('pr.label.1k.run', 'running', 'time'),
+    2: ('pr.label.1mile.run', 'running', 'time'),
+    3: ('pr.label.5k.run', 'running', 'time'),
+    4: ('pr.label.10k.run', 'running', 'time'),
+    5: ('pr.label.half.marathon', 'running', 'time'),
+    6: ('pr.label.full.marathon', 'running', 'time'),
+    7: ('pr.label.farthest.run', 'running', 'distance'),
+    8: ('pr.label.farthest.cycle', 'cycling', 'distance'),
+    9: ('pr.label.max.elev', 'cycling', 'elevation'),
+    10: ('pr.label.max.power', 'cycling', 'power'),
+    11: ('pr.label.40k.cycle', 'cycling', 'time'),
+    12: ('pr.label.steps.best.day', 'steps', 'count'),
+    13: ('pr.label.steps.best.week', 'steps', 'count'),
+    14: ('pr.label.steps.best.month', 'steps', 'count'),
+    15: ('pr.label.steps.longest.streak', 'steps', 'days'),
+    16: ('pr.label.steps.current.streak', 'steps', 'days'),
+    17: ('pr.label.longest.poolswim', 'swimming', 'distance'),
+    18: ('pr.label.100m.poolswim', 'swimming', 'time'),
+    19: ('pr.label.100yd.poolswim', 'swimming', 'time'),
+    20: ('pr.label.400m.poolswim', 'swimming', 'time'),
+    21: ('pr.label.500yd.poolswim', 'swimming', 'time'),
+    22: ('pr.label.750m.poolswim', 'swimming', 'time'),
+    23: ('pr.label.1000m.poolswim', 'swimming', 'time'),
+    24: ('pr.label.1000yd.poolswim', 'swimming', 'time'),
+    25: ('pr.label.1500m.poolswim', 'swimming', 'time'),
+    26: ('pr.label.1650yd.poolswim', 'swimming', 'time'),
+    27: ('pr.label.activeseconds.best.day', 'steps', 'time'),
+    28: ('pr.label.max.rep.weight.bench_press', 'strength', None),
+    29: ('pr.label.max.rep.weight.overhead_press', 'strength', None),
+    30: ('pr.label.max.rep.weight.squat', 'strength', None),
+    31: ('pr.label.max.rep.weight.deadlift', 'strength', None),
+    32: ('pr.label.max.rep.weight.row', 'strength', None),
+    33: ('pr.label.pushes.best.day', 'wheelchair', 'count'),
+    34: ('pr.label.pushes.best.week', 'wheelchair', 'count'),
+    35: ('pr.label.pushes.best.month', 'wheelchair', 'count'),
+    36: ('pr.label.pushes.longest.streak', 'wheelchair', 'days'),
+    37: ('pr.label.pushes.current.streak', 'wheelchair', 'days'),
+    38: ('pr.label.1k.wheelchair.run', 'wheelchair', 'time'),
+    39: ('pr.label.1mile.wheelchair.run', 'wheelchair', 'time'),
+    40: ('pr.label.5k.wheelchair.run', 'wheelchair', 'time'),
+    41: ('pr.label.10k.wheelchair.run', 'wheelchair', 'time'),
+    42: ('pr.label.half.marathon.wheelchair.run', 'wheelchair', 'time'),
+    43: ('pr.label.full.marathon.wheelchair.run', 'wheelchair', 'time'),
+    44: ('pr.label.longest.wheelchair.push', 'wheelchair', 'distance'),
+    45: ('pr.label.max.rep.weight.barbell_biceps_curl', 'strength', None),
+    46: ('pr.label.max.rep.weight.dumbbell_squat', 'strength', None),
+    47: ('pr.label.max.rep.weight.dumbbell_row', 'strength', None),
+    48: ('pr.label.max.rep.weight.dumbbell_deadlift', 'strength', None),
+    49: ('pr.label.max.rep.weight.dumbbell_biceps_curl', 'strength', None),
+    50: ('pr.label.max.rep.weight.dumbbell_bench_press', 'strength', None),
+    51: ('pr.label.max.rep.weight.overhead_dumbbell_press', 'strength', None),
+}
+
+_PR_UNITS = {'time': 's', 'distance': 'm', 'elevation': 'm', 'power': 'W',
+             'count': 'count', 'days': 'days'}
+
+
+def _format_duration(seconds) -> str:
+    mins, secs = divmod(int(seconds), 60)
+    hours, mins = divmod(mins, 60)
+    return f"{hours}:{mins:02d}:{secs:02d}" if hours else f"{mins}:{secs:02d}"
+
+
+def _format_pr_value(value, measure: str | None):
+    if value is None or measure is None:
+        return value
+    if measure == 'time':
+        return _format_duration(value)
+    if measure == 'distance':
+        return f"{value / 1000:.2f} km" if value >= 1000 else f"{value:.0f} m"
+    if measure == 'elevation':
+        return f"{value:.0f} m"
+    if measure == 'power':
+        return f"{value:.0f} W"
+    if measure == 'days':
+        return f"{value:.0f} days"
+    return f"{value:,.0f}"
+
+
 def parse_personal_records(pr_data) -> list[dict[str, Any]]:
     """
     Parse personal records from Garmin response.
 
-    Returns list of records with: record_type, value, unit, date, activity_id
+    Returns list of records with: record_type, sport, value, value_formatted,
+    unit, date, activity_id. Records are labelled from prTypeLabelKey when
+    Garmin fills it, else from typeId via PR_TYPES.
     """
     if isinstance(pr_data, list):
         records = pr_data
@@ -394,25 +482,32 @@ def parse_personal_records(pr_data) -> list[dict[str, Any]]:
     parsed = []
 
     for record in records:
-        pr_type = record.get('prTypeLabelKey') or record.get('typeKey') or 'unknown'
         value = record.get('value')
+        label_key = record.get('prTypeLabelKey') or record.get('typeKey')
+        catalog = PR_TYPES.get(record.get('typeId'))
 
-        # Format time-based records (in seconds) to readable format
-        if value and pr_type and 'time' in pr_type.lower():
-            mins, secs = divmod(int(value), 60)
-            hours, mins = divmod(mins, 60)
-            if hours:
-                value_formatted = f"{hours}:{mins:02d}:{secs:02d}"
+        if label_key:
+            pr_type, sport, measure = label_key, None, None
+            # Format time-based records (in seconds) to readable format
+            if value and 'time' in label_key.lower():
+                value_formatted = _format_duration(value)
             else:
-                value_formatted = f"{mins}:{secs:02d}"
+                value_formatted = value
+            unit = record.get('unitKey')
+        elif catalog:
+            pr_type, sport, measure = catalog
+            value_formatted = _format_pr_value(value, measure)
+            unit = _PR_UNITS.get(measure)
         else:
-            value_formatted = value
+            pr_type, sport = 'unknown', None
+            value_formatted, unit = value, record.get('unitKey')
 
         parsed.append({
             'record_type': pr_type,
+            'sport': sport,
             'value': value,
             'value_formatted': value_formatted,
-            'unit': record.get('unitKey'),
+            'unit': unit,
             'date': record.get('prStartTimeGmtFormatted', '')[:10] if record.get('prStartTimeGmtFormatted') else None,
             'activity_id': record.get('activityId'),
         })

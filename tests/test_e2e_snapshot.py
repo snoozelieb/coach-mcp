@@ -47,8 +47,8 @@ TIME_PERIODS = ('early_morning', 'morning', 'afternoon', 'evening', 'night')
 CORE_MANDATED_KEYS = [
     'current_time_context', 'snapshot_date', 'day_of_week', 'sections',
     'flags', 'week_grid', 'week_grid_today', 'weekly_plan', 'plan_adherence',
-    'planned_vs_actual', 'fitness_metrics', 'acwr_warnings', 'injuries',
-    'coaching_memory', 'sleep_gate', 'data_quality',
+    'planned_vs_actual', 'fitness_metrics', 'acwr_warnings', 'capacity',
+    'injuries', 'coaching_memory', 'sleep_gate', 'data_quality',
 ]
 
 FULL_ONLY_KEYS = [
@@ -377,6 +377,66 @@ class TestCoreGoldenSchema:
         assert len(injuries) == 1
         assert injuries[0]['status'] == 'active'
         assert injuries[0]['restricted_activities'] == ['running', 'jumping']
+
+    async def test_capacity_grounds_prescriptions_in_core(
+            self, happy_env, mock_ctx):
+        """VERIFY BEFORE PRESCRIBING: the core payload must carry demonstrated
+        per-sport capacity so prescriptions can't dodge actual history."""
+        result, _ = await _snapshot(mock_ctx)
+
+        capacity = result['capacity']
+        assert capacity['window_days'] == 90
+        assert capacity['as_of'] == TODAY.isoformat()
+        # 35 days of seeded cycling + strength sessions -> both buckets
+        by_sport = capacity['by_sport']
+        assert {'cycling', 'strength'} <= set(by_sport)
+        cycling = by_sport['cycling']
+        # Seeded history is 60-min sessions (_v2_day); the fake Garmin
+        # client re-ingests 90-min rides over the trailing 3 days
+        # (_matching_client), so the demonstrated longest is 90.
+        assert cycling['longest_session_28d']['duration_mins'] == 90
+        assert cycling['longest_session_window']['duration_mins'] == 90
+        assert cycling['typical_session_mins_28d'] == 60
+        assert cycling['sessions_28d'] > 0
+        assert len(cycling['weekly_mins_4wk']) == 4
+        assert cycling['last_session']['date'] == TODAY.isoformat()
+        # The payload points the coach at the deeper-history tools
+        assert 'sport_history' in capacity['note']
+        assert 'get_activities_range' in capacity['note']
+
+    async def test_no_training_program_pointer_without_a_program(
+            self, happy_env, mock_ctx):
+        result, _ = await _snapshot(mock_ctx)
+        assert 'training_program' not in result
+
+    async def test_training_program_pointer_when_stored(
+            self, happy_env, mock_ctx):
+        data_dir, _client = happy_env
+        _write(data_dir, 'training_program.json', {
+            'schema_version': 1,
+            'program': {
+                'name': 'Gravel build',
+                'sport': 'cycling',
+                'start_date': (TODAY - timedelta(days=7)).isoformat(),
+                'weeks': [{'week': i + 1, 'long_session_mins': 90 + i * 10}
+                          for i in range(4)],
+                'goal_event': {'name': 'Big Gravel Race',
+                               'date': (TODAY + timedelta(days=60)).isoformat()},
+                'capacity_anchor': {'sport': 'cycling',
+                                    'demonstrated_longest_session_mins': 90},
+            },
+            'history': [],
+        })
+
+        result, _ = await _snapshot(mock_ctx)
+
+        pointer = result['training_program']
+        assert pointer['name'] == 'Gravel build'
+        assert pointer['status'] == 'active'
+        assert pointer['week'] == 2
+        assert pointer['total_weeks'] == 4
+        assert pointer['goal_event']['name'] == 'Big Gravel Race'
+        assert 'training_program' in pointer['detail']
 
     async def test_coaching_memory_shape(self, happy_env, mock_ctx):
         result, _ = await _snapshot(mock_ctx)

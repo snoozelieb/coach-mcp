@@ -1,5 +1,5 @@
 """
-Garmin Connect client management (garminconnect 0.3.5, native auth).
+Garmin Connect client management (garminconnect 0.3.x, native auth).
 
 Auth flow — no garth, no playwright, no browser:
 
@@ -149,7 +149,7 @@ def _credential_login(email: str, password: str) -> Garmin:
 
 def get_garmin_client(force_refresh: bool = False) -> Garmin:
     """
-    Return an authenticated Garmin client (token-first, native 0.3.5 auth).
+    Return an authenticated Garmin client (token-first, native 0.3.x auth).
 
     Uses a cached instance to avoid repeated logins within the same session.
 

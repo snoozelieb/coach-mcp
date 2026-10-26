@@ -63,10 +63,16 @@ SWIMMING_SPORT = {
     "displayOrder": 4
 }
 
+# Padel is Garmin ACTIVITY type 226 'paddelball' (child of 219 racket_sports),
+# which is what the watch records. Garmin's workout service has no padel or
+# racket sport (workout-service/workout/types), so padel workouts are stored
+# with no sport type whatever is sent: the calendar entry is a reminder and
+# the session is recorded with the watch's Padel activity. Don't remap padel
+# to cardio/other: a workout started from the watch records as its sport.
 PADEL_SPORT = {
-    "sportTypeId": 219,
+    "sportTypeId": 226,
     "sportTypeKey": "paddelball",
-    "displayOrder": 219
+    "displayOrder": 226
 }
 
 # Step type definitions
@@ -77,9 +83,11 @@ STEP_RECOVERY = {"stepTypeId": 4, "stepTypeKey": "recovery", "displayOrder": 4}
 STEP_REST = {"stepTypeId": 5, "stepTypeKey": "rest", "displayOrder": 5}
 STEP_REPEAT = {"stepTypeId": 6, "stepTypeKey": "repeat", "displayOrder": 6}
 
-# End condition definitions
+# End condition definitions (Garmin Connect workout-API ids: 1 lap.button,
+# 2 time, 3 distance, 7 iterations, 10 reps). Distance was once sent as 1 —
+# the lap-button id — the same bug garminconnect fixed upstream in 0.3.6.
 END_TIME = {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2, "displayable": True}
-END_DISTANCE = {"conditionTypeId": 1, "conditionTypeKey": "distance", "displayOrder": 1, "displayable": True}
+END_DISTANCE = {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3, "displayable": True}
 END_REPS = {"conditionTypeId": 10, "conditionTypeKey": "reps", "displayOrder": 10, "displayable": True}
 END_LAP_BUTTON = {"conditionTypeId": 1, "conditionTypeKey": "lap.button", "displayOrder": 1, "displayable": True}
 

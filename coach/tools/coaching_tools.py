@@ -22,6 +22,7 @@ from ..parsers import parse_activities, build_current_time_context
 from ..planner import (
     get_current_plan,
     load_athlete,
+    load_json_file,
     load_methodology,
     load_coaching_log,
     get_coaching_context,
@@ -54,11 +55,12 @@ from ..fitness import (
     calculate_readiness_baselines,
     analyze_activity_patterns,
     update_fitness_history,
+    derive_sport_capacity,
 )
 from ..config import (
     DATA_DIR,
     TRAINING_CONFIG_FILE,
-    ATHLETE_FILE,
+    TRAINING_PROGRAM_FILE,
     CTL_TARGETS,
     DEFAULT_EQUIVALENCE_GROUPS,
     RACE_TIME_WEIGHTS,
@@ -625,6 +627,56 @@ def _derive_compliance_rate_pct(compliance: dict) -> float | None:
     return round(pillars_met / pillars_total * 100, 0) if pillars_total > 0 else None
 
 
+def _pillar_weekly_target(pillar_config: dict) -> tuple[str, float] | None:
+    """(measure, weekly target) for a pillar: measure is 'sessions',
+    'minutes' or 'km'. None when the pillar has no weekly target that can be
+    scored from activities (e.g. target_type 'daily', or a missing target).
+
+    Accepts the key spellings live athlete.json uses: range targets score
+    against their minimum.
+    """
+    target_type = pillar_config.get('target_type', 'sessions')
+    if target_type == 'sessions':
+        measure = 'sessions'
+        value = (pillar_config.get('target_sessions_per_week')
+                 or pillar_config.get('target_sessions_per_week_min'))
+    elif target_type == 'hours':
+        measure = 'minutes'
+        value = (pillar_config.get('target_hours_per_week') or 0) * 60
+    elif target_type == 'minutes':
+        measure = 'minutes'
+        value = pillar_target_minutes(pillar_config)
+    elif target_type == 'distance_km':
+        measure = 'km'
+        value = pillar_config.get('target_km_per_week')
+    elif target_type == 'distance_km_range':
+        measure = 'km'
+        value = pillar_config.get('target_km_per_week_min')
+    else:
+        return None
+    return (measure, value) if value and value > 0 else None
+
+
+def _compliance_diagnostics_from_history(daily_loads: dict, pillars: dict,
+                                         today: date) -> dict:
+    """Compliance diagnostics over the last 4 COMPLETED Mon-Sun weeks of
+    persisted history.
+
+    Persisted activities carry no 'date' of their own — the day is the
+    daily_loads key — so weeks are rebuilt via _activities_from_history
+    (filtering on act['date'] silently produced empty weeks, scoring every
+    pillar a chronic miss). The in-progress week is excluded so an early
+    Monday can't count as a missed week.
+    """
+    weeks = []
+    for week_offset in range(1, 5):  # most recent completed week first
+        w_start = today - timedelta(days=today.weekday() + week_offset * 7)
+        w_end = w_start + timedelta(days=6)
+        weeks.append(_activities_from_history(
+            daily_loads, w_start.isoformat(), w_end.isoformat()))
+    return _build_compliance_diagnostics(weeks, pillars)
+
+
 def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: dict) -> dict:
     """Per-pillar compliance over 4 weeks from activity data.
 
@@ -645,31 +697,39 @@ def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: di
     total_weeks = len(weekly_activities_4wk)
 
     for pillar_name, pillar_config in pillars.items():
-        target_type = pillar_config.get('target_type', 'sessions')
-        pillar_types = [t.lower() for t in pillar_config.get('types', [])]
+        target = _pillar_weekly_target(pillar_config)
+        if target is None:
+            # Never score an unscorable target as a miss — a fake chronic miss
+            # tells the planner to add work the athlete is already doing.
+            per_pillar[pillar_name] = {
+                'met_weeks': None,
+                'total_weeks': total_weeks,
+                'chronic_miss': False,
+                'not_tracked': (f"target_type {pillar_config.get('target_type')!r} "
+                                "has no weekly target scorable from activities"),
+            }
+            continue
+        measure, target_value = target
+        pillar_types = pillar_config.get('types', [])
         met_weeks = 0
 
         for week_activities in weekly_activities_4wk:
-            # Count matching activities
+            # Taxonomy-aware: pillar 'padel' counts Garmin 'paddelball',
+            # 'running' counts trail/treadmill runs, and mobility sessions
+            # Garmin logs as type 'other' count by their name.
             matching = [
                 a for a in week_activities
-                if a.get('type', '').lower() in pillar_types
+                if any(types_match_with_name(t, a.get('type', ''), a.get('name'))
+                       for t in pillar_types)
             ]
-
-            if target_type == 'sessions':
-                target = pillar_config.get('target_sessions_per_week', 0)
-                if len(matching) >= target and target > 0:
-                    met_weeks += 1
-            elif target_type == 'hours':
-                target_mins = pillar_config.get('target_hours_per_week', 0) * 60
-                total_mins = sum(a.get('duration_mins', 0) or 0 for a in matching)
-                if total_mins >= target_mins and target_mins > 0:
-                    met_weeks += 1
-            elif target_type == 'minutes':
-                target_mins = pillar_target_minutes(pillar_config)
-                total_mins = sum(a.get('duration_mins', 0) or 0 for a in matching)
-                if total_mins >= target_mins and target_mins > 0:
-                    met_weeks += 1
+            if measure == 'sessions':
+                achieved = len(matching)
+            elif measure == 'minutes':
+                achieved = sum(a.get('duration_mins', 0) or 0 for a in matching)
+            else:  # 'km'
+                achieved = sum(a.get('distance_km', 0) or 0 for a in matching)
+            if achieved >= target_value:
+                met_weeks += 1
 
         per_pillar[pillar_name] = {
             'met_weeks': met_weeks,
@@ -677,10 +737,12 @@ def _build_compliance_diagnostics(weekly_activities_4wk: list[list], pillars: di
             'chronic_miss': met_weeks <= total_weeks // 2,  # Missed more than half
         }
 
-    # Find lowest compliance pillar
+    # Find lowest compliance pillar (untracked pillars have no rate)
     lowest = None
     lowest_rate = 1.0
     for name, data in per_pillar.items():
+        if data['met_weeks'] is None:
+            continue
         rate = data['met_weeks'] / data['total_weeks'] if data['total_weeks'] > 0 else 0
         if rate < lowest_rate:
             lowest_rate = rate
@@ -1082,10 +1144,13 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
 
     Core ALWAYS carries: time context, flags, week_grid, slim fitness
     metrics (acwr_status + acwr_ewma reference + load hierarchy), acwr_warnings,
-    injuries, plan_adherence, today/tomorrow plan, coaching memory, open
-    planned-vs-actual anomalies, the sleep gate, and data_quality. Memory +
-    curiosity + the sleep gate live in the DEFAULT payload by design — a
-    bare metrics dashboard is explicitly not enough to coach with.
+    demonstrated per-sport capacity, injuries, plan_adherence, today/tomorrow
+    plan, coaching memory, open planned-vs-actual anomalies, the sleep gate,
+    and data_quality (plus the training_program pointer when one exists).
+    Memory + curiosity + the sleep gate live in the DEFAULT payload by
+    design — a bare metrics dashboard is explicitly not enough to coach
+    with; capacity lives here so prescriptions can't dodge the athlete's
+    actual history.
     """
     weekly_plan_full = full.get('weekly_plan') or {}
     plan_days = weekly_plan_full.get('days') or {}
@@ -1129,12 +1194,19 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
         'planned_vs_actual': pva,
         'fitness_metrics': full.get('fitness_metrics'),
         'acwr_warnings': full.get('acwr_warnings'),
+        # Demonstrated per-sport capacity — CORE by design: the grounding
+        # data for VERIFY BEFORE PRESCRIBING must be impossible to miss.
+        'capacity': full.get('capacity'),
         'injuries': full.get('injuries'),
         'coaching_memory': memory,
         'sleep_gate': full.get('sleep_gate'),
         # Always present — {} means every quality check passed
         'data_quality': full.get('data_quality') or {},
     }
+
+    # Multi-week program pointer — present only when a program exists
+    if full.get('training_program') is not None:
+        out['training_program'] = full.get('training_program')
 
     if 'plan' in include:
         out['compliance'] = full.get('compliance')
@@ -1646,14 +1718,18 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
     """
     MANDATORY FIRST CALL before any coaching recommendation.
 
-    By default returns the CORE payload — everything needed to coach right
-    now without the heavy detail: current_time_context, flags, week_grid,
-    ACWR status (rolling 7d:28d primary, + legacy EWMA reference) and load
-    hierarchy, active injuries,
-    plan_adherence, today's + tomorrow's plan, coaching memory (recent
-    decisions, pending approvals, decisions due review), open
-    planned_vs_actual anomalies, a compact sleep_gate signal, and
-    data_quality.
+    By default returns the CORE payload — the current state plus the
+    grounding data every prescription must anchor to: current_time_context,
+    flags, week_grid, ACWR status (rolling 7d:28d primary, + legacy EWMA
+    reference) and load hierarchy, `capacity` (demonstrated per-sport recent
+    capacity — longest/typical sessions, weekly minutes; VERIFY BEFORE
+    PRESCRIBING anchors here), active injuries, plan_adherence, today's +
+    tomorrow's plan, coaching memory (recent decisions, pending approvals,
+    decisions due review), open planned_vs_actual anomalies, a compact
+    sleep_gate signal, data_quality, and the training_program pointer when
+    a multi-week program is stored. The core is deliberately NOT enough for
+    multi-week history — drill down with query_metrics(kind='sport_history')
+    or get_activities_range before designing progressions.
 
     Request named sections for drill-down detail, or ['full'] for everything:
     - plan: full week plan days, per-session comparison details, compliance
@@ -1956,36 +2032,62 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                     'reason': 'overload',
                 })
 
+        # 4c. Demonstrated per-sport capacity (VERIFY BEFORE PRESCRIBING).
+        # Derived from locally persisted daily_loads — no Garmin dependency.
+        # This is the grounding surface for every duration prescription:
+        # CTL/ACWR say how much LOAD is safe, capacity says what session
+        # durations the athlete has actually demonstrated.
+        try:
+            capacity = derive_sport_capacity(daily_loads, today)
+            capacity['note'] = (
+                'Demonstrated capacity from completed sessions. Anchor every '
+                'prescribed duration and progression here — never on a '
+                'template. Deeper history: query_metrics(kind=\'sport_history\', '
+                'sport=...) or get_activities_range(start, end).')
+        except Exception:
+            logger.warning("Capacity derivation failed", exc_info=True)
+            capacity = {'status': 'unavailable'}
+
+        # 4d. Active multi-week program pointer (the rolling weekly plan is
+        # the execution window of this program when one exists)
+        training_program_summary = None
+        try:
+            program_doc = load_json_file(TRAINING_PROGRAM_FILE) or {}
+            prog = program_doc.get('program')
+            if isinstance(prog, dict) and prog.get('weeks'):
+                prog_start = date.fromisoformat(prog['start_date'])
+                total_weeks = len(prog['weeks'])
+                week_no = ((today - prog_start).days // 7) + 1
+                goal = prog.get('goal_event') or {}
+                training_program_summary = {
+                    'name': prog.get('name'),
+                    'sport': prog.get('sport'),
+                    'status': ('upcoming' if today < prog_start
+                               else 'complete' if week_no > total_weeks
+                               else 'active'),
+                    'week': week_no if 1 <= week_no <= total_weeks else None,
+                    'total_weeks': total_weeks,
+                    'goal_event': ({k: goal[k] for k in ('name', 'date')
+                                    if goal.get(k)} or None),
+                    'detail': "training_program(action='get') for the full ladder",
+                }
+        except Exception:
+            logger.warning("Training program summary failed", exc_info=True)
+
         # 5. Compliance status
         compliance = check_weekly_compliance(activities_this_week)
 
         # 5b. Compliance diagnostics (4-week pattern from daily_loads)
-        # Load athlete early — needed here and in section 8
-        athlete_path = DATA_DIR / ATHLETE_FILE
-        if athlete_path.exists():
-            with open(athlete_path) as f:
-                athlete = json.load(f)
-        else:
-            athlete = {}
+        # Load athlete early — needed here and in section 8. load_athlete()
+        # merges athlete_baseline.json (the raw-file read used here before
+        # bypassed the merge and left Garmin-derived capacity unreachable).
+        athlete = load_athlete()
 
         compliance_diagnostics = None
         training_pillars = pillars_as_name_dict(athlete.get('training_pillars'))
         if training_pillars and daily_loads:
-            weekly_activities_4wk = []
-            for week_offset in range(4):  # 0=this week, 3=oldest
-                w_start = today - timedelta(days=today.weekday() + week_offset * 7)
-                w_end = w_start + timedelta(days=7)
-                week_acts = []
-                for day_data in daily_loads.values():
-                    if not isinstance(day_data, dict):
-                        continue
-                    for act in day_data.get('activities', []):
-                        act_date = act.get('date', '')
-                        if w_start.isoformat() <= act_date < w_end.isoformat():
-                            week_acts.append(act)
-                weekly_activities_4wk.append(week_acts)
-            compliance_diagnostics = _build_compliance_diagnostics(
-                weekly_activities_4wk, training_pillars
+            compliance_diagnostics = _compliance_diagnostics_from_history(
+                daily_loads, training_pillars, today
             )
 
         await ctx.report_progress(5, 10, "Fitness metrics calculated")
@@ -2273,6 +2375,10 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             'fitness_metrics': fitness_metrics,
 
             'acwr_warnings': acwr_warnings,
+
+            'capacity': capacity,
+
+            'training_program': training_program_summary,
 
             'volume_data': volume_data,
 

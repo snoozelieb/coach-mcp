@@ -232,3 +232,56 @@ def onboarding_prompt() -> PromptResult:
         ],
         description="New athlete onboarding prompt",
     )
+
+
+@mcp.prompt(
+    name="race_program",
+    description="Build a multi-week race program anchored to the athlete's "
+    "demonstrated capacity — never to a textbook template. Saves via "
+    "training_program so the server can gate it.",
+)
+def race_program_prompt(race_name: str = "", notes: str = "") -> PromptResult:
+    """Build a capacity-anchored multi-week program for a target race."""
+    return PromptResult(
+        messages=[
+            Message(
+                f"Build a multi-week training program"
+                f"{' for ' + race_name if race_name else ''} with the "
+                f"athlete.{' Notes: ' + notes if notes else ''}\n\n"
+                f"## Ground it first (VERIFY BEFORE PRESCRIBING)\n"
+                f"1. get_coaching_snapshot() — check current_time_context, "
+                f"injuries (hard gate: nothing in restricted_activities, "
+                f"ever), fitness_metrics, and especially `capacity`: the "
+                f"athlete's demonstrated per-sport recent sessions.\n"
+                f"2. query_metrics(kind='sport_history', sport=..., days=90) "
+                f"— the actual session list (durations, distances, paces). "
+                f"THIS is the program's anchor: week 1 starts at the "
+                f"demonstrated longest recent session, never at a textbook "
+                f"floor. Older history: get_activities_range.\n"
+                f"3. races(action='list') — confirm the target event exists "
+                f"(add it if not); note priority and weeks until race day.\n\n"
+                f"## Design the program\n"
+                f"4. Ladder the key session ~10-15%/week from the "
+                f"demonstrated anchor; place recovery weeks and a taper; "
+                f"respect the load hierarchy (overall ACWR > sport ACWR > "
+                f"sport CTL) and every active injury restriction. If week 1 "
+                f"must sit BELOW demonstrated capacity (rehab, bone-load "
+                f"protocol), that is a deliberate regression — say why, and "
+                f"record it in capacity_anchor.rationale_if_below.\n"
+                f"5. Discuss the shape with the athlete — fixed weekly slots, "
+                f"life constraints, review checkpoints (physio, test weeks).\n\n"
+                f"## Save and execute\n"
+                f"6. training_program(action='set', program=...) — include "
+                f"the REQUIRED capacity_anchor (sport, "
+                f"demonstrated_longest_session_mins from step 2, source). "
+                f"The server verifies the anchor against history and rejects "
+                f"claims the data contradicts.\n"
+                f"7. Derive week 1 into the rolling plan via "
+                f"update_weekly_plan (purpose per session; address every "
+                f"grounding_warnings entry), then push_plan_to_garmin().\n"
+                f"8. log_coaching_decision() for the program decision; set "
+                f"review checkpoints as decisions with review_date."
+            )
+        ],
+        description="Capacity-anchored race program builder",
+    )

@@ -262,7 +262,8 @@ class TestUpdateFitnessHistoryV2:
         monkeypatch.setattr(fitness, 'DATA_DIR', tmp_path)
 
         activities = [
-            {'date': '2026-02-01', 'activity_id': 123, 'type': 'running', 'duration_mins': 45, 'garmin_training_load': 72.0},
+            {'date': '2026-02-01', 'activity_id': 123, 'type': 'running', 'duration_mins': 45, 'garmin_training_load': 72.0,
+             'name': 'Morning Run'},
         ]
         history = update_fitness_history(activities, date(2026, 2, 2))
 
@@ -270,6 +271,8 @@ class TestUpdateFitnessHistoryV2:
         assert len(day['activities']) == 1
         assert day['activities'][0]['id'] == 123
         assert day['activities'][0]['sport'] == 'running'
+        # The name classifies 'other'-typed sessions when pillars are scored offline
+        assert day['activities'][0]['name'] == 'Morning Run'
 
     def test_generates_per_sport_snapshots(self, tmp_path, monkeypatch):
         import coach.fitness as fitness

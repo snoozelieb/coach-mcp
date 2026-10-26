@@ -107,7 +107,8 @@ REGISTRY: tuple = (
         canonical='running',
         garmin_types=('running', 'treadmill_running'),
         plan_aliases=('run', 'easy_run', 'long_run', 'recovery_run',
-                      'tempo_run', 'interval_run', 'vertical_work'),
+                      'tempo_run', 'interval_run', 'vertical_work',
+                      'strides'),
         pillar='long_effort', sport_group='running', workout_family='running',
     ),
     ActivityType(
@@ -187,6 +188,16 @@ REGISTRY: tuple = (
         plan_aliases=('ultimate', 'frisbee'),
         high_intensity=True,
     ),
+    # Garmin renamed several types to '<name>_v2' keys; both spellings map.
+    ActivityType(
+        canonical='tennis',
+        garmin_types=('tennis', 'tennis_v2'),
+    ),
+    ActivityType(
+        canonical='basketball',
+        garmin_types=('basketball',),
+        high_intensity=True,
+    ),
     # ----- high-intensity conditioning --------------------------------------
     ActivityType(
         canonical='hiit',
@@ -213,7 +224,33 @@ REGISTRY: tuple = (
     ),
     ActivityType(
         canonical='rowing',
-        garmin_types=('rowing', 'indoor_rowing'),
+        garmin_types=('rowing', 'rowing_v2', 'indoor_rowing'),
+    ),
+    ActivityType(
+        canonical='kayaking',
+        garmin_types=('kayaking', 'kayaking_v2'),
+    ),
+    ActivityType(
+        canonical='stand_up_paddleboarding',
+        garmin_types=('stand_up_paddleboarding', 'stand_up_paddleboarding_v2'),
+        plan_aliases=('sup',),
+    ),
+    ActivityType(
+        canonical='surfing',
+        garmin_types=('surfing', 'surfing_v2'),
+    ),
+    # ----- non-training Garmin records (known, but no pillar or sport) -------
+    ActivityType(
+        canonical='meditation',
+        garmin_types=('meditation',),
+    ),
+    ActivityType(
+        canonical='multi_sport',
+        garmin_types=('multi_sport',),
+    ),
+    ActivityType(
+        canonical='incident_detected',
+        garmin_types=('incident_detected',),
     ),
     # ----- rest -------------------------------------------------------------
     ActivityType(
@@ -317,6 +354,29 @@ def workout_family_for(activity_type) -> str:
     """Workout-builder family, or 'other' when not pushable to Garmin."""
     entry = _entry(activity_type)
     return entry.workout_family if entry is not None else 'other'
+
+
+# Sports whose sessions are prescribed by duration and therefore have a
+# meaningful "demonstrated capacity" (longest/typical recent session).
+# Games (padel, ultimate) and mobility work are intensity/skill-bound, not
+# duration-progressed — they never get a capacity bucket.
+CAPACITY_BUCKETS = ('cycling', 'running', 'strength', 'swimming')
+
+
+def capacity_bucket_for(activity_type) -> str | None:
+    """Demonstrated-capacity bucket for an activity type, or None.
+
+    Buckets are the ACWR sport groups (cycling/running/strength) plus
+    swimming (sport_group 'other' but duration-prescribed). None means the
+    type's sessions aren't sized by duration (games, mobility, walks) and
+    must not anchor a duration prescription.
+    """
+    group = sport_group_for(activity_type)
+    if group in ('cycling', 'running', 'strength'):
+        return group
+    if workout_family_for(activity_type) == 'swimming':
+        return 'swimming'
+    return None
 
 
 def is_high_intensity(activity_type) -> bool:

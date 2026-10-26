@@ -53,7 +53,9 @@ python server.py
 
 The server needs two environment variables: `GARMIN_EMAIL` and
 `GARMIN_PASSWORD`. Optional: `COACH_DATA_DIR` (where your coaching data lives)
-and `ANTHROPIC_API_KEY` (only for the standalone `daily_loop.py --llm` script).
+and `ANTHROPIC_API_KEY` (only for the standalone `daily_loop.py --llm` script);
+`COACH_TOKEN_DIR`, `COACH_TRANSPORT` and `COACH_CODE_MODE` are covered under
+[Security & Privacy](#security--privacy) and [Advanced](#advanced).
 From a source checkout, a `.env` file works too.
 
 ### Claude Code
@@ -175,26 +177,31 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 3. **Hard gates are code, not vibes** — `update_weekly_plan` and
    `push_plan_to_garmin` reject sessions that violate an active injury's
    restricted activities, and every non-rest session must carry a `purpose` or
-   the save is refused.
-4. **Curiosity with memory** — planned-vs-actual anomalies (missed session,
+   the save is refused. Multi-week programs (`training_program`) are rejected
+   if their starting capacity contradicts your actual history.
+4. **Grounded in what you've actually done** — prescriptions are anchored to
+   your demonstrated per-sport capacity from recent sessions, not template
+   numbers; a weekly plan that outruns that history comes back with
+   `grounding_warnings`.
+5. **Curiosity with memory** — planned-vs-actual anomalies (missed session,
    type mismatch, activity on a rest day) register once with a lifecycle
    (open → asked → resolved); the coach asks you what happened instead of
    silently assuming.
-5. **Everything persists** — decisions, approvals, adaptation patterns, and
+6. **Everything persists** — decisions, approvals, adaptation patterns, and
    season lifecycle (race debriefs, phase transitions) live in local JSON and
    carry across sessions.
 
 ## MCP surface
 
-49 tools — you don't call them directly; the coach uses them during
+50 tools — you don't call them directly; the coach uses them during
 conversation:
 
 | Category | Tools |
 |----------|-------|
 | **Coaching core** | `get_coaching_snapshot` (canonical, sectioned), `get_compliance_report`, `get_coaching_score` |
-| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status`, `update_phase` |
-| **Garmin data** | `query_metrics` (kind=fitness/intensity/daily/readiness/personal_records), `get_activities_range` |
-| **Athlete** | `get_athlete`, `update_athlete`, `set_ftp`, `set_threshold_pace`, `analyze_ftp_test`, `refresh_athlete_baseline`, `refresh_fitness_history`, `get_onboarding_guide` |
+| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `training_program` (action=get/set; multi-week programs, capacity-anchored and injury-gated), `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status`, `update_phase` |
+| **Garmin data** | `query_metrics` (kind=fitness/sport_history/intensity/daily/readiness/personal_records), `get_activities_range` |
+| **Athlete** | `get_athlete`, `update_athlete`, `set_ftp`, `set_threshold_pace`, `analyze_ftp_test`, `refresh_athlete_baseline`, `refresh_fitness_history`, `backfill_history`, `get_onboarding_guide` |
 | **Methodology** | `get_methodology`, `update_methodology` |
 | **Races** | `races` (action=list/add/update/research), `remove_race` |
 | **Strength** | `sync_strength_session`, `get_strength_baseline`, `approve_progression`, `set_exercise_preference`, `generate_strength_workout`, `add_exercise` |
@@ -207,8 +214,8 @@ conversation:
 Every tool carries MCP annotations (read-only / destructive / idempotent /
 open-world), enforced by tests.
 
-**5 prompts**: `weekly_planning`, `morning_brief`, `injury_assessment`,
-`week_review`, `onboarding`.
+**6 prompts**: `weekly_planning`, `morning_brief`, `injury_assessment`,
+`week_review`, `onboarding`, `race_program`.
 
 **6 resources**: `coach://athlete/profile`, `coach://plan/current`,
 `coach://config/training`, `coach://coaching/decisions`, `coach://context/now`,
@@ -249,7 +256,7 @@ committed.
 # HTTP transport (streamable-http) instead of stdio
 COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
 
-# Code Mode (search/execute meta-tools instead of 49 individual tools)
+# Code Mode (search/execute meta-tools instead of 50 individual tools)
 pip install fastmcp[code-mode]
 COACH_CODE_MODE=1 garmin-coach-mcp
 
@@ -257,14 +264,14 @@ COACH_CODE_MODE=1 garmin-coach-mcp
 python scripts/daily_loop.py          # template-based brief
 python scripts/daily_loop.py --llm    # LLM brief (needs ANTHROPIC_API_KEY)
 
-# Tests (1,333 tests; clean checkouts use committed sanitized fixtures)
+# Tests (1,422 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
 ## Architecture
 
-`server.py` registers tools from the `coach/` package (11 tool modules, pure
+`coach/server.py` registers tools from the `coach/` package (11 tool modules, pure
 parsers, a typed pydantic storage layer, CTL/ATL/ACWR fitness math, a Garmin
 client with token-first auth, and a workout builder that pushes structured
 workouts to your watch). The project went through a five-phase modernization —
@@ -272,6 +279,14 @@ auth rebuild, schema layer, hard gates, sectioned snapshot, packaging — whose
 full history and rationale live in
 [docs/UPGRADE_ROADMAP.md](docs/UPGRADE_ROADMAP.md). Development conventions
 are in [CLAUDE.md](CLAUDE.md).
+
+## Acknowledgements
+
+All Garmin Connect access — login, MFA, token handling, activity and health
+data, and workout upload — runs on
+[python-garminconnect](https://github.com/cyberjunky/python-garminconnect) by
+Ron Klinkien ([@cyberjunky](https://github.com/cyberjunky)) and its
+contributors (MIT). coach-mcp wouldn't exist without it.
 
 ## License
 

@@ -6,14 +6,18 @@ from ..parsers import parse_activities, parse_training_readiness
 from ..planner import (get_current_plan, save_weekly_plan,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
+                     load_json_file, save_json_file,
                      get_week_constraints as _get_week_constraints,
                      PLAN_RETENTION_DAYS)
 from ..rules import (load_training_config, check_weekly_compliance,
                    pillars_as_name_dict, normalize_injury)
-from ..fitness import load_fitness_history, calculate_fitness_metrics, _extract_total_loads
-from ..schemas import WeeklyPlan as WeeklyPlanSchema
-from ..taxonomy import workout_family_for, types_match
-from ..config import DATA_DIR, TRAINING_CONFIG_FILE
+from ..fitness import (load_fitness_history, calculate_fitness_metrics,
+                     _extract_total_loads, derive_sport_capacity,
+                     demonstrated_max_mins)
+from ..schemas import (WeeklyPlan as WeeklyPlanSchema,
+                     TrainingProgram as TrainingProgramSchema)
+from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS
+from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
 from datetime import date, timedelta
 from pydantic import ValidationError
 import json
@@ -23,6 +27,25 @@ logger = logging.getLogger(__name__)
 
 # Fat-finger guard: reject plan day keys further out than this.
 PLAN_MAX_FUTURE_DAYS = 21
+
+# ---------------------------------------------------------------------------
+# Grounding thresholds (VERIFY BEFORE PRESCRIBING)
+# ---------------------------------------------------------------------------
+# Weekly-plan grounding is WARN-only: taper, rehab, and bone-load protocols
+# legitimately sit below demonstrated capacity — the warning asks whether the
+# regression is deliberate instead of blocking the save. The training_program
+# capacity-anchor gate (below) is the HARD enforcement: a multi-week program
+# must state the demonstrated capacity it anchors to, and the server verifies
+# the claim against actual history.
+GROUNDING_REGRESSION_FACTOR = 0.6    # planned week max < 60% of demonstrated
+GROUNDING_SPIKE_FACTOR = 1.3         # planned week max > 130% of demonstrated
+GROUNDING_MIN_REFERENCE_MINS = 20.0  # ignore tiny references (noise floor)
+GROUNDING_MIN_UNKNOWN_MINS = 30.0    # no-history warning floor
+ANCHOR_TOLERANCE = 0.25              # claimed vs server-derived capacity
+PROGRAM_MAX_WEEKS = 52
+PROGRAM_MAX_FUTURE_START_DAYS = 90
+PROGRAM_HISTORY_KEEP = 10
+PROGRAM_WEEKLY_INCREASE_WARN_PCT = 25.0
 
 
 def _norm_type(value) -> str:
@@ -101,6 +124,112 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
                         'matched_restrictions': matched,
                     })
     return violations
+
+
+def _planned_sport_maxima(plan_days: dict) -> dict[str, dict]:
+    """Longest planned session per capacity bucket.
+
+    Returns {bucket: {'planned_max_mins', 'date', 'session_type'}} for every
+    duration-prescribed sport in the plan (taxonomy.capacity_bucket_for);
+    rest days and sessions without a numeric duration are skipped.
+    """
+    maxima: dict[str, dict] = {}
+    for day_str, day_data in (plan_days or {}).items():
+        for session in _iter_plan_sessions(day_data):
+            session_type = str(session.get('type', '')).lower()
+            if (not session_type or 'rest' in session_type
+                    or workout_family_for(session_type) == 'rest'):
+                continue
+            try:
+                mins = float(session.get('duration_mins') or 0)
+            except (TypeError, ValueError):
+                continue
+            if mins <= 0:
+                continue
+            bucket = capacity_bucket_for(session_type)
+            if bucket is None:
+                continue
+            if (bucket not in maxima
+                    or mins > maxima[bucket]['planned_max_mins']):
+                maxima[bucket] = {
+                    'planned_max_mins': mins,
+                    'date': day_str,
+                    'session_type': session.get('type'),
+                }
+    return maxima
+
+
+def _grounding_warnings(plan_days: dict, today: date) -> list[dict]:
+    """VERIFY BEFORE PRESCRIBING: plan vs demonstrated capacity, per sport.
+
+    Compares the plan's longest session in each sport against the athlete's
+    demonstrated recent capacity (derive_sport_capacity over persisted
+    daily_loads). Warn-only — a failure here never blocks a plan save, and
+    any internal error degrades to an empty list.
+    """
+    try:
+        history = load_fitness_history()
+        capacity = derive_sport_capacity(history.get('daily_loads', {}), today)
+    except Exception:
+        logger.warning("Grounding check skipped: capacity derivation failed",
+                       exc_info=True)
+        return []
+
+    by_sport = capacity.get('by_sport', {})
+    window_days = capacity.get('window_days', 90)
+    warnings = []
+    for bucket, planned in sorted(_planned_sport_maxima(plan_days).items()):
+        planned_max = planned['planned_max_mins']
+        demonstrated, window = demonstrated_max_mins(by_sport.get(bucket))
+
+        if demonstrated is None:
+            if planned_max >= GROUNDING_MIN_UNKNOWN_MINS:
+                warnings.append({
+                    'type': 'no_demonstrated_history',
+                    'sport': bucket,
+                    'planned_max_mins': planned_max,
+                    'message': (
+                        f"No completed {bucket} session in the last "
+                        f"{window_days} days, but the plan's longest {bucket} "
+                        f"session is {planned_max:.0f} min "
+                        f"({planned['date']}). Return-to-sport progressions "
+                        f"start small — verify with the athlete."),
+                })
+            continue
+        if demonstrated < GROUNDING_MIN_REFERENCE_MINS:
+            continue
+
+        window_label = ('last 28 days' if window == '28d'
+                        else f'last {window_days} days')
+        if planned_max < demonstrated * GROUNDING_REGRESSION_FACTOR:
+            warnings.append({
+                'type': 'capacity_regression',
+                'sport': bucket,
+                'planned_max_mins': planned_max,
+                'demonstrated_max_mins': demonstrated,
+                'message': (
+                    f"This plan's longest {bucket} session is "
+                    f"{planned_max:.0f} min but the athlete demonstrated "
+                    f"{demonstrated:.0f} min in the {window_label}. If the "
+                    f"regression is deliberate (taper, rehab, bone-load "
+                    f"protocol), say so in the plan rationale; otherwise "
+                    f"re-anchor to demonstrated capacity "
+                    f"(snapshot.capacity)."),
+            })
+        elif planned_max > demonstrated * GROUNDING_SPIKE_FACTOR:
+            warnings.append({
+                'type': 'session_spike',
+                'sport': bucket,
+                'planned_max_mins': planned_max,
+                'demonstrated_max_mins': demonstrated,
+                'message': (
+                    f"This plan's longest {bucket} session is "
+                    f"{planned_max:.0f} min vs {demonstrated:.0f} min "
+                    f"demonstrated in the {window_label}. Large "
+                    f"single-session jumps drive injury risk — progress "
+                    f"~10-15% per week from demonstrated capacity."),
+            })
+    return warnings
 
 
 # Union-branch markers pydantic inserts into error locs for
@@ -386,8 +515,12 @@ def get_weekly_prescription() -> dict:
     The prescription is a starting point — adapt it through conversation with
     the athlete based on how they're feeling, life events, and injuries.
 
-    Returns target volume, key sessions, intensity targets, pillar priorities,
-    injury constraints, life events, and flexibility notes.
+    The volume target sizes the WEEK's load. Individual session durations
+    anchor to `recent_capacity` (demonstrated per-sport capacity from
+    completed sessions) — never to a template number.
+
+    Returns target volume, key sessions, recent_capacity, intensity targets,
+    pillar priorities, injury constraints, life events, and flexibility notes.
     """
     try:
         today = date.today()
@@ -407,6 +540,7 @@ def get_weekly_prescription() -> dict:
         # {date: total} first, otherwise the ACWR volume adjustment never fires.
         fitness_metrics = None
         fitness_metrics_unavailable = False
+        daily_loads = {}
         try:
             history = load_fitness_history()
             daily_loads = history.get('daily_loads', {})
@@ -417,6 +551,16 @@ def get_weekly_prescription() -> dict:
             logger.warning("Could not calculate fitness metrics for weekly prescription",
                            exc_info=True)
             fitness_metrics_unavailable = True
+
+        # Demonstrated per-sport capacity — the volume target below sizes the
+        # WEEK's load; individual session durations must anchor here.
+        recent_capacity = None
+        try:
+            if daily_loads:
+                recent_capacity = derive_sport_capacity(daily_loads, today)
+        except Exception:
+            logger.warning("Could not derive capacity for weekly prescription",
+                           exc_info=True)
 
         # Get today's readiness
         readiness_data = garmin_api_call(lambda c: c.get_training_readiness(today.isoformat()))
@@ -520,7 +664,19 @@ def get_weekly_prescription() -> dict:
             'key_sessions': {
                 'required': key_sessions,
                 'count': len([k for k in key_sessions if k not in ['mobility', 'rest']]),
-                'note': "These sessions drive adaptation - prioritize them",
+                'note': ("These sessions drive adaptation - prioritize them. "
+                         "Size their durations from recent_capacity below, "
+                         "never from a template."),
+            },
+            'recent_capacity': {
+                'by_sport': (recent_capacity or {}).get('by_sport', {}),
+                'window_days': (recent_capacity or {}).get('window_days'),
+                'note': ("Demonstrated capacity from completed sessions "
+                         "(VERIFY BEFORE PRESCRIBING). The volume target "
+                         "above sizes the week's LOAD; every individual "
+                         "session duration anchors HERE — e.g. a long run "
+                         "progresses 10-15%/week from the demonstrated "
+                         "longest recent run, wherever that is."),
             },
             'pillar_priorities': pillar_priorities if pillar_priorities else ["All pillars on track"],
             'constraints': {
@@ -799,6 +955,22 @@ def update_weekly_plan(plan: dict | None = None,
         entirely historical — build a current week'), as is any plan with a
         day key more than 21 days in the future (fat-finger guard).
 
+    GROUNDING WARNINGS (VERIFY BEFORE PRESCRIBING)
+
+        After a successful save, the response's `grounding_warnings` list
+        compares the plan's longest session per sport against the athlete's
+        DEMONSTRATED capacity (snapshot.capacity, derived from completed
+        sessions). Warn-only — the save succeeds — but every entry must be
+        addressed with the athlete before pushing:
+        - capacity_regression: longest planned session < 60% of the
+          demonstrated recent max. Legitimate for taper/rehab/bone-load
+          weeks — say so in the plan rationale; otherwise the plan is
+          anchored to a template, not this athlete.
+        - session_spike: longest planned session > 130% of the demonstrated
+          recent max — injury-risk jump; progress ~10-15% per week.
+        - no_demonstrated_history: a 30+ min session in a sport with no
+          completed session in the capacity window (return-to-sport check).
+
     LIFECYCLE
 
         The plan is saved as-supplied; internal fields like `pushed_workout_ids`
@@ -942,11 +1114,15 @@ def update_weekly_plan(plan: dict | None = None,
         # warnings only cover days that actually remain in the plan. Non-empty
         # only when the purpose gate was overridden.
         purpose_warnings = _missing_purpose_sessions(plan.get('days', {}))
+        # VERIFY BEFORE PRESCRIBING: longest planned session per sport vs
+        # the athlete's demonstrated capacity. Warn-only by design.
+        grounding_warnings = _grounding_warnings(plan.get('days', {}), today)
         result = {
             'status': 'success',
             'message': 'Weekly plan saved',
             'last_updated': today.isoformat(),
             'purpose_warnings': purpose_warnings,
+            'grounding_warnings': grounding_warnings,
         }
         if purpose_warnings:
             result['message'] = (
@@ -954,6 +1130,13 @@ def update_weekly_plan(plan: dict | None = None,
                 f"{len(purpose_warnings)} non-rest session(s) have no "
                 "purpose. Every non-rest session should explain WHY it "
                 "matters."
+            )
+        if grounding_warnings:
+            result['message'] += (
+                f" — {len(grounding_warnings)} grounding warning(s): the "
+                "plan's session durations disagree with demonstrated "
+                "capacity. Address every grounding_warnings entry with the "
+                "athlete before pushing to Garmin."
             )
         if purpose_gate_note:
             result['purpose_gate'] = purpose_gate_note
@@ -1240,43 +1423,33 @@ def get_week_constraints() -> dict:
 
     Returns blocked days, pillar requirements, phase-appropriate session
     guidelines with duration ranges and principles, key session types from
-    race template, injury restrictions, and chronic compliance misses.
+    race template, injury restrictions, chronic compliance misses, and
+    `recent_capacity` — the athlete's demonstrated per-sport capacity.
 
-    The LLM assembles the actual plan using these constraints as guardrails.
-    Call this before building or adjusting a weekly plan.
+    The session-guideline duration_ranges are GENERIC templates: cross-check
+    every duration against recent_capacity before prescribing (VERIFY BEFORE
+    PRESCRIBING). The LLM assembles the actual plan using these constraints
+    as guardrails. Call this before building or adjusting a weekly plan.
 
     Returns:
         Structured constraints dict for week planning.
     """
     try:
+        today = date.today()
         athlete = load_athlete()
         injuries = athlete.get('injury_history', [])
 
         # Load compliance diagnostics if available (from coaching snapshot)
         compliance_diagnostics = None
         try:
-            from .coaching_tools import _build_compliance_diagnostics
+            from .coaching_tools import _compliance_diagnostics_from_history
             training_pillars = pillars_as_name_dict(athlete.get('training_pillars'))
             if training_pillars:
                 history = load_fitness_history()
                 daily_loads = history.get('daily_loads', {})
                 if daily_loads:
-                    today = date.today()
-                    weekly_activities_4wk = []
-                    for week_offset in range(4):
-                        w_start = today - timedelta(days=today.weekday() + week_offset * 7)
-                        w_end = w_start + timedelta(days=7)
-                        week_acts = []
-                        for day_data in daily_loads.values():
-                            if not isinstance(day_data, dict):
-                                continue
-                            for act in day_data.get('activities', []):
-                                act_date = act.get('date', '')
-                                if w_start.isoformat() <= act_date < w_end.isoformat():
-                                    week_acts.append(act)
-                        weekly_activities_4wk.append(week_acts)
-                    compliance_diagnostics = _build_compliance_diagnostics(
-                        weekly_activities_4wk, training_pillars
+                    compliance_diagnostics = _compliance_diagnostics_from_history(
+                        daily_loads, training_pillars, today
                     )
         except Exception:
             logger.warning("Could not load compliance diagnostics", exc_info=True)
@@ -1287,8 +1460,427 @@ def get_week_constraints() -> dict:
             compliance_diagnostics=compliance_diagnostics,
         )
 
+        # Demonstrated capacity sits BESIDE the template duration_ranges so
+        # a generic range can never be quoted without the athlete's actual
+        # numbers in view (VERIFY BEFORE PRESCRIBING).
+        try:
+            history = load_fitness_history()
+            daily_loads = history.get('daily_loads', {})
+            if daily_loads:
+                cap = derive_sport_capacity(daily_loads, today)
+                constraints['recent_capacity'] = {
+                    'by_sport': cap.get('by_sport', {}),
+                    'window_days': cap.get('window_days'),
+                    'note': ('Session-guideline duration_ranges are generic '
+                             'templates. Anchor every prescribed duration to '
+                             'this demonstrated capacity instead.'),
+                }
+        except Exception:
+            logger.warning("Could not attach capacity to week constraints",
+                           exc_info=True)
+
         return constraints
 
     except Exception as e:
         logger.exception("get_week_constraints failed")
+        return {'error': str(e)}
+
+
+def _program_injury_violations(sport: str, injuries: list) -> list[dict]:
+    """Active/improving injury restrictions that the program's sport hits."""
+    violations = []
+    for injury in (injuries or []):
+        if not isinstance(injury, dict):
+            continue
+        if injury.get('status') not in ('active', 'improving'):
+            continue
+        norm = normalize_injury(injury)
+        matched = [r for r in norm['restricted_activities']
+                   if _activity_matches_restriction(sport, r)]
+        if matched:
+            violations.append({
+                'sport': sport,
+                'injury': norm['name'],
+                'injury_status': norm['status'],
+                'matched_restrictions': matched,
+            })
+    return violations
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': False})
+def training_program(action: str = 'get', program: dict | None = None,
+                     override_injury_gate: bool = False) -> dict:
+    """
+    Multi-week training program store — the macro plan the rolling 7-day
+    weekly plan executes. The weekly plan holds at most 21 days; anything
+    longer (a race build, a return-to-run block) lives HERE so the server
+    can gate it instead of it existing only as chat prose.
+
+    ACTIONS
+
+        action='get'  -> the stored program + which week the athlete is in.
+        action='set'  -> validate and save `program` (overwrites; the prior
+                         program is archived into the file's history).
+
+    PROGRAM STRUCTURE (for action='set')
+
+        {
+            'name': '10k build — Cape Town',
+            'sport': 'running',                # must be duration-prescribed:
+                                               # cycling/running/strength/swimming
+            'start_date': 'YYYY-MM-DD',
+            'goal_event': {'name': '...', 'date': 'YYYY-MM-DD'},   # optional
+            'weeks': [                          # 1..52 entries, week 1 first
+                {'week': 1, 'focus': 'consolidation',
+                 'long_session_mins': 45, 'volume_target_hrs': 4.0,
+                 'notes': '...'},
+                ...
+            ],
+            'capacity_anchor': {                # REQUIRED — see gate below
+                'sport': 'running',
+                'demonstrated_longest_session_mins': 45,
+                'source': 'snapshot.capacity',
+                'rationale_if_below': '...'     # required when week 1 sits
+            },                                  # far below capacity
+            'review_checkpoints': [{'date': '...', 'note': 'physio'}],
+            'rationale': 'Why this program, for this athlete'
+        }
+
+    CAPACITY ANCHOR GATE (VERIFY BEFORE PRESCRIBING — hard, code-enforced)
+
+        The program must STATE the athlete's demonstrated capacity and the
+        server VERIFIES the claim against actual history:
+        - capacity_anchor missing -> schema rejection.
+        - claimed demonstrated_longest_session_mins deviating > 25% from the
+          server-derived value (longest completed session, recent window)
+          -> REJECTED with error 'capacity_anchor_mismatch' naming both
+          numbers. Re-read snapshot.capacity — never assert a starting
+          capacity the history contradicts.
+        - week 1's long_session_mins < 60% of demonstrated capacity without
+          capacity_anchor.rationale_if_below -> REJECTED with error
+          'capacity_anchor'. A deliberate regression (taper, rehab,
+          bone-load protocol) is legitimate — but it must be stated, not
+          silently anchored to a template.
+
+    OTHER GATES
+
+        - sport must be duration-prescribed (cycling/running/strength/
+          swimming — games and mobility aren't duration-progressed).
+        - INJURY: a sport restricted by an active/improving injury rejects
+          the save; override_injury_gate=True only with athlete consent and
+          a logged rationale (mirrors update_weekly_plan).
+        - DATES: start_date more than 90 days out, or a program entirely in
+          the past, is rejected.
+        - Week-over-week long_session_mins increases > 25% come back as
+          warnings (progression_rate) — address them, don't ignore them.
+
+    The weekly plan remains the execution surface: each week, derive that
+    week's sessions from the program and save them via update_weekly_plan
+    (its own purpose/injury/grounding checks still run).
+
+    Args:
+        action: 'get' (default) or 'set'.
+        program: The program dict (required for action='set').
+        override_injury_gate: Bypass the injury restriction check (default
+            False) — only with the athlete's informed consent.
+
+    Returns:
+        action='get': the stored program with current-week context.
+        action='set': confirmation with program summary and warnings, or a
+        structured error ('validation_error', 'program_dates', 'sport',
+        'injury_gate', 'capacity_anchor_mismatch', 'capacity_anchor').
+    """
+    try:
+        today = date.today()
+        action = str(action or 'get').strip().lower()
+
+        if action == 'get':
+            doc = load_json_file(TRAINING_PROGRAM_FILE) or {}
+            stored = doc.get('program')
+            if not isinstance(stored, dict) or not stored.get('weeks'):
+                return {
+                    'status': 'no_program',
+                    'hint': ("No multi-week program stored. Build one with "
+                             "training_program(action='set', program=...) — "
+                             "anchor it to snapshot.capacity (see the "
+                             "race_program prompt)."),
+                }
+            result = {'status': 'ok', 'program': stored}
+            try:
+                start = date.fromisoformat(stored['start_date'])
+                total_weeks = len(stored['weeks'])
+                week_no = ((today - start).days // 7) + 1
+                result['program_status'] = (
+                    'upcoming' if today < start
+                    else 'complete' if week_no > total_weeks
+                    else 'active')
+                result['current_week'] = (
+                    week_no if 1 <= week_no <= total_weeks else None)
+                result['total_weeks'] = total_weeks
+            except (ValueError, TypeError, KeyError):
+                pass
+            return result
+
+        if action != 'set':
+            return {'error': f"Unknown action '{action}'. Valid actions: "
+                             "'get', 'set'"}
+
+        if not isinstance(program, dict):
+            return {'error': "action='set' requires 'program' as a structured "
+                             "dict (see PROGRAM STRUCTURE in the docstring)"}
+
+        # Typed schema gate — required fields: name, sport, start_date,
+        # weeks, capacity_anchor (with sport + demonstrated mins).
+        try:
+            TrainingProgramSchema.model_validate(program)
+        except ValidationError as exc:
+            problems = [
+                {'field': '.'.join(str(p) for p in e.get('loc', ())),
+                 'message': e.get('msg')}
+                for e in exc.errors()
+            ]
+            logger.warning("training_program rejected by schema: %s", problems)
+            return {
+                'error': 'validation_error',
+                'message': 'Program failed schema validation',
+                'problems': problems,
+                'hint': ("Required: name, sport, start_date (YYYY-MM-DD), "
+                         "weeks (list), capacity_anchor {sport, "
+                         "demonstrated_longest_session_mins}."),
+            }
+
+        weeks = program.get('weeks') or []
+        if not weeks or len(weeks) > PROGRAM_MAX_WEEKS:
+            return {'error': 'validation_error',
+                    'message': f'weeks must contain 1-{PROGRAM_MAX_WEEKS} '
+                               f'entries (got {len(weeks)})'}
+
+        # Date sanity
+        try:
+            start = date.fromisoformat(str(program.get('start_date')))
+        except (ValueError, TypeError):
+            return {'error': 'program_dates',
+                    'message': f"start_date {program.get('start_date')!r} is "
+                               "not a YYYY-MM-DD date"}
+        if start > today + timedelta(days=PROGRAM_MAX_FUTURE_START_DAYS):
+            return {'error': 'program_dates',
+                    'message': f'start_date {start.isoformat()} is more than '
+                               f'{PROGRAM_MAX_FUTURE_START_DAYS} days in the '
+                               'future (fat-finger guard)'}
+        if start + timedelta(days=len(weeks) * 7) < today:
+            return {'error': 'program_dates',
+                    'message': 'program is entirely in the past — build a '
+                               'current program'}
+
+        # Sport gate: only duration-prescribed sports can carry a
+        # duration-laddered program.
+        sport = str(program.get('sport', ''))
+        bucket = capacity_bucket_for(sport)
+        if bucket is None:
+            return {'error': 'sport',
+                    'message': f"'{sport}' is not a duration-prescribed "
+                               f"sport. Valid capacity buckets: "
+                               f"{', '.join(CAPACITY_BUCKETS)}"}
+
+        # Injury gate (mirrors update_weekly_plan)
+        injuries = load_athlete().get('injury_history', [])
+        violations = _program_injury_violations(sport, injuries)
+        if violations and not override_injury_gate:
+            return {
+                'error': 'injury_gate',
+                'message': ('Program sport is restricted by an '
+                            'active/improving injury'),
+                'violations': violations,
+                'hint': ('Change the program sport, or pass '
+                         'override_injury_gate=True with a logged rationale '
+                         'after confirming with the athlete.'),
+            }
+
+        warnings = []
+        notes = []
+        if violations:  # only reachable with override_injury_gate=True
+            logger.warning("Injury gate OVERRIDDEN in training_program: %s",
+                           violations)
+            notes.append({'injury_gate_overridden': True,
+                          'violations': violations})
+
+        # ------------------------------------------------------------------
+        # CAPACITY ANCHOR GATE — the coach-fiction check. The program claims
+        # a demonstrated capacity; the server recomputes it from history and
+        # rejects claims the data contradicts.
+        # ------------------------------------------------------------------
+        anchor = program.get('capacity_anchor') or {}
+        anchor_bucket = capacity_bucket_for(anchor.get('sport'))
+        if anchor_bucket != bucket:
+            return {'error': 'capacity_anchor',
+                    'message': f"capacity_anchor.sport "
+                               f"({anchor.get('sport')!r}) must match the "
+                               f"program sport ({sport!r})"}
+        try:
+            claimed = float(anchor.get('demonstrated_longest_session_mins'))
+        except (TypeError, ValueError):
+            return {'error': 'capacity_anchor',
+                    'message': 'capacity_anchor.demonstrated_longest_'
+                               'session_mins must be a number'}
+
+        server_mins = None
+        window_days = None
+        try:
+            history = load_fitness_history()
+            capacity = derive_sport_capacity(
+                history.get('daily_loads', {}), today)
+            window_days = capacity.get('window_days')
+            server_mins, _window = demonstrated_max_mins(
+                capacity.get('by_sport', {}).get(bucket))
+        except Exception:
+            logger.warning("Capacity derivation failed for program gate",
+                           exc_info=True)
+
+        if server_mins and server_mins >= GROUNDING_MIN_REFERENCE_MINS:
+            if abs(claimed - server_mins) > server_mins * ANCHOR_TOLERANCE:
+                return {
+                    'error': 'capacity_anchor_mismatch',
+                    'message': (
+                        f'VERIFY BEFORE PRESCRIBING: the program claims a '
+                        f'demonstrated longest {bucket} session of '
+                        f'{claimed:.0f} min, but the athlete\'s history '
+                        f'shows {server_mins:.0f} min (last {window_days} '
+                        f'days). Never assert a starting capacity the data '
+                        f'contradicts.'),
+                    'claimed_mins': claimed,
+                    'demonstrated_mins': server_mins,
+                    'hint': ('Re-read snapshot.capacity (or query_metrics('
+                             "kind='sport_history')) and anchor the program "
+                             'to the demonstrated number.'),
+                }
+            demonstrated = server_mins
+        else:
+            demonstrated = claimed
+            warnings.append({
+                'type': 'no_demonstrated_history',
+                'sport': bucket,
+                'message': (f'No verifiable {bucket} history in the local '
+                            f'capacity window — the anchor '
+                            f'({claimed:.0f} min) is taken on trust. '
+                            f'Confirm it with the athlete.'),
+            })
+
+        # Week-1 anchor check: a program starting far below demonstrated
+        # capacity must SAY WHY (deliberate regression), or re-anchor.
+        week1_mins = None
+        for wk in weeks:
+            if isinstance(wk, dict) and wk.get('long_session_mins'):
+                try:
+                    week1_mins = float(wk['long_session_mins'])
+                except (TypeError, ValueError):
+                    week1_mins = None
+                break
+        if (week1_mins is not None
+                and demonstrated >= GROUNDING_MIN_REFERENCE_MINS):
+            rationale_below = str(anchor.get('rationale_if_below') or '').strip()
+            if week1_mins < demonstrated * GROUNDING_REGRESSION_FACTOR:
+                if not rationale_below:
+                    return {
+                        'error': 'capacity_anchor',
+                        'message': (
+                            f'Week 1\'s long session ({week1_mins:.0f} min) '
+                            f'is far below the demonstrated capacity of '
+                            f'{demonstrated:.0f} min. A deliberate '
+                            f'regression (taper, rehab, bone-load protocol) '
+                            f'is legitimate — state it in capacity_anchor.'
+                            f'rationale_if_below. Otherwise anchor week 1 '
+                            f'at demonstrated capacity.'),
+                        'week1_mins': week1_mins,
+                        'demonstrated_mins': demonstrated,
+                    }
+                notes.append({
+                    'deliberate_regression': True,
+                    'week1_mins': week1_mins,
+                    'demonstrated_mins': demonstrated,
+                    'rationale': rationale_below,
+                })
+            elif week1_mins > demonstrated * GROUNDING_SPIKE_FACTOR:
+                warnings.append({
+                    'type': 'aggressive_start',
+                    'sport': bucket,
+                    'week1_mins': week1_mins,
+                    'demonstrated_mins': demonstrated,
+                    'message': (f'Week 1\'s long session ({week1_mins:.0f} '
+                                f'min) exceeds demonstrated capacity '
+                                f'({demonstrated:.0f} min) by more than '
+                                f'30% — injury-risk jump.'),
+                })
+
+        # Progression-rate warnings: >25%/week long-session jumps
+        prev_mins = None
+        for wk in weeks:
+            if not isinstance(wk, dict):
+                continue
+            try:
+                mins = float(wk.get('long_session_mins'))
+            except (TypeError, ValueError):
+                prev_mins = None
+                continue
+            if prev_mins and mins > prev_mins * (
+                    1 + PROGRAM_WEEKLY_INCREASE_WARN_PCT / 100):
+                warnings.append({
+                    'type': 'progression_rate',
+                    'week': wk.get('week'),
+                    'from_mins': prev_mins,
+                    'to_mins': mins,
+                    'message': (f'Week {wk.get("week")}: long session jumps '
+                                f'{prev_mins:.0f} -> {mins:.0f} min '
+                                f'(> {PROGRAM_WEEKLY_INCREASE_WARN_PCT:.0f}%'
+                                f'/week).'),
+                })
+            prev_mins = mins
+
+        # Save (archive any prior program into the file's history)
+        doc = load_json_file(TRAINING_PROGRAM_FILE) or {}
+        history_list = doc.get('history', []) or []
+        prior = doc.get('program')
+        if isinstance(prior, dict) and prior.get('weeks'):
+            history_list.append({'archived': today.isoformat(),
+                                 'program': prior})
+        record = dict(program)
+        record.setdefault('schema_version', 1)
+        record.setdefault('status', 'active')
+        record.setdefault('created', today.isoformat())
+        record['last_updated'] = today.isoformat()
+        save_json_file(TRAINING_PROGRAM_FILE, {
+            'schema_version': 1,
+            'program': record,
+            'history': history_list[-PROGRAM_HISTORY_KEEP:],
+        })
+
+        ladder = [wk.get('long_session_mins') for wk in weeks
+                  if isinstance(wk, dict)]
+        result = {
+            'status': 'success',
+            'message': (f"Program '{record.get('name')}' saved "
+                        f"({len(weeks)} weeks, {bucket})"),
+            'program_summary': {
+                'name': record.get('name'),
+                'sport': bucket,
+                'start_date': record.get('start_date'),
+                'total_weeks': len(weeks),
+                'long_session_ladder_mins': ladder,
+                'goal_event': record.get('goal_event'),
+                'capacity_anchor': {
+                    'demonstrated_mins': demonstrated,
+                    'verified_against_history': bool(server_mins),
+                },
+            },
+            'warnings': warnings,
+            'next_step': ('Derive week 1 into the rolling plan via '
+                          'update_weekly_plan (purpose/injury/grounding '
+                          'checks still run there).'),
+        }
+        if notes:
+            result['notes'] = notes
+        return result
+
+    except Exception as e:
+        logger.exception("training_program failed")
         return {'error': str(e)}

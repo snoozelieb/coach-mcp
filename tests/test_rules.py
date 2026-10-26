@@ -28,6 +28,17 @@ class TestClassifyActivity:
         assert result['is_mobility'] is True
         assert result['is_strength'] is False
 
+    def test_other_type_named_mobility_is_mobility(self):
+        """Garmin logs mobility sessions as type 'other' — the name decides."""
+        result = classify_activity({'type': 'other', 'name': 'Cape Town Mobility',
+                                    'duration_mins': 25})
+        assert result['is_mobility'] is True
+
+    def test_other_type_with_unrelated_name_is_not_mobility(self):
+        result = classify_activity({'type': 'other', 'name': 'Pretoria Navigate',
+                                    'duration_mins': 25})
+        assert result['is_mobility'] is False
+
     def test_classifies_pilates_as_mobility(self):
         activity = {'type': 'pilates', 'duration_mins': 20}
         result = classify_activity(activity)
