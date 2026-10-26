@@ -333,6 +333,34 @@ class TestReleaseWorkflow:
         assert any(u.startswith('pypa/gh-action-pypi-publish@release/v1')
                    for u in uses)
 
+    def test_registry_publish_is_oidc_with_pinned_verified_publisher(self):
+        text = self.WORKFLOW.read_text(encoding='utf-8')
+        assert 'mcp-publisher" login github-oidc' in text
+        assert 'cosign verify-blob' in text
+        assert 'sha256sum --check --strict' in text
+        # Immutable release tag + recorded digest, never the moving alias.
+        assert 'releases/latest' not in text
+        assert re.search(r'MCP_PUBLISHER_VERSION: v\d+\.\d+\.\d+$', text, re.M)
+        assert re.search(r'MCP_PUBLISHER_SHA256: "[0-9a-f]{64}"$', text, re.M)
+
+    def test_registry_job_runs_after_pypi_without_secrets(self):
+        yaml = pytest.importorskip('yaml')
+        wf = yaml.safe_load(self.WORKFLOW.read_text(encoding='utf-8'))
+        job = wf['jobs']['publish-to-mcp-registry']
+        # The registry validates the exact version on pypi.org, so never
+        # register a version PyPI has not accepted.
+        assert job['needs'] == 'publish-to-pypi'
+        assert job['permissions'] == {'id-token': 'write', 'contents': 'read'}
+        assert 'secrets.' not in json.dumps(job)  # OIDC only: nothing to leak
+        uses = [s.get('uses', '') for s in job['steps']]
+        installer = next(u for u in uses
+                         if u.startswith('sigstore/cosign-installer@'))
+        assert re.fullmatch(r'sigstore/cosign-installer@[0-9a-f]{40}',
+                            installer), 'pin the installer by commit SHA'
+        # A registry failure must never block the GitHub Release.
+        assert 'publish-to-mcp-registry' not in str(
+            wf['jobs']['github-release'].get('needs', ''))
+
 
 class TestVersionConsistency:
     def test_pyproject_server_json_changelog_agree(self):

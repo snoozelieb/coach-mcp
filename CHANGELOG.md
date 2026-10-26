@@ -4,6 +4,18 @@ All notable changes to coach-mcp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **MCP Registry publish in CI.** The Release workflow now registers
+  `server.json` with the official registry after the PyPI publish succeeds,
+  authenticating with the job's GitHub Actions OIDC token (no stored secret; the
+  registry grants `io.github.<owner>/*` to the repository owner). The
+  `mcp-publisher` binary is pinned to v1.8.5 and verified against its Sigstore
+  bundle and SHA-256 before it runs, and the publish retries while PyPI's
+  metadata lags the upload. Manual `mcp-publisher publish` stays as a fallback
+  (`docs/PUBLISHING.md`).
+
 ## [1.3.0] - 2026-10-26
 
 A future-proofing release: FastMCP 4 on MCP SDK 2, Claude Code's October context
