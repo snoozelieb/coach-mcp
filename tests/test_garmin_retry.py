@@ -62,7 +62,7 @@ class TestGarminApiCallAuthRetry:
         # Should have called get_garmin_client twice: once normal, once with force_refresh
         assert mock_get_client.call_count == 2
         mock_get_client.assert_any_call()
-        mock_get_client.assert_any_call(force_refresh=True)
+        mock_get_client.assert_any_call(force_refresh=True, stale_client=stale_client)
 
     @patch('coach.garmin_client.get_garmin_client')
     def test_persistent_auth_error_raises_after_one_retry(self, mock_get_client):

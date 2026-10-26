@@ -551,11 +551,32 @@ class TestFileLock:
         target = tmp_path / 'f.json'
         lock = tmp_path / 'f.json.lock'
         lock.write_text('pid=999999', encoding='utf-8')
-        stale_time = time.time() - 60  # older than the 30s stale window
+        stale_time = time.time() - 300  # older than the 120 s stale window
         os.utime(lock, (stale_time, stale_time))
         with file_lock(target, timeout=2):  # must break the stale lock
             assert lock.exists()  # we now hold it
         assert not lock.exists()
+
+    def test_release_never_deletes_a_lock_taken_over_while_held(self, tmp_path):
+        """POSIX hazard: a stale-breaker unlinks a slow holder's file and
+        creates its own; the slow holder's release must leave it alone, or a
+        third writer slips in beside the breaker."""
+        target = tmp_path / 'f.json'
+        lock = tmp_path / 'f.json.lock'
+        with file_lock(target):
+            lock.write_text('pid=1 id=breaker', encoding='utf-8')
+        assert lock.exists()
+        assert lock.read_text(encoding='utf-8') == 'pid=1 id=breaker'
+
+    def test_lockfile_carries_a_unique_token(self, tmp_path):
+        target = tmp_path / 'f.json'
+        lock = tmp_path / 'f.json.lock'
+        seen = []
+        for _ in range(2):
+            with file_lock(target):
+                seen.append(lock.read_text(encoding='utf-8'))
+        assert seen[0] != seen[1]
+        assert all(' id=' in s and s.startswith(f'pid={os.getpid()}') for s in seen)
 
 
 # ---------------------------------------------------------------------------

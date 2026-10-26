@@ -3,7 +3,7 @@
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, schedule_workout
 from ..parsers import parse_activities, parse_training_readiness
-from ..planner import (get_current_plan, save_weekly_plan,
+from ..planner import (get_current_plan, save_weekly_plan, merge_plan_fields,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
                      load_json_file, save_json_file,
@@ -734,38 +734,35 @@ def update_phase(new_phase: str, notes: str = None) -> dict:
         }
 
     try:
-        config_path = DATA_DIR / TRAINING_CONFIG_FILE
-        with open(config_path) as f:
-            config = json.load(f)
-
         today = date.today()
-        old_phase = config.get('periodization', {}).get('current_phase', 'unknown')
+        state: dict = {}
 
-        # Update periodization
-        if 'periodization' not in config:
-            config['periodization'] = {}
+        def _apply(config: dict) -> None:
+            state['old_phase'] = config.get('periodization', {}).get('current_phase', 'unknown')
+            # Update periodization
+            if 'periodization' not in config:
+                config['periodization'] = {}
+            config['periodization']['current_phase'] = new_phase.lower()
+            config['periodization']['phase_start'] = today.isoformat()
+            # Update current_block
+            if 'current_block' not in config:
+                config['current_block'] = {}
+            config['current_block']['phase'] = new_phase.lower()
+            config['current_block']['start_date'] = today.isoformat()
+            # Get phase-specific defaults
+            phases = config.get('periodization', {}).get('phases', {})
+            state['phase_info'] = phases.get(new_phase.lower(), {})
+            if state['phase_info']:
+                config['current_block']['focus'] = state['phase_info'].get('key_sessions', [])
+                config['current_block']['notes'] = state['phase_info'].get('focus', f'{new_phase} phase')
 
-        config['periodization']['current_phase'] = new_phase.lower()
-        config['periodization']['phase_start'] = today.isoformat()
-
-        # Update current_block
-        if 'current_block' not in config:
-            config['current_block'] = {}
-
-        config['current_block']['phase'] = new_phase.lower()
-        config['current_block']['start_date'] = today.isoformat()
-
-        # Get phase-specific defaults
-        phases = config.get('periodization', {}).get('phases', {})
-        phase_info = phases.get(new_phase.lower(), {})
-
-        if phase_info:
-            config['current_block']['focus'] = phase_info.get('key_sessions', [])
-            config['current_block']['notes'] = phase_info.get('focus', f'{new_phase} phase')
-
-        # Save
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        # Locked read-modify-write (atomic, UTF-8, migrated): the file is
+        # shared with other server processes; the bare open()/dump it
+        # replaces skipped all of that.
+        from ..storage import update_json
+        update_json(TRAINING_CONFIG_FILE, _apply, data_dir=DATA_DIR)
+        old_phase = state['old_phase']
+        phase_info = state['phase_info']
 
         # Log the decision
         try:
@@ -1329,8 +1326,9 @@ def push_plan_to_garmin(override_injury_gate: bool = False) -> dict:
             prior_ids = set(plan.get('pushed_workout_ids', []))
             deleted_ids = set(previous_ids) if previous_ids else set()
             plan['pushed_workout_ids'] = list((prior_ids - deleted_ids) | set(pushed_ids))
-            from ..planner import save_json_file
-            save_json_file(DATA_DIR / 'weekly_plan.json', plan)
+            # Merge only this field: a plan the coach saved during the
+            # (long) push must not be overwritten with the pre-push copy.
+            merge_plan_fields({'pushed_workout_ids': plan['pushed_workout_ids']})
 
         # Build summary message
         pushed_count = len(results['pushed'])

@@ -38,7 +38,7 @@ from ..rules import (
 )
 from ..fitness import (
     load_fitness_history,
-    save_fitness_history,
+    merge_recovery_records,
     calculate_fitness_metrics,
     calculate_intensity_distribution,
     get_athlete_hr_zones,
@@ -1872,7 +1872,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             )
             from ..parsers import parse_activities as _pa
             refreshed_activities = _pa(raw_refresh or [])
-            history = update_fitness_history(refreshed_activities, today)
+            history = update_fitness_history(refreshed_activities, today,
+                                             window_start=ingest_start)
         except GarminAuthRequiredError as e:
             auth_error = str(e)
             logger.warning("Activity ingestion blocked: Garmin auth required")
@@ -2151,6 +2152,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         await ctx.report_progress(5, 10, "Fitness metrics calculated")
 
         # 6. Recovery status (today) + Sleep tracking
+        readiness_rec = None
         try:
             readiness_data = _cached_garmin_fetch(
                 ('readiness', today.isoformat()),
@@ -2236,7 +2238,13 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         sleep_data = summarize_sleep_records(merged_nights, sleep_need=stored_need)
 
         # Save history once (covers both readiness + sleep persistence)
-        save_fitness_history(history)
+        # Persist as a locked, add-only merge. The whole-file save of the
+        # copy loaded at step 0 overwrote any day another process ingested
+        # during the Garmin calls above (the athlete's "activity dropped out
+        # of history" bug).
+        history = merge_recovery_records(
+            readiness_record=readiness_rec, sleep_records=fetched_sleep,
+            sleep_need=fresh_sleep_need, today=today)
 
         # 6c. Sleep trend (30-day from persisted data) + bedtime drift (14-day window)
         sleep_trend_30d = get_sleep_trend(history, days=30, today=today)
@@ -2252,12 +2260,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         await ctx.report_progress(7, 10, "Recovery and sleep analyzed")
 
         # 7. Sport priority breakdown (multi-sport analysis)
-        training_config_path = DATA_DIR / TRAINING_CONFIG_FILE
-        if training_config_path.exists():
-            with open(training_config_path) as f:
-                training_config = json.load(f)
-        else:
-            training_config = {}
+        training_config = load_json_file(TRAINING_CONFIG_FILE) or {}
 
         methodology = load_methodology()
         sport_priorities = _analyze_sport_priorities(

@@ -61,7 +61,7 @@ from coach.tools.data_tools import get_activities_range
 from coach.tools.fitness_tools import query_metrics
 from coach.planner import (
     get_current_plan,
-    save_weekly_plan,
+    merge_plan_days,
 )
 
 # Days counted back from yesterday whose audit is re-checked on every run while
@@ -231,6 +231,7 @@ def _audit_day(plan: dict[str, Any], day_str: str) -> dict[str, Any]:
             'date': day_str,
             'planned': planned_sessions,
             'actual_count': 0,
+            'persist': {'status': 'unverified'},
         }
 
     # Determine status
@@ -276,6 +277,7 @@ def _audit_day(plan: dict[str, Any], day_str: str) -> dict[str, Any]:
         'date': day_str,
         'planned': planned_sessions,
         'actual_count': len(actual_activities),
+        'persist': {'status': status, 'actual': actual_activities},
     }
 
 
@@ -299,7 +301,9 @@ def audit_yesterday(today: date) -> dict[str, Any]:
         return {'status': 'not_in_plan', 'date': yesterday_str}
 
     result = _audit_day(plan, yesterday_str)
-    save_weekly_plan(plan)
+    # Merge only this day's verdict: a plan the coach saved while Garmin was
+    # being checked must not be overwritten with the copy loaded above.
+    merge_plan_days({yesterday_str: result.pop('persist')})
     return result
 
 
@@ -319,6 +323,7 @@ def audit_recent(today: date, window_days: int = REAUDIT_WINDOW_DAYS) -> dict[st
         return result
 
     changed = []
+    updates: dict[str, dict] = {}
     for back in range(2, window_days + 1):
         day_str = (today - timedelta(days=back)).isoformat()
         day_plan = plan['days'].get(day_str)
@@ -326,10 +331,13 @@ def audit_recent(today: date, window_days: int = REAUDIT_WINDOW_DAYS) -> dict[st
             continue
         before = day_plan.get('status')
         record = _audit_day(plan, day_str)
+        persist = record.pop('persist', None)
         if record['status'] != before:
             changed.append({'date': day_str, 'from': before, 'to': record['status']})
+            if persist:
+                updates[day_str] = persist
     if changed:
-        save_weekly_plan(plan)
+        merge_plan_days(updates)
         logger.info("Re-audit updated earlier days: %s", changed)
     result['reaudited'] = changed
     return result

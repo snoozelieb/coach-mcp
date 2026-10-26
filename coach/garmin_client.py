@@ -63,7 +63,9 @@ class GarminAuthRequiredError(Exception):
 _cached_client: Garmin | None = None
 # Serialises the login path: one expired session must trigger ONE
 # credential login even when several tool calls race on the same server.
-_client_lock = threading.Lock()
+# Reentrant so a login helper that calls back into get_garmin_client on the
+# same thread cannot deadlock.
+_client_lock = threading.RLock()
 
 # Monotonic timestamp of the last failed credential login (auth latch).
 _auth_failed_at: float | None = None
@@ -151,7 +153,8 @@ def _credential_login(email: str, password: str) -> Garmin:
     return client
 
 
-def get_garmin_client(force_refresh: bool = False) -> Garmin:
+def get_garmin_client(force_refresh: bool = False, *,
+                      stale_client: Garmin | None = None) -> Garmin:
     """
     Return an authenticated Garmin client (token-first, native 0.3.x auth).
 
@@ -159,6 +162,9 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
 
     Args:
         force_refresh: If True, ignores the cached client and re-authenticates.
+        stale_client: With force_refresh, the client the caller saw fail. If
+            another thread has already replaced it, that fresh client is
+            returned instead of logging in a second time.
 
     Raises:
         GarminAuthRequiredError: When authentication needs human intervention
@@ -172,6 +178,10 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
         # this one waited for it.
         if _cached_client is not None and not force_refresh:
             return _cached_client
+        if (force_refresh and stale_client is not None
+                and _cached_client is not None
+                and _cached_client is not stale_client):
+            return _cached_client  # already refreshed by a concurrent call
         return _login_and_cache()
 
 
@@ -242,7 +252,7 @@ def garmin_api_call(fn, *args, **kwargs):
         return fn(client, *args, **kwargs)
     except GarminConnectAuthenticationError:
         logger.warning("Auth error — refreshing session and retrying...")
-        client = get_garmin_client(force_refresh=True)
+        client = get_garmin_client(force_refresh=True, stale_client=client)
         return fn(client, *args, **kwargs)
     except GarminConnectTooManyRequestsError:
         logger.warning(

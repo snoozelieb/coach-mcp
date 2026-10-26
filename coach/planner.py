@@ -6,7 +6,6 @@ The LLM is the brain that generates plans. This module provides:
 - Plan persistence (read/write weekly_plan.json)
 - Coaching-log access (decisions/approvals persist in coaching_log.json)
 """
-import json
 from datetime import date, timedelta
 from typing import Any
 
@@ -85,14 +84,101 @@ def load_coaching_log() -> dict[str, Any]:
     return load_json_file(COACHING_LOG_FILE)
 
 
+# coaching_log.json keys whose entries carry a stable 'id': merged by upsert
+# (entries only on disk — appended by another process since this one loaded
+# the log — are kept). Removals never go through save_coaching_log;
+# approve/reject_proposal use update_coaching_log.
+_LOG_ID_LISTS = ('decisions', 'anomalies', 'pending_approvals', 'rejected_proposals')
+_LOG_APPEND_LISTS = ('athlete_responses',)   # no ids: union by equality
+_LOG_DICT_MERGE = ('auto_proposal_tags',)
+
+
+class NoChange(Exception):
+    """Raise inside an update_coaching_log callback to abort without writing."""
+
+
+def _upsert_by_id(disk_list: list, mem_list: list) -> list:
+    merged = list(disk_list)
+    index = {e.get('id'): i for i, e in enumerate(merged)
+             if isinstance(e, dict) and e.get('id') is not None}
+    for entry in mem_list:
+        eid = entry.get('id') if isinstance(entry, dict) else None
+        if eid is not None and eid in index:
+            merged[index[eid]] = entry
+        elif eid is not None:
+            index[eid] = len(merged)
+            merged.append(entry)
+        elif entry not in merged:
+            merged.append(entry)
+    return merged
+
+
+def merge_coaching_log(disk: dict[str, Any], mem: dict[str, Any]) -> dict[str, Any]:
+    """Merge an in-memory coaching log into the on-disk one (see save_coaching_log)."""
+    handled = set()
+    for key in _LOG_ID_LISTS:
+        if key in mem:
+            disk[key] = _upsert_by_id(disk.get(key) or [], mem.get(key) or [])
+            handled.add(key)
+    for key in _LOG_APPEND_LISTS:
+        if key in mem:
+            merged = list(disk.get(key) or [])
+            merged.extend(e for e in (mem.get(key) or []) if e not in merged)
+            disk[key] = merged
+            handled.add(key)
+    for key in _LOG_DICT_MERGE:
+        if key in mem:
+            target = disk.get(key) if isinstance(disk.get(key), dict) else {}
+            target.update(mem.get(key) or {})
+            disk[key] = target
+            handled.add(key)
+    for key, value in mem.items():
+        if key not in handled:
+            disk[key] = value
+    return disk
+
+
 def save_coaching_log(log: dict[str, Any]) -> None:
-    """Save the coaching log file.
+    """Merge the in-memory coaching log into the file under its lock.
+
+    The log is append/update-only memory (decisions, anomalies, proposals,
+    responses), so the write is a structural merge: entries are upserted by
+    id, responses unioned, tags dict-merged, and anything another server
+    process appended since this one loaded the log survives. A plain
+    whole-file save lost it. Writers that REMOVE entries
+    (approve/reject_proposal) must use update_coaching_log instead.
 
     The date.today() here is a write-time audit stamp (metadata.last_updated),
     not date logic — allowlisted in tests/test_clock_discipline.py.
     """
+    from . import storage
     log.setdefault('metadata', {})['last_updated'] = date.today().isoformat()
-    save_json_file(COACHING_LOG_FILE, log)
+    storage.update_json(COACHING_LOG_FILE, lambda disk: merge_coaching_log(disk, log),
+                        data_dir=DATA_DIR)
+
+
+def update_coaching_log(mutate) -> dict[str, Any]:
+    """Locked read-modify-write of the coaching log.
+
+    ``mutate(log)`` edits the CURRENT on-disk log in place (or returns a
+    replacement); raise NoChange to leave the file untouched. This is the
+    only path for removing entries. No Garmin calls inside the callback.
+
+    The date.today() here is a write-time audit stamp — allowlisted in
+    tests/test_clock_discipline.py.
+    """
+    from . import storage
+
+    def _apply(log):
+        result = mutate(log)
+        log = result if result is not None else log
+        log.setdefault('metadata', {})['last_updated'] = date.today().isoformat()
+        return log
+
+    try:
+        return storage.update_json(COACHING_LOG_FILE, _apply, data_dir=DATA_DIR)
+    except NoChange:
+        return load_coaching_log()
 
 
 def get_coaching_context(today: date) -> dict[str, Any]:
@@ -458,23 +544,23 @@ PLAN_HISTORY_FILE = 'plan_history.json'
 PLAN_RETENTION_DAYS = 9  # Day entries older than this (before today) are archived
 
 
+DAY_STATE_FIELDS = ('status', 'actual')  # the morning audit's verdict per day
+
+
 def _prune_and_archive_plan_days(plan: dict[str, Any], today: date) -> None:
     """Prune day entries older than PLAN_RETENTION_DAYS before today.
 
     Pruned days are archived by appending to data/plan_history.json so plan
-    history is never silently lost. Mutates `plan` in place.
+    history is never silently lost; days leave the plan only AFTER the
+    archive write succeeded. Mutates `plan` in place.
     """
     days = plan.get('days')
     if not isinstance(days, dict):
         return
-
     cutoff = (today - timedelta(days=PLAN_RETENTION_DAYS)).isoformat()
     pruned = {d: v for d, v in days.items() if d < cutoff}
     if not pruned:
         return
-
-    plan['days'] = {d: v for d, v in days.items() if d >= cutoff}
-
     try:
         archive = load_json_file(PLAN_HISTORY_FILE) or {}
         entries = archive.get('archived_days', [])
@@ -488,19 +574,42 @@ def _prune_and_archive_plan_days(plan: dict[str, Any], today: date) -> None:
         archive['last_archived'] = today.isoformat()
         save_json_file(PLAN_HISTORY_FILE, archive)
     except Exception:
-        logger.warning("Failed to archive pruned plan days", exc_info=True)
+        logger.warning("Failed to archive pruned plan days — keeping them in the plan",
+                       exc_info=True)
+        return
+    plan['days'] = {d: v for d, v in days.items() if d >= cutoff}
+
+
+def _derive_week_bounds(plan: dict[str, Any]) -> None:
+    days = plan.get('days')
+    if not isinstance(days, dict):
+        return
+    valid_keys = []
+    for k in days:
+        try:
+            date.fromisoformat(k)
+            valid_keys.append(k)
+        except (ValueError, TypeError):
+            continue
+    if valid_keys:
+        if not plan.get('week_start'):
+            plan['week_start'] = min(valid_keys)
+        if not plan.get('week_end'):
+            plan['week_end'] = max(valid_keys)
 
 
 def save_weekly_plan(plan: dict[str, Any], today: date | None = None) -> None:
-    """Save the weekly plan.
+    """Save the weekly plan (one locked read-modify-write).
 
-    Preserves internal metadata fields (e.g. pushed_workout_ids) from the
-    existing file when the caller hasn't supplied them. This stops the
-    coach LLM's plan-edit calls from silently dropping push-tracking state.
-
-    Also enforces plan lifecycle: day entries older than PLAN_RETENTION_DAYS
-    are pruned (archived to plan_history.json), and week_start/week_end are
-    derived from the day keys when missing.
+    The plan REPLACES the file by design — the coach authors the whole week —
+    but under the same lock it carries over what the incoming plan omits:
+    internal fields (pushed_workout_ids) and, per day, the morning audit's
+    verdict (status, actual). Before this, every resend by a client that
+    rebuilds the dict from get_weekly_plan wiped the audit's verdicts, and
+    the carry-over read and the write took separate locks. Also enforces
+    plan lifecycle: day entries older than PLAN_RETENTION_DAYS are pruned
+    (archived to plan_history.json) and week_start/week_end are derived
+    from the day keys when missing.
 
     `today` should be threaded from the tool boundary. The internal
     date.today() fallback exists because scripts/daily_loop.py calls this
@@ -509,31 +618,60 @@ def save_weekly_plan(plan: dict[str, Any], today: date | None = None) -> None:
     """
     if today is None:
         today = date.today()
-    existing = load_json_file('weekly_plan.json') or {}
-    for field in INTERNAL_PLAN_FIELDS:
-        if field not in plan and field in existing:
-            plan[field] = existing[field]
+    from . import storage
 
-    # Prune stale days first, then derive week bounds from what remains
-    _prune_and_archive_plan_days(plan, today)
+    def _mutate(existing: dict[str, Any]) -> dict[str, Any]:
+        existing = existing or {}
+        for field in INTERNAL_PLAN_FIELDS:
+            if field not in plan and field in existing:
+                plan[field] = existing[field]
+        existing_days = existing.get('days') if isinstance(existing.get('days'), dict) else {}
+        days = plan.get('days')
+        if isinstance(days, dict):
+            for day_str, day in days.items():
+                old = existing_days.get(day_str)
+                if isinstance(day, dict) and isinstance(old, dict):
+                    for field in DAY_STATE_FIELDS:
+                        if field not in day and field in old:
+                            day[field] = old[field]
+        # Prune stale days first, then derive week bounds from what remains
+        _prune_and_archive_plan_days(plan, today)
+        _derive_week_bounds(plan)
+        plan['last_updated'] = today.isoformat()
+        return plan
 
-    days = plan.get('days')
-    if isinstance(days, dict):
-        valid_keys = []
-        for k in days:
-            try:
-                date.fromisoformat(k)
-                valid_keys.append(k)
-            except (ValueError, TypeError):
+    storage.update_json('weekly_plan.json', _mutate, data_dir=DATA_DIR)
+
+
+def merge_plan_days(updates: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Locked per-day merge: only the given fields of the given days change.
+
+    Used by the morning audit (status/actual) so its write cannot clobber a
+    plan the coach saved during the audit's Garmin calls, and vice versa.
+    Days no longer in the on-disk plan are skipped (logged), never created.
+    """
+    from . import storage
+
+    def _mutate(plan: dict[str, Any]) -> None:
+        days = plan.get('days')
+        if not isinstance(days, dict):
+            logger.warning("merge_plan_days: no plan on disk — nothing merged")
+            return
+        for day_str, fields in updates.items():
+            day = days.get(day_str)
+            if not isinstance(day, dict):
+                logger.info("merge_plan_days: %s no longer in the plan — skipped", day_str)
                 continue
-        if valid_keys:
-            if not plan.get('week_start'):
-                plan['week_start'] = min(valid_keys)
-            if not plan.get('week_end'):
-                plan['week_end'] = max(valid_keys)
+            day.update(fields)
 
-    plan['last_updated'] = today.isoformat()
-    save_json_file('weekly_plan.json', plan)
+    return storage.update_json('weekly_plan.json', _mutate, data_dir=DATA_DIR)
+
+
+def merge_plan_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Locked merge of top-level plan fields (e.g. pushed_workout_ids)."""
+    from . import storage
+    return storage.update_json('weekly_plan.json', lambda plan: plan.update(fields),
+                               data_dir=DATA_DIR)
 
 
 def create_empty_week_template(today: date) -> dict[str, Any]:
@@ -639,8 +777,7 @@ def get_week_constraints(
     if athlete is None:
         athlete = load_athlete()
     if training_config is None:
-        tc_path = DATA_DIR / TRAINING_CONFIG_FILE
-        training_config = json.loads(tc_path.read_text()) if tc_path.exists() else {}
+        training_config = load_json_file(TRAINING_CONFIG_FILE) or {}
     if methodology is None:
         methodology = load_methodology()
     if injuries is None:

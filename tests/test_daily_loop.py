@@ -48,7 +48,7 @@ def _patch_audit_deps(monkeypatch, plan, activities):
         lambda start, end: json.dumps(activities),
     )
     save_mock = MagicMock()
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', save_mock)
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', save_mock)
     return save_mock
 
 
@@ -163,7 +163,7 @@ def test_audit_yesterday_error_payload_is_unverified_not_bonus(monkeypatch):
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
     monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
     save_mock = MagicMock()
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', save_mock)
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', save_mock)
 
     result = daily_loop.audit_yesterday(today)
 
@@ -179,7 +179,7 @@ def test_audit_yesterday_error_payload_on_training_day_is_unverified(monkeypatch
     plan = {'days': {yesterday: {'planned': {'type': 'running'}}}}
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
     monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', MagicMock())
 
     result = daily_loop.audit_yesterday(today)
 
@@ -194,7 +194,7 @@ def test_audit_yesterday_unparseable_payload_is_unverified(monkeypatch):
     plan = {'days': {yesterday: {'planned': {'type': 'running'}}}}
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
     monkeypatch.setattr(daily_loop, 'get_activities_range', lambda s, e: 'not json')
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', MagicMock())
 
     assert daily_loop.audit_yesterday(today)['status'] == 'unverified'
 
@@ -218,7 +218,7 @@ def test_audit_recent_heals_a_missed_day_when_garmin_shows_it(monkeypatch):
 
     monkeypatch.setattr(daily_loop, 'get_activities_range', fake_range)
     save_mock = MagicMock()
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', save_mock)
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', save_mock)
 
     result = daily_loop.audit_recent(today)
 
@@ -238,7 +238,7 @@ def test_audit_recent_re_checks_unverified_days(monkeypatch):
     }}
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
     monkeypatch.setattr(daily_loop, 'get_activities_range', lambda s, e: json.dumps([]))
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', MagicMock())
 
     result = daily_loop.audit_recent(today)
 
@@ -263,7 +263,7 @@ def test_audit_recent_leaves_verified_days_alone(monkeypatch):
         return json.dumps([])
 
     monkeypatch.setattr(daily_loop, 'get_activities_range', fake_range)
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', MagicMock())
 
     result = daily_loop.audit_recent(today)
 
@@ -282,7 +282,7 @@ def test_audit_recent_stays_unverified_while_garmin_is_down(monkeypatch):
     }}
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
     monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
-    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+    monkeypatch.setattr(daily_loop, 'merge_plan_days', MagicMock())
 
     result = daily_loop.audit_recent(today)
 

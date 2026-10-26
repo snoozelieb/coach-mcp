@@ -48,6 +48,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -66,7 +67,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 LOCK_TIMEOUT_SECONDS = 10.0      # how long a caller waits to acquire
-LOCK_STALE_SECONDS = 30.0        # locks older than this are considered dead
+# Locks older than this are considered left behind by a dead process. Every
+# holder is a pure in-memory merge (update_json forbids network calls under
+# the lock), so a two-minute hold can only be a stuck or suspended process.
+LOCK_STALE_SECONDS = 120.0
 LOCK_RETRY_INTERVAL = 0.05
 
 # Lock paths held by the CURRENT thread. The lockfile cannot be acquired
@@ -107,13 +111,18 @@ def file_lock(
             "file it is updating."
         )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # Per-acquisition token: release only ever unlinks OUR lockfile. On
+    # POSIX a stale-breaker can unlink a live holder's file and create its
+    # own; the slow holder must not then delete the breaker's lock and let a
+    # third writer in.
+    token = f"pid={os.getpid()} id={uuid.uuid4().hex} t={time.time():.0f}"
     deadline = time.monotonic() + timeout
     fd: int | None = None
 
     while fd is None:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"pid={os.getpid()} t={time.time():.0f}".encode('utf-8'))
+            os.write(fd, token.encode('utf-8'))
         except FileExistsError:
             # Held by someone else — break it only if stale.
             try:
@@ -125,8 +134,10 @@ def file_lock(
                 try:
                     lock_path.unlink()
                 except OSError:
-                    pass  # another process beat us to it
-                continue
+                    # Windows refuses while the holder's handle is open: the
+                    # holder is alive (slow or suspended), so wait for it
+                    # like any other contender instead of spinning.
+                    pass
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Could not acquire lock {lock_path} within {timeout}s"
@@ -141,10 +152,24 @@ def file_lock(
         try:
             os.close(fd)
         finally:
-            try:
-                lock_path.unlink()
-            except OSError:
-                logger.warning("Could not remove lock file %s", lock_path)
+            _release_lock(lock_path, token)
+
+
+def _release_lock(lock_path: Path, token: str) -> None:
+    """Unlink the lockfile only while it still carries ``token``."""
+    try:
+        current = lock_path.read_text(encoding='utf-8')
+    except OSError:
+        return  # already gone (broken as stale and released by its taker)
+    if current != token:
+        logger.warning(
+            "Lock %s was taken over while held (stale break) — leaving the "
+            "new holder's lock in place", lock_path)
+        return
+    try:
+        lock_path.unlink()
+    except OSError:
+        logger.warning("Could not remove lock file %s", lock_path)
 
 
 # ---------------------------------------------------------------------------

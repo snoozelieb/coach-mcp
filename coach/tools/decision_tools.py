@@ -15,7 +15,7 @@ Also owns the Phase 3 memory lifecycles:
 """
 
 from ..mcp_app import mcp
-from ..planner import load_coaching_log, save_coaching_log
+from ..planner import load_coaching_log, save_coaching_log, update_coaching_log, NoChange
 from ..config import ADAPTATION_PATTERN_REGISTRY
 from datetime import date, timedelta
 import json
@@ -168,58 +168,67 @@ def register_detected_anomalies(detected: list | None,
     registry entries (and the fallback when `today` is not threaded) —
     allowlisted in tests/test_clock_discipline.py.
     """
-    log = load_coaching_log()
-    registry = log.get('anomalies', [])
     stamp_iso = date.today().isoformat()
     if today is None:
         today = date.fromisoformat(stamp_iso)
     today_iso = today.isoformat()
-    changed = False
+    state: dict = {}
+    fresh_by_id: dict = {}
 
-    # Today is PENDING, not missed: drop wrongly-registered open
-    # missing-anomalies dated today (or later). Removing the id lets the
-    # anomaly re-register tomorrow if the session truly never happened.
-    kept = [
-        entry for entry in registry
-        if not (entry.get('type') == 'missing'
-                and entry.get('status') == 'open'
-                and (entry.get('date') or '') >= today_iso)
-    ]
-    if len(kept) != len(registry):
-        registry = kept
-        changed = True
+    def _apply(log):
+        # Runs on the CURRENT on-disk registry under its lock: the drop and
+        # the cap below REMOVE entries, which a merge-on-save would resurrect.
+        registry = log.get('anomalies', [])
+        changed = False
 
-    by_id = {entry.get('id') for entry in registry}
+        # Today is PENDING, not missed: drop wrongly-registered open
+        # missing-anomalies dated today (or later). Removing the id lets the
+        # anomaly re-register tomorrow if the session truly never happened.
+        kept = [
+            entry for entry in registry
+            if not (entry.get('type') == 'missing'
+                    and entry.get('status') == 'open'
+                    and (entry.get('date') or '') >= today_iso)
+        ]
+        if len(kept) != len(registry):
+            registry = kept
+            changed = True
 
-    fresh_by_id = {}
-    for anomaly in detected or []:
-        if (anomaly.get('flag') == 'missing'
-                and (anomaly.get('date') or '') >= today_iso):
-            continue  # today's sessions are pending — never register as missed
-        aid = anomaly_id_for(anomaly)
-        fresh_by_id[aid] = anomaly
-        if aid in by_id:
-            continue  # already registered (open, asked OR resolved) — never duplicate
-        registry.append({
-            'id': aid,
-            'date': anomaly.get('date'),
-            'type': anomaly.get('flag', 'unknown'),
-            'summary': _anomaly_summary(anomaly, today),
-            'status': 'open',
-            'athlete_explanation': None,
-            'created': stamp_iso,
-            'updated': stamp_iso,
-        })
-        by_id.add(aid)
-        changed = True
+        by_id = {entry.get('id') for entry in registry}
 
-    if len(registry) > MAX_ANOMALY_ENTRIES:
-        registry = registry[-MAX_ANOMALY_ENTRIES:]
-        changed = True
+        fresh_by_id.clear()
+        for anomaly in detected or []:
+            if (anomaly.get('flag') == 'missing'
+                    and (anomaly.get('date') or '') >= today_iso):
+                continue  # today's sessions are pending — never register as missed
+            aid = anomaly_id_for(anomaly)
+            fresh_by_id[aid] = anomaly
+            if aid in by_id:
+                continue  # already registered (open, asked OR resolved) — never duplicate
+            registry.append({
+                'id': aid,
+                'date': anomaly.get('date'),
+                'type': anomaly.get('flag', 'unknown'),
+                'summary': _anomaly_summary(anomaly, today),
+                'status': 'open',
+                'athlete_explanation': None,
+                'created': stamp_iso,
+                'updated': stamp_iso,
+            })
+            by_id.add(aid)
+            changed = True
 
-    if changed:
+        if len(registry) > MAX_ANOMALY_ENTRIES:
+            registry = registry[-MAX_ANOMALY_ENTRIES:]
+            changed = True
+
+        state['registry'] = registry
+        if not changed:
+            raise NoChange()
         log['anomalies'] = registry
-        save_coaching_log(log)
+
+    update_coaching_log(_apply)
+    registry = state['registry']
 
     surfaced = []
     for entry in registry:
@@ -725,46 +734,51 @@ def approve_proposal(proposal_id: str) -> str:
         Confirmation and the new active decision.
     """
     try:
-        log = load_coaching_log()
-        pending = log.get('pending_approvals', [])
-        decisions = log.get('decisions', [])
+        state: dict = {}
 
-        found = None
-        for i, p in enumerate(pending):
-            if p.get('id') == proposal_id:
-                found = pending.pop(i)
-                break
+        def _apply(log):
+            # Runs on the CURRENT on-disk log under its lock: the pop cannot
+            # resurrect on the next merge, and a proposal another process
+            # added meanwhile stays.
+            pending = log.get('pending_approvals', [])
+            decisions = log.get('decisions', [])
+            found = None
+            for i, p in enumerate(pending):
+                if p.get('id') == proposal_id:
+                    found = pending.pop(i)
+                    break
+            if not found:
+                raise NoChange()
+            decision_count = len([d for d in decisions if d.get('date') == date.today().isoformat()])
+            decision_id = f"d_{date.today().strftime('%Y%m%d')}_{decision_count + 1:03d}"
+            new_decision = {
+                'id': decision_id,
+                'date': date.today().isoformat(),
+                'type': found.get('action_type') or found.get('type'),
+                'decision': found['proposal'],
+                'rationale': found['rationale'],
+                'status': 'active',
+                'outcome': None,
+                'review_date': (date.today() + timedelta(days=14)).isoformat(),
+                'approved_from': proposal_id,
+            }
+            if found.get('proposed_change'):
+                new_decision['proposed_change'] = found['proposed_change']
+            decisions.append(new_decision)
+            log['pending_approvals'] = pending
+            log['decisions'] = decisions
+            state['found'] = found
+            state['decision_id'] = decision_id
 
-        if not found:
+        update_coaching_log(_apply)
+        if 'found' not in state:
             return json.dumps({'error': f'Proposal {proposal_id} not found'})
-
-        decision_count = len([d for d in decisions if d.get('date') == date.today().isoformat()])
-        decision_id = f"d_{date.today().strftime('%Y%m%d')}_{decision_count + 1:03d}"
-
-        new_decision = {
-            'id': decision_id,
-            'date': date.today().isoformat(),
-            'type': found.get('action_type') or found.get('type'),
-            'decision': found['proposal'],
-            'rationale': found['rationale'],
-            'status': 'active',
-            'outcome': None,
-            'review_date': (date.today() + timedelta(days=14)).isoformat(),
-            'approved_from': proposal_id,
-        }
-        if found.get('proposed_change'):
-            new_decision['proposed_change'] = found['proposed_change']
-
-        decisions.append(new_decision)
-        log['pending_approvals'] = pending
-        log['decisions'] = decisions
-        save_coaching_log(log)
 
         return json.dumps({
             'status': 'approved',
             'proposal_id': proposal_id,
-            'decision_id': decision_id,
-            'message': f'Approved: {found["proposal"]}',
+            'decision_id': state['decision_id'],
+            'message': f'Approved: {state["found"]["proposal"]}',
             'now_active': True,
         }, indent=2)
 
@@ -787,32 +801,34 @@ def reject_proposal(proposal_id: str, reason: str = None) -> str:
         Confirmation of rejection.
     """
     try:
-        log = load_coaching_log()
-        pending = log.get('pending_approvals', [])
+        state: dict = {}
 
-        if 'rejected_proposals' not in log:
-            log['rejected_proposals'] = []
+        def _apply(log):
+            pending = log.get('pending_approvals', [])
+            if 'rejected_proposals' not in log:
+                log['rejected_proposals'] = []
+            found = None
+            for i, p in enumerate(pending):
+                if p.get('id') == proposal_id:
+                    found = pending.pop(i)
+                    break
+            if not found:
+                raise NoChange()
+            found['rejected_date'] = date.today().isoformat()
+            found['rejection_reason'] = reason
+            log['rejected_proposals'].append(found)
+            log['pending_approvals'] = pending
+            state['found'] = found
 
-        found = None
-        for i, p in enumerate(pending):
-            if p.get('id') == proposal_id:
-                found = pending.pop(i)
-                break
-
-        if not found:
+        update_coaching_log(_apply)
+        if 'found' not in state:
             return json.dumps({'error': f'Proposal {proposal_id} not found'})
-
-        found['rejected_date'] = date.today().isoformat()
-        found['rejection_reason'] = reason
-        log['rejected_proposals'].append(found)
-        log['pending_approvals'] = pending
-        save_coaching_log(log)
 
         return json.dumps({
             'status': 'rejected',
             'proposal_id': proposal_id,
             'reason': reason,
-            'message': f'Rejected: {found["proposal"]}',
+            'message': f'Rejected: {state["found"]["proposal"]}',
         }, indent=2)
 
     except Exception as e:
@@ -860,13 +876,6 @@ def record_athlete_response(
         Confirmation of recorded response.
     """
     try:
-        log = load_coaching_log()
-
-        if 'athlete_responses' not in log:
-            log['athlete_responses'] = []
-        if 'metadata' not in log:
-            log['metadata'] = {'created': date.today().isoformat()}
-
         new_response = {
             'date': date.today().isoformat(),
             'stimulus': stimulus,
@@ -889,12 +898,18 @@ def record_athlete_response(
         if session_purpose_achieved is not None:
             new_response['session_purpose_achieved'] = session_purpose_achieved
 
-        log['athlete_responses'].append(new_response)
+        def _apply(log):
+            # Append + cap on the CURRENT on-disk list under its lock (the
+            # cap removes entries, which a merge-on-save would resurrect).
+            if 'athlete_responses' not in log:
+                log['athlete_responses'] = []
+            if 'metadata' not in log:
+                log['metadata'] = {'created': date.today().isoformat()}
+            log['athlete_responses'].append(new_response)
+            # Keep only last 200 responses (supports long-term pattern analysis)
+            log['athlete_responses'] = log['athlete_responses'][-200:]
 
-        # Keep only last 200 responses (supports long-term pattern analysis)
-        log['athlete_responses'] = log['athlete_responses'][-200:]
-
-        save_coaching_log(log)
+        update_coaching_log(_apply)
 
         result = {
             'status': 'recorded',

@@ -151,7 +151,7 @@ with the package (seeded on first run, never overwritten).
 | `exercises.json` | Exercise catalogue used by strength/research tools and the workout builder |
 
 `backfill_history` (tool and script) copies `fitness_history.json` into a sibling
-`data-backups/` directory before applying. Like `data/`, it holds personal data and
+`backups/` folder inside the data dir before applying. Like `data/`, it holds personal data and
 must never be committed.
 
 ## Environment

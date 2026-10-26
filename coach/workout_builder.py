@@ -4,10 +4,8 @@ Workout Builder - Converts plan sessions to Garmin workout format.
 Uses the garminconnect.workout module to create structured workouts
 that can be uploaded and scheduled to Garmin Connect.
 """
-import json
-from pathlib import Path
 
-from .config import DATA_DIR, ATHLETE_FILE
+from .config import DATA_DIR, ATHLETE_FILE, EXERCISE_LIBRARY_FILE
 from .fitness import get_athlete_hr_zones
 from .taxonomy import types_in_family, workout_family_for
 from garminconnect.workout import (
@@ -266,16 +264,26 @@ INTENSITY_POWER_ZONE_MAP = {
 }
 
 
+def _read_data_json(filename: str) -> dict:
+    """Locked read of a data-dir JSON file ({} when missing).
+
+    DATA_DIR is read at call time so tests can monkeypatch it. The old
+    hard-coded <repo>/data path returned {} on every installed copy and its
+    bare open() could break another process's atomic write on Windows.
+    """
+    from . import storage  # function-local: avoids module-level import cycle
+    return storage.read_json(filename, data_dir=DATA_DIR) or {}
+
+
 def get_athlete_power_zones() -> dict:
     """Load athlete power zones from athlete.json."""
     athlete_path = DATA_DIR / ATHLETE_FILE
     try:
-        with open(athlete_path) as f:
-            athlete = json.load(f)
+        athlete = _read_data_json(ATHLETE_FILE)
+        if not athlete:
+            logger.warning("Athlete file not found at %s — power targets unavailable", athlete_path)
+            return {}
         return athlete.get("personal", {}).get("power_zones", {})
-    except FileNotFoundError:
-        logger.warning("Athlete file not found at %s — power targets unavailable", athlete_path)
-        return {}
     except Exception:
         logger.warning("Failed to load power zones from %s", athlete_path, exc_info=True)
         return {}
@@ -389,8 +397,9 @@ def get_athlete_running_zones() -> dict:
     """
     athlete_path = DATA_DIR / ATHLETE_FILE
     try:
-        with open(athlete_path) as f:
-            athlete = json.load(f)
+        athlete = _read_data_json(ATHLETE_FILE)
+        if not athlete:
+            raise FileNotFoundError(athlete_path)
 
         personal = athlete.get("personal", {})
         threshold_pace = personal.get("threshold_pace_sec_per_km")
@@ -1524,22 +1533,12 @@ def build_padel_workout(session: dict, date: str) -> dict:
 
 def load_exercise_db() -> dict:
     """Load Garmin exercise database for (category, exerciseName) validation."""
-    db_path = Path(__file__).parent.parent / "data" / "exercises.json"
-    if db_path.exists():
-        with open(db_path) as f:
-            data = json.load(f)
-        return data.get("exercises", {})
-    return {}
+    return _read_data_json("exercises.json").get("exercises", {})
 
 
 def load_exercise_library() -> dict:
     """Load the exercise form cues library."""
-    from pathlib import Path
-    library_path = Path(__file__).parent.parent / "data" / "exercise_library.json"
-    if library_path.exists():
-        with open(library_path) as f:
-            return json.load(f)
-    return {}
+    return _read_data_json(EXERCISE_LIBRARY_FILE)
 
 
 def get_exercise_note(exercise_name: str, library: dict) -> str:
@@ -1559,13 +1558,7 @@ def get_exercise_note(exercise_name: str, library: dict) -> str:
 
 def load_strength_baseline() -> dict:
     """Load the strength baseline from athlete profile."""
-    from pathlib import Path
-    baseline_path = Path(__file__).parent.parent / "data" / "athlete.json"
-    if baseline_path.exists():
-        with open(baseline_path) as f:
-            athlete = json.load(f)
-            return athlete.get("strength_baseline", {}).get("exercises", {})
-    return {}
+    return _read_data_json(ATHLETE_FILE).get("strength_baseline", {}).get("exercises", {})
 
 
 def get_baseline_weight(exercise_name: str, category: str, baseline: dict) -> float:

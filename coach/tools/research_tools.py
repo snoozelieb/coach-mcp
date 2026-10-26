@@ -3,6 +3,7 @@
 from ..mcp_app import mcp
 from ..web_utils import fetch_page_text
 from ..config import DATA_DIR, EXERCISE_LIBRARY_FILE
+from ..planner import load_json_file, save_json_file
 from datetime import date
 import json
 import logging
@@ -49,8 +50,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
         library_path = DATA_DIR / EXERCISE_LIBRARY_FILE
         library = {}
         if library_path.exists():
-            with open(library_path) as f:
-                library = json.load(f)
+            library = load_json_file(EXERCISE_LIBRARY_FILE)  # locked read
 
             if exercise_normalized in library:
                 cached = library[exercise_normalized]
@@ -194,10 +194,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                 "researched_date": date.today().isoformat(),
             }
 
-            # Ensure data directory exists
-            DATA_DIR.mkdir(exist_ok=True)
-            with open(library_path, 'w') as f:
-                json.dump(library, f, indent=2)
+            save_json_file(EXERCISE_LIBRARY_FILE, library)  # atomic, locked
 
             result["cached"] = True
             result["cache_note"] = "Saved to exercise library. Will be included in Garmin workout notes."
@@ -239,8 +236,7 @@ def list_exercises(
                 "hint": "python scripts/fetch_exercises.py"
             })
 
-        with open(exercises_file) as f:
-            library = json.load(f)
+        library = load_json_file('exercises.json')  # locked read
 
         exercises = library.get("exercises", {})
         categories = library.get("categories", [])

@@ -13,7 +13,6 @@ Implements science-based metrics:
 
 Based on research from TrainingPeaks, Firstbeat, and Norwegian Olympic methodology.
 """
-import json
 import shutil
 import time
 from datetime import date, timedelta
@@ -559,27 +558,48 @@ def migrate_fitness_history(history: dict[str, Any]) -> dict[str, Any]:
     return history
 
 
-def load_fitness_history() -> dict[str, Any]:
-    """Load fitness history from file, auto-migrating to v2 if needed."""
-    history_path = DATA_DIR / FITNESS_HISTORY_FILE
-    if history_path.exists():
-        with open(history_path) as f:
-            history = json.load(f)
-        return migrate_fitness_history(history)
+def _empty_history() -> dict[str, Any]:
+    """The v2 skeleton a missing fitness_history.json starts from."""
     return {
         'schema_version': 2,
         'daily_loads': {},
         'snapshots': [],
         'sleep_history': [],
+        'readiness_history': [],
         'last_updated': None,
     }
 
 
-def save_fitness_history(history: dict[str, Any]) -> None:
-    """Save fitness history to file (atomic write).
+def _ensure_history_keys(history: dict[str, Any]) -> dict[str, Any]:
+    for key, empty in (('daily_loads', {}), ('snapshots', []),
+                       ('sleep_history', []), ('readiness_history', [])):
+        if not isinstance(history.get(key), type(empty)):
+            history[key] = empty
+    return history
 
-    Delegates to coach.storage: atomic write, utf-8, cross-process locked.
-    DATA_DIR is read at call time so tests can monkeypatch it on this module.
+
+def load_fitness_history() -> dict[str, Any]:
+    """Load fitness history (locked read via coach.storage), migrated to v2.
+
+    The read takes the file's lock. A bare ``open()`` here let another
+    process's atomic ``os.replace`` fail with "access denied" on Windows,
+    which the snapshot then swallowed as a failed ingest.
+    """
+    from . import storage  # function-local: avoids module-level import cycle
+    history = storage.read_json(FITNESS_HISTORY_FILE, data_dir=DATA_DIR)
+    if not history:
+        return _empty_history()
+    return _ensure_history_keys(migrate_fitness_history(history))
+
+
+def save_fitness_history(history: dict[str, Any]) -> None:
+    """Whole-file save of fitness history (atomic, locked, UTF-8).
+
+    Only for callers that own the complete, freshly computed file (the ACWR
+    recompute script, tests). Anything that runs beside another server
+    process must merge through update_fitness_history_locked instead: a
+    whole-file save of a dict loaded seconds earlier overwrites whatever the
+    other process wrote in between.
 
     The date.today() here is a write-time audit stamp (last_updated), not
     date logic — allowlisted in tests/test_clock_discipline.py.
@@ -589,39 +609,84 @@ def save_fitness_history(history: dict[str, Any]) -> None:
     storage.write_json(FITNESS_HISTORY_FILE, history, data_dir=DATA_DIR)
 
 
-def update_fitness_history(
-    activities: list[dict[str, Any]],
-    today: date,
-) -> dict[str, Any]:
+def update_fitness_history_locked(mutate) -> dict[str, Any]:
+    """Locked read-modify-write of fitness_history.json.
+
+    ``mutate(history)`` receives the CURRENT on-disk history (v2, keys
+    guaranteed) and edits it in place; the result is written before the lock
+    is released. No Garmin calls inside: fetch first, merge after. Returns
+    the merged history, which callers use instead of any copy they loaded
+    earlier.
     """
-    Update fitness history with new activity data (v2 sport-aware format).
+    from . import storage  # function-local: avoids module-level import cycle
 
-    Args:
-        activities: List of parsed activities with date, type, garmin_training_load
-        today: Current date, resolved at the tool boundary (clock discipline)
+    def _apply(history):
+        history = _ensure_history_keys(migrate_fitness_history(history or _empty_history()))
+        result = mutate(history)
+        return result if result is not None else history
 
-    Returns:
-        Updated fitness history dict
+    return storage.update_json(FITNESS_HISTORY_FILE, _apply,
+                               data_dir=DATA_DIR, default=_empty_history())
+
+
+def merge_recovery_records(*, readiness_record: dict | None = None,
+                           sleep_records: list[dict] | None = None,
+                           sleep_need: dict | None = None,
+                           today: date) -> dict[str, Any]:
+    """Locked, add-only merge of readiness/sleep/sleep_need into the history.
+
+    Replaces the snapshot's old "mutate the copy loaded at step 0, then save
+    the whole file" pattern, which overwrote any day another process
+    ingested during the snapshot's Garmin calls.
     """
-    history = load_fitness_history()
-    daily_loads = history.get('daily_loads', {})
+    if not (readiness_record or sleep_records or sleep_need):
+        return load_fitness_history()
 
-    # Group activities by date
+    def _merge(history):
+        if readiness_record:
+            persist_readiness_data(readiness_record, history, today=today)
+        if sleep_records:
+            persist_sleep_data(sleep_records, history, today=today)
+        if sleep_need:
+            history['sleep_need'] = sleep_need
+        history['last_updated'] = today.isoformat()
+
+    return update_fitness_history_locked(_merge)
+
+
+def activity_ids(entry: Any) -> set[str]:
+    """Activity ids persisted on a daily_loads entry (as strings)."""
+    acts = entry.get('activities') if isinstance(entry, dict) else None
+    return {str(a.get('id')) for a in (acts or [])
+            if isinstance(a, dict) and a.get('id') is not None}
+
+
+def _day_entry_from_details(details: list[dict[str, Any]]) -> dict[str, Any]:
+    """Rebuild a daily_loads entry (total + by_sport) from activity details."""
+    by_sport: dict[str, float] = defaultdict(float)
+    for d in details:
+        by_sport[d.get('sport', 'other')] += float(d.get('load') or 0)
+    return {
+        'total': round(sum(by_sport.values()), 1),
+        'by_sport': {k: round(v, 1) for k, v in by_sport.items()},
+        'activities': details,
+    }
+
+
+def build_day_entries(activities: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Pure: parsed activities -> {date: daily_loads entry} (v2 shape)."""
     activities_by_date = defaultdict(list)
     for activity in activities:
         activity_date = activity.get('date', '')
         if activity_date:
             activities_by_date[activity_date].append(activity)
 
-    # Calculate load for each day in v2 format
+    entries = {}
     for date_str, day_activities in activities_by_date.items():
-        by_sport = defaultdict(float)
-        activity_details = []
-
+        details = []
         for act in day_activities:
             load = calculate_training_load(act)
             sport = get_sport_group(act.get('type', ''))
-            by_sport[sport] += load
             detail = {
                 'id': act.get('activity_id'),
                 'type': act.get('type', 'unknown'),
@@ -641,67 +706,91 @@ def update_fitness_history(
             # (e.g. "Cape Town Mobility") when pillars are scored offline.
             if act.get('name'):
                 detail['name'] = act.get('name')
-            activity_details.append(detail)
+            details.append(detail)
+        entries[date_str] = _day_entry_from_details(details)
+    return entries
 
-        total_load = sum(by_sport.values())
-        daily_loads[date_str] = {
-            'total': round(total_load, 1),
-            'by_sport': {k: round(v, 1) for k, v in by_sport.items()},
-            'activities': activity_details,
-        }
 
-    history['daily_loads'] = daily_loads
+def update_fitness_history(
+    activities: list[dict[str, Any]],
+    today: date,
+    *,
+    window_start: date | None = None,
+) -> dict[str, Any]:
+    """
+    Merge freshly fetched activities into fitness history (v2 sport-aware).
 
-    # Calculate overall metrics from total loads
-    total_loads_flat = _extract_total_loads(daily_loads)
-    metrics = calculate_fitness_metrics(total_loads_flat, today)
+    Locked read-modify-write: the per-day entries are built in memory, then
+    merged into the CURRENT on-disk history under its lock, so two server
+    processes ingesting different days both keep their day. Per day the
+    fetched activity set REPLACES the persisted one (Garmin is the source of
+    truth for a day it reports); days absent from the payload are kept and,
+    when ``window_start`` says Garmin should have reported them, logged.
 
-    # Calculate per-sport metrics for the snapshot
-    sport_metrics = {}
-    for sport in ['cycling', 'running', 'strength']:
-        sport_loads = _extract_sport_loads(daily_loads, sport)
-        if any(v > 0 for v in sport_loads.values()):
-            sm = calculate_fitness_metrics(sport_loads, today)
-            sport_metrics[sport] = {
-                'ctl': sm['ctl'],
-                'atl': sm['atl'],
-                'tsb': sm['tsb'],
-                'acwr': sm['acwr'],
-            }
+    Args:
+        activities: Parsed activities with date, type, garmin_training_load
+        today: Current date, resolved at the tool boundary (clock discipline)
+        window_start: First day the fetch covered (for the absent-day log)
 
-    # Build v2 snapshot
-    snapshot = {
-        'date': metrics['as_of_date'],
-        'total': {
-            'ctl': metrics['ctl'],
-            'atl': metrics['atl'],
-            'tsb': metrics['tsb'],
-            'acwr': metrics['acwr'],
-        },
-    }
-    snapshot.update(sport_metrics)
+    Returns:
+        The merged, on-disk fitness history
+    """
+    new_days = build_day_entries(activities)
+    fetched_ids = {aid for entry in new_days.values() for aid in activity_ids(entry)}
 
-    # Upsert by date — re-running on the same day must REPLACE that day's
-    # snapshot, not append a duplicate. Same-date duplicates corrupt trend
-    # math (get_fitness_trend treats entries as data points over time).
-    snapshots = [
-        s for s in history.get('snapshots', [])
-        if s.get('date') != snapshot['date']
-    ]
-    snapshots.append(snapshot)
-    snapshots.sort(key=lambda s: s.get('date', ''))
+    def _merge(history: dict[str, Any]) -> None:
+        loads = history['daily_loads']
+        for date_str, entry in new_days.items():
+            old = loads.get(date_str)
+            if old is not None:
+                old_ids, new_ids = activity_ids(old), activity_ids(entry)
+                if old_ids != new_ids:
+                    removed, added = sorted(old_ids - new_ids), sorted(new_ids - old_ids)
+                    (logger.warning if removed else logger.info)(
+                        "Ingest changed %s: %d -> %d activities (removed %s, added %s)",
+                        date_str, len(old_ids), len(new_ids), removed, added)
+            loads[date_str] = entry
 
-    # Retention is config-driven; default keeps the full trajectory
-    history['snapshots'] = _apply_retention(
-        snapshots, today, SNAPSHOT_RETENTION_DAYS)
+        # An activity whose start time was edited across midnight must not
+        # live under two dates: drop ids now reported elsewhere.
+        for date_str, entry in list(loads.items()):
+            if date_str in new_days or not isinstance(entry, dict):
+                continue
+            details = entry.get('activities') or []
+            moved = [a for a in details
+                     if isinstance(a, dict) and str(a.get('id')) in fetched_ids]
+            if moved:
+                kept = [a for a in details if a not in moved]
+                logger.warning("Ingest moved activity ids %s off %s",
+                               [a.get('id') for a in moved], date_str)
+                loads[date_str] = _day_entry_from_details(kept)
 
-    # Dedicated activity-ingestion marker. save_fitness_history bumps
-    # last_updated on EVERY save (including sleep/readiness persistence),
-    # so staleness checks must use this field instead.
-    history['last_activity_ingest_date'] = today.isoformat()
+        # Days Garmin should have reported but did not: kept (a transient
+        # empty payload must never wipe history), logged for the diary.
+        if window_start is not None and new_days:
+            for date_str, entry in loads.items():
+                if (window_start.isoformat() <= date_str <= today.isoformat()
+                        and date_str not in new_days and activity_ids(entry)):
+                    logger.info("Persisted day %s (%s) absent from the Garmin "
+                                "payload — kept", date_str, sorted(activity_ids(entry)))
 
-    save_fitness_history(history)
-    return history
+        # Snapshot from the MERGED loads, upserted by date (a same-day re-run
+        # replaces, never duplicates — duplicates corrupt trend math).
+        snapshot = _build_snapshot_entry(loads, today)
+        snapshots = [s for s in history.get('snapshots', [])
+                     if s.get('date') != snapshot['date']]
+        snapshots.append(snapshot)
+        snapshots.sort(key=lambda s: s.get('date', ''))
+        history['snapshots'] = _apply_retention(snapshots, today, SNAPSHOT_RETENTION_DAYS)
+
+        # Dedicated activity-ingestion marker (last_updated is bumped by
+        # every save, so staleness checks must use this field). Max, so a
+        # process with an older clock cannot regress it.
+        previous = history.get('last_activity_ingest_date') or ''
+        history['last_activity_ingest_date'] = max(previous, today.isoformat())
+        history['last_updated'] = today.isoformat()
+
+    return update_fitness_history_locked(_merge)
 
 
 def _extract_total_loads(daily_loads: dict[str, Any]) -> dict[str, float]:
@@ -1215,10 +1304,13 @@ def _build_snapshot_entry(daily_loads: dict, as_of: date) -> dict:
 
 
 def _backup_fitness_history(today: date) -> str:
-    """Copy fitness_history.json to data-backups/ with a collision-safe,
-    clock-discipline-friendly name (date + sequence, no wall-clock time)."""
-    backups_dir = Path(DATA_DIR).parent / 'data-backups'
-    backups_dir.mkdir(exist_ok=True)
+    """Copy fitness_history.json to <data_dir>/backups/ with a collision-safe,
+    clock-discipline-friendly name (date + sequence, no wall-clock time).
+
+    Inside the data dir: an installed copy never writes beside site-packages
+    and a checkout's .gitignore (data/*) already covers it."""
+    backups_dir = Path(DATA_DIR) / 'backups'
+    backups_dir.mkdir(parents=True, exist_ok=True)
     src = Path(DATA_DIR) / FITNESS_HISTORY_FILE
     for seq in range(1, 1000):
         target = backups_dir / f'fitness_history-{today:%Y%m%d}-{seq:03d}.bak.json'
@@ -1242,12 +1334,11 @@ def backfill_fitness_history(since: date, until: date, *, today: date,
     Add-only and idempotent: existing entries are never replaced, so a
     repeat run over the same range adds nothing. apply=False (default) is a
     dry-run report; apply=True first backs fitness_history.json up to
-    data-backups/, then writes atomically via save_fitness_history. Per-date
+    <data_dir>/backups/, then merges add-only under the file lock. Per-date
     Garmin failures are skipped and counted; an auth failure stops further
     fetches but keeps what was already gathered.
     """
     history = load_fitness_history()
-    daily_loads = history.get('daily_loads', {})
     have = {
         'snapshots': {s.get('date') for s in history.get('snapshots', [])},
         'sleep': {r.get('date') for r in history.get('sleep_history', [])},
@@ -1278,18 +1369,13 @@ def backfill_fitness_history(since: date, until: date, *, today: date,
 
     report['backup'] = _backup_fitness_history(today)
 
-    snapshots = history.get('snapshots', [])
-    for ds in missing['snapshots']:
-        snapshots.append(_build_snapshot_entry(daily_loads, date.fromisoformat(ds)))
-    snapshots.sort(key=lambda s: s.get('date', ''))
-    history['snapshots'] = snapshots
-
     added = {'snapshots': len(missing['snapshots']), 'sleep': 0, 'readiness': 0}
     unavailable = {'sleep': 0, 'readiness': 0}
     auth_error = None
+    fetched_sleep: list[dict] = []
+    fetched_readiness: list[dict] = []
 
     if not skip_garmin:
-        fetched_sleep = []
         for ds in missing['sleep']:
             try:
                 payload = garmin_api_call(lambda c, _ds=ds: c.get_sleep_data(_ds))
@@ -1307,8 +1393,6 @@ def backfill_fitness_history(since: date, until: date, *, today: date,
             else:
                 unavailable['sleep'] += 1
             time.sleep(BACKFILL_THROTTLE_SECS)
-        if fetched_sleep:
-            history = persist_sleep_data(fetched_sleep, history, today=today)
 
         if auth_error is None:
             from .parsers import parse_training_readiness
@@ -1333,17 +1417,32 @@ def backfill_fitness_history(since: date, until: date, *, today: date,
                 if parsed.get('score') is None and parsed.get('hrv_status') is None:
                     unavailable['readiness'] += 1
                 else:
-                    history = persist_readiness_data({
+                    fetched_readiness.append({
                         'date': ds,
                         'score': parsed.get('score'),
                         'level': parsed.get('level'),
                         'hrv_status': parsed.get('hrv_status'),
                         'body_battery': None,
-                    }, history, today=today)
+                    })
                     added['readiness'] += 1
                 time.sleep(BACKFILL_THROTTLE_SECS)
 
-    save_fitness_history(history)
+    def _merge(disk: dict[str, Any]) -> None:
+        # Add-only on the CURRENT disk state: nothing another process wrote
+        # during the slow, throttled Garmin loop above can be lost.
+        have_snapshots = {s.get('date') for s in disk['snapshots']}
+        for ds in missing['snapshots']:
+            if ds not in have_snapshots:
+                disk['snapshots'].append(
+                    _build_snapshot_entry(disk['daily_loads'], date.fromisoformat(ds)))
+        disk['snapshots'].sort(key=lambda s: s.get('date', ''))
+        if fetched_sleep:
+            persist_sleep_data(fetched_sleep, disk, today=today)
+        for rec in fetched_readiness:
+            persist_readiness_data(rec, disk, today=today)
+        disk['last_updated'] = today.isoformat()
+
+    history = update_fitness_history_locked(_merge)
     report['added'] = added
     report['unavailable'] = unavailable
     report['auth_error'] = auth_error
@@ -1728,13 +1827,10 @@ def get_day_context(day_str: str, daily_loads: dict, sleep_history: list) -> dic
 
 
 def get_athlete_hr_zones() -> dict[str, list[int]] | None:
-    """Load athlete's HR zones from profile."""
-    athlete_path = DATA_DIR / ATHLETE_FILE
-    if athlete_path.exists():
-        with open(athlete_path) as f:
-            athlete = json.load(f)
-        return athlete.get('personal', {}).get('hr_zones')
-    return None
+    """Load athlete's HR zones from profile (locked read)."""
+    from . import storage  # function-local: avoids module-level import cycle
+    athlete = storage.read_json(ATHLETE_FILE, data_dir=DATA_DIR)
+    return (athlete or {}).get('personal', {}).get('hr_zones')
 
 
 def parse_sleep_payload(payload: dict | None, day_iso: str) -> tuple[dict | None, dict | None]:

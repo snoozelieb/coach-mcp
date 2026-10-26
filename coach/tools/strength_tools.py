@@ -3,7 +3,7 @@
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call
 from ..parsers import parse_activities
-from ..planner import save_json_file, load_athlete
+from ..planner import save_json_file, load_json_file, load_athlete
 from ..config import (
     DEFAULT_EQUIVALENCE_GROUPS,
     PROGRESSION_INCREMENT_KG,
@@ -575,8 +575,7 @@ def generate_strength_workout(
                 "error": "Exercise library not found. Run scripts/fetch_exercises.py first."
             })
 
-        with open(exercises_file) as f:
-            library = json.load(f)
+        library = load_json_file('exercises.json')  # locked read
 
         exercises = library.get("exercises", {})
         injury_mappings = library.get("injury_mappings", {})
@@ -805,8 +804,7 @@ def add_exercise(
                 "error": "Exercise library not found. Run scripts/fetch_exercises.py first."
             })
 
-        with open(exercises_file) as f:
-            library = json.load(f)
+        library = load_json_file('exercises.json')  # locked read
 
         exercises = library.get("exercises", {})
 
@@ -850,8 +848,7 @@ def add_exercise(
         library["metadata"]["exercise_count"] = len(exercises)
 
         # Save
-        with open(exercises_file, 'w') as f:
-            json.dump(library, f, indent=2)
+        save_json_file('exercises.json', library)  # atomic, locked
 
         return json.dumps({
             "status": "success",

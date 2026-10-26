@@ -3,7 +3,6 @@ Rule engine for training compliance and safety checks.
 
 Pure Python logic - no LLM needed for validation.
 """
-import json
 from datetime import date, timedelta
 from typing import Any
 
@@ -30,13 +29,9 @@ def get_thresholds() -> dict[str, Any]:
     Thresholds control activity classification and compliance checking.
     Users can customize via training_config.json; config.py provides defaults.
     """
-    config_path = DATA_DIR / TRAINING_CONFIG_FILE
-    if config_path.exists():
-        with open(config_path) as f:
-            config = json.load(f)
-        thresholds = config.get('thresholds', {})
-    else:
-        thresholds = {}
+    from . import storage  # function-local: avoids an import cycle
+    config = storage.read_json(TRAINING_CONFIG_FILE, data_dir=DATA_DIR)
+    thresholds = (config or {}).get('thresholds', {})
 
     # Return thresholds with config.py defaults as fallbacks
     return {
@@ -134,12 +129,10 @@ def load_athlete_pillars() -> dict[str, Any] | None:
     - based_on_persona: which persona template was used
     - customized: whether athlete has modified the defaults
     """
-    athlete_path = DATA_DIR / ATHLETE_FILE
-    if not athlete_path.exists():
+    from . import storage  # function-local: avoids an import cycle
+    athlete = storage.read_json(ATHLETE_FILE, data_dir=DATA_DIR)
+    if not athlete:
         return None
-
-    with open(athlete_path) as f:
-        athlete = json.load(f)
 
     training_pillars = athlete.get('training_pillars')
     if not training_pillars or not training_pillars.get('pillars'):
@@ -186,18 +179,12 @@ def load_training_config() -> dict[str, Any]:
     pillars (from athlete or methodology) and constraints.
     """
     # Load training config
-    config_path = DATA_DIR / TRAINING_CONFIG_FILE
-    if config_path.exists():
-        with open(config_path) as f:
-            config = json.load(f)
-    else:
-        config = {}
+    from . import storage  # function-local: avoids an import cycle
+    config = storage.read_json(TRAINING_CONFIG_FILE, data_dir=DATA_DIR) or {}
 
     # Load methodology for constraints and race templates
-    methodology_path = DATA_DIR / METHODOLOGY_FILE
-    if methodology_path.exists():
-        with open(methodology_path) as f:
-            methodology = json.load(f)
+    methodology = storage.read_json(METHODOLOGY_FILE, data_dir=DATA_DIR)
+    if methodology:
         config['constraints'] = methodology.get('safety_constraints', {})
         config['race_requirements'] = methodology.get('race_templates', {})
         config['personas'] = methodology.get('personas', {})
@@ -236,13 +223,9 @@ def get_activity_classifications() -> dict[str, set]:
 
     Returns dict with sets: strength_types, mobility_types, cardio_types, high_intensity_types
     """
-    methodology_path = DATA_DIR / METHODOLOGY_FILE
-    if methodology_path.exists():
-        with open(methodology_path) as f:
-            methodology = json.load(f)
-        classifications = methodology.get('activity_classification', {})
-    else:
-        classifications = {}
+    from . import storage  # function-local: avoids an import cycle
+    methodology = storage.read_json(METHODOLOGY_FILE, data_dir=DATA_DIR)
+    classifications = (methodology or {}).get('activity_classification', {})
 
     return {
         'strength_types': set(classifications.get('strength_types', [])) | taxonomy.pillar_types('strength'),

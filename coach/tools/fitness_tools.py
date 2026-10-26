@@ -20,7 +20,8 @@ from ..garmin_client import garmin_api_call, fetch_activity_hr_zones
 from .data_tools import _daily_metrics, _personal_records
 from ..parsers import parse_activities, parse_training_readiness, parse_personal_records, calculate_baseline, parse_user_profile, parse_hr_zones
 from ..planner import load_athlete, load_methodology, load_json_file, save_json_file
-from ..fitness import (load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
+from ..fitness import (
+    activity_ids,load_fitness_history, calculate_fitness_metrics, calculate_intensity_distribution,
                      get_athlete_hr_zones, get_fitness_trend,
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics,
                      backfill_fitness_history, capacity_by_sport, derive_sport_capacity)
@@ -164,8 +165,8 @@ async def refresh_athlete_baseline(ctx: Context) -> str:
 
         # Save to athlete_baseline.json
         profile_path = DATA_DIR / ATHLETE_BASELINE_FILE
-        with open(profile_path, 'w') as f:
-            json.dump(profile, f, indent=2)
+        from ..storage import write_json  # atomic, locked; this module's DATA_DIR
+        write_json(ATHLETE_BASELINE_FILE, profile, data_dir=DATA_DIR)
 
         # Auto-populate athlete.json personal section from Garmin profile
         # Only fills None fields — never overwrites manually set values
@@ -387,8 +388,14 @@ def refresh_fitness_history(days: int = 180) -> str:
         # Parse activities
         activities = parse_activities(raw_activities)
 
-        # Update fitness history (v2 sport-aware format)
-        history = update_fitness_history(activities, today)
+        # Merge into fitness history (v2, locked) and report what changed
+        before = {d: activity_ids(e) for d, e in
+                  load_fitness_history().get('daily_loads', {}).items()}
+        history = update_fitness_history(
+            activities, today, window_start=today - timedelta(days=days))
+        after = {d: activity_ids(e) for d, e in history.get('daily_loads', {}).items()}
+        days_added = sorted(d for d in after if d not in before)
+        days_changed = sorted(d for d in after if d in before and after[d] != before[d])
 
         # Calculate current metrics from total loads
         total_loads = _extract_total_loads(history.get('daily_loads', {}))
@@ -398,6 +405,8 @@ def refresh_fitness_history(days: int = 180) -> str:
             'status': 'success',
             'activities_processed': len(activities),
             'days_with_load': len(history.get('daily_loads', {})),
+            'days_added': days_added,
+            'days_changed': days_changed,
             'period': f'{start} to {today.isoformat()}',
             'current_metrics': {
                 'ctl': metrics['ctl'],
@@ -435,7 +444,7 @@ def backfill_history(since: str, until: str | None = None,
 
     ALWAYS run the default dry_run=True first and show the athlete what is
     missing; only call again with dry_run=False after they confirm. Apply
-    mode backs fitness_history.json up to data-backups/ before writing and
+    mode backs fitness_history.json up to <data_dir>/backups/ before writing and
     throttles Garmin calls (a large range takes a few minutes).
 
     Args:

@@ -997,7 +997,7 @@ class TestBackfillFitnessHistory:
         assert report['added']['sleep'] + report['unavailable']['sleep'] == 5
         assert report['added']['readiness'] + report['unavailable']['readiness'] == 5
         assert report['auth_error'] is None
-        assert 'data-backups' in report['backup']
+        assert 'backups' in report['backup'] and 'data-backups' not in report['backup']
         saved = load_fitness_history()
         assert len(saved['snapshots']) == 5
         assert [s['date'] for s in saved['snapshots']] == sorted(

@@ -15,7 +15,7 @@ What it repairs (ADD-ONLY — existing entries are never replaced):
 Safety:
 - Default (and explicit --check) is a DRY-RUN: reports what is missing.
   No network, no writes.
-- --apply first copies fitness_history.json to data-backups/, then fetches
+- --apply first copies fitness_history.json to <data_dir>/backups/, then fetches
   (throttled), then writes atomically/locked via coach.storage.
 - Per-date Garmin failures are skipped and counted; auth failure stops
   further fetches but keeps what was gathered.
