@@ -21,6 +21,7 @@ with MFA prompt; persists tokens to the same ``TOKEN_DIR`` this module reads.
 """
 import logging
 import os
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -60,6 +61,9 @@ class GarminAuthRequiredError(Exception):
 
 # Cache the client instance to avoid repeated logins
 _cached_client: Garmin | None = None
+# Serialises the login path: one expired session must trigger ONE
+# credential login even when several tool calls race on the same server.
+_client_lock = threading.Lock()
 
 # Monotonic timestamp of the last failed credential login (auth latch).
 _auth_failed_at: float | None = None
@@ -161,10 +165,19 @@ def get_garmin_client(force_refresh: bool = False) -> Garmin:
             (expired session + failed/MFA-gated credential login), or while
             the auth latch from a recent failure is active.
     """
-    global _cached_client
-
     if _cached_client is not None and not force_refresh:
         return _cached_client
+    with _client_lock:
+        # Re-check under the lock: another thread may have logged in while
+        # this one waited for it.
+        if _cached_client is not None and not force_refresh:
+            return _cached_client
+        return _login_and_cache()
+
+
+def _login_and_cache() -> Garmin:
+    """Token-first restore, then ONE credential login. Caller holds _client_lock."""
+    global _cached_client
 
     if _auth_latch_active():
         raise GarminAuthRequiredError()

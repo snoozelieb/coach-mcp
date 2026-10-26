@@ -326,16 +326,38 @@ def classify_activity(
     }
 
 
+def _scale_requirement(weekly_value: float, weeks: float):
+    """Scale a per-week requirement to the analysis window.
+
+    A one-week window returns the configured value untouched (ints stay
+    ints); longer windows multiply and round to one decimal so a 28-day
+    check compares four weeks of work against four weeks of target.
+    """
+    if weeks == 1:
+        return weekly_value
+    return round((weekly_value or 0) * weeks, 1)
+
+
 def check_weekly_compliance(
     activities: list[dict[str, Any]],
-    pillars: dict[str, Any] = None
+    pillars: dict[str, Any] = None,
+    *,
+    window_days: int = 7,
 ) -> dict[str, Any]:
     """
-    Check weekly training compliance against pillar requirements.
+    Check training compliance against pillar requirements over a window.
+
+    Pillar targets are PER WEEK. ``window_days`` scales every requirement to
+    the window the activities cover, so a 28-day check compares four weeks
+    of training against four weeks of target. Before this scaling existed,
+    a 28-day report compared 22.4 h of training against an 8 h weekly target
+    and flagged "280 % of target, overtraining risk" for an athlete averaging
+    5.6 h/week (70 %).
 
     Args:
-        activities: List of parsed activities for the week
+        activities: List of parsed activities for the window
         pillars: Pillar requirements (loads from config if None)
+        window_days: Days the activities span (default 7 = one week)
 
     Returns:
         {
@@ -343,11 +365,20 @@ def check_weekly_compliance(
             mobility: {required: 90, completed: 45, deficit: 45, compliant: False},
             long_effort: {required: 1, completed: 1, deficit: 0, compliant: True},
             volume: {target_hrs: 6.0, actual_hrs: 5.5, percent: 92, compliant: True, over_volume: False},
+            window: {days: 7, weeks: 1.0},
+            per_week: {strength_sessions: 1.0, mobility_mins: 45.0,
+                       long_efforts: 1.0, volume_hrs: 5.5},
             overall_compliant: False,
             deficits: ["strength", "mobility"],
             warnings: []
         }
+        For windows longer than a week every ``required``/``target_hrs``
+        is the scaled figure; ``per_week`` always carries weekly averages.
     """
+    if not window_days or window_days < 1:
+        raise ValueError(f"window_days must be >= 1, got {window_days!r}")
+    weeks = window_days / 7
+
     # Load thresholds from config
     thresholds = get_thresholds()
     volume_compliance_min = thresholds.get('volume_compliance_percent', VOLUME_COMPLIANCE_MIN_PERCENT)
@@ -385,10 +416,11 @@ def check_weekly_compliance(
         if classification['is_long_effort']:
             long_effort_count += 1
 
-    # Get requirements
-    strength_required = pillars.get('strength_sessions_per_week', 0)
-    mobility_required = pillars.get('mobility_minutes_per_week', 0)
-    long_effort_required = pillars.get('long_effort_per_week', 0)
+    # Get requirements, scaled from per-week values to the window
+    strength_required = _scale_requirement(pillars.get('strength_sessions_per_week', 0), weeks)
+    mobility_required = _scale_requirement(pillars.get('mobility_minutes_per_week', 0), weeks)
+    long_effort_required = _scale_requirement(pillars.get('long_effort_per_week', 0), weeks)
+    volume_target = _scale_requirement(volume_target, weeks)
 
     # Build compliance report
     total_volume_hrs = round(total_volume_mins / 60, 1)
@@ -399,7 +431,10 @@ def check_weekly_compliance(
         volume_compliant = volume_percent >= volume_compliance_min
         over_volume = volume_percent > 150  # Flag if >150% of target
         if over_volume:
-            warnings.append(f"Volume at {volume_percent}% of target - potential overtraining risk")
+            window_note = '' if weeks == 1 else f' over {window_days} days'
+            warnings.append(
+                f"Volume at {volume_percent}% of target{window_note} - "
+                "potential overtraining risk")
     else:
         volume_percent = None  # No target set
         volume_compliant = True  # Can't fail if no target
@@ -431,6 +466,13 @@ def check_weekly_compliance(
             'percent': volume_percent,
             'compliant': volume_compliant,
             'over_volume': over_volume,
+        },
+        'window': {'days': window_days, 'weeks': round(weeks, 2)},
+        'per_week': {
+            'strength_sessions': round(strength_count / weeks, 1),
+            'mobility_mins': round(mobility_mins / weeks, 1),
+            'long_efforts': round(long_effort_count / weeks, 1),
+            'volume_hrs': round(total_volume_hrs / weeks, 1),
         },
     }
 

@@ -11,7 +11,16 @@ coach.fitness.save_fitness_history), which gives all call sites:
 - **Atomic writes**: unique tempfile in the same directory + os.replace.
 - **Cross-process locking**: stdlib lockfile (os.open with O_CREAT|O_EXCL),
   retry loop, and a stale-lock timeout (~30s) so a crashed process can never
-  wedge the system. No third-party dependencies.
+  wedge the system. No third-party dependencies. The lock is NOT reentrant:
+  a thread that already holds a file's lock gets an immediate RuntimeError
+  on re-entry instead of a 10 s wait and a broken lock.
+- **Locked read-modify-write** (``update_json``): the lost-update fix. Several
+  server processes (one per MCP client, plus the morning audit) share the
+  data files; "load, mutate in memory, save" lets the slowest one overwrite
+  everyone else's writes. ``update_json`` re-reads the file under its lock,
+  applies the caller's merge callback and writes before releasing, so a
+  concurrent writer can never clobber the change. Callbacks must be fast and
+  pure — no Garmin calls, no access to the same file.
 - **Schema validation** (flag-only) via coach.schemas for known filenames.
   Validation failures log a warning naming the file and the data is returned/
   written anyway — validation never blocks reads or destroys data.
@@ -37,6 +46,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date
@@ -59,6 +69,19 @@ LOCK_TIMEOUT_SECONDS = 10.0      # how long a caller waits to acquire
 LOCK_STALE_SECONDS = 30.0        # locks older than this are considered dead
 LOCK_RETRY_INTERVAL = 0.05
 
+# Lock paths held by the CURRENT thread. The lockfile cannot be acquired
+# twice, so same-thread re-entry (an update_json callback reading the file it
+# is updating) would wait out the timeout and then either raise TimeoutError
+# or, worse, break its own lock as stale. Detect it and fail at once.
+_held_locks = threading.local()
+
+
+def _thread_held_locks() -> set[str]:
+    held = getattr(_held_locks, 'paths', None)
+    if held is None:
+        held = _held_locks.paths = set()
+    return held
+
 
 @contextmanager
 def file_lock(
@@ -71,9 +94,18 @@ def file_lock(
     Acquisition is atomic (os.open with O_CREAT|O_EXCL works on both POSIX
     and Windows). If the lockfile is older than ``stale_after`` seconds it is
     treated as left behind by a crashed process and broken. Raises
-    TimeoutError if the lock cannot be acquired within ``timeout`` seconds.
+    TimeoutError if the lock cannot be acquired within ``timeout`` seconds,
+    and RuntimeError immediately when the calling thread already holds it.
     """
     lock_path = target.with_name(target.name + '.lock')
+    lock_key = str(lock_path)
+    held = _thread_held_locks()
+    if lock_key in held:
+        raise RuntimeError(
+            f"Lock re-entry on {target.name}: this thread already holds its "
+            "lock. An update_json mutate callback must not read or write the "
+            "file it is updating."
+        )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
     fd: int | None = None
@@ -101,9 +133,11 @@ def file_lock(
                 )
             time.sleep(LOCK_RETRY_INTERVAL)
 
+    held.add(lock_key)
     try:
         yield
     finally:
+        held.discard(lock_key)
         try:
             os.close(fd)
         finally:
@@ -385,6 +419,78 @@ def write_json(filename: str, data: Any, data_dir: Path | str | None = None) -> 
     with file_lock(path):
         _ensure_backup_before_upgrade(path, filename, data)
         _atomic_write(path, data)
+
+
+# ---------------------------------------------------------------------------
+# Locked read-modify-write — the lost-update fix
+# ---------------------------------------------------------------------------
+
+LOCKED_UPDATES_ENV = 'COACH_LOCKED_UPDATES'
+
+
+def locked_updates_enabled() -> bool:
+    """``COACH_LOCKED_UPDATES=0`` is the emergency kill switch: update_json
+    then degrades to read_json + mutate + write_json (two separate lock
+    acquisitions, the pre-1.4 behaviour). Any other value keeps the merge."""
+    raw = os.environ.get(LOCKED_UPDATES_ENV, '1').strip().lower()
+    return raw not in ('0', 'false', 'no', 'off')
+
+
+def update_json(
+    filename: str,
+    mutate: Callable[[Any], Any],
+    data_dir: Path | str | None = None,
+    *,
+    default: Any = None,
+) -> Any:
+    """Read-modify-write ``filename`` under its lock and return what was written.
+
+    ``mutate(data)`` receives the CURRENT on-disk content (migrated in memory;
+    a deep copy of ``default`` — or ``{}`` — when the file does not exist) and
+    either edits it in place or returns a replacement. The result is
+    migrated, validated and written atomically BEFORE the lock is released,
+    so a writer in another process can never overwrite this change with a
+    stale in-memory copy.
+
+    Rules for the callback:
+
+    - Fast and pure: no Garmin or other network calls (the lock is advisory
+      and breaks as stale after 30 s — do the slow work first, merge after).
+    - Merge deltas: update a dict by key, upsert a list by id, take the max of
+      a watermark. Never copy a whole in-memory snapshot over the disk state.
+    - Never touch the same file: a nested read_json/write_json/update_json
+      for ``filename`` raises RuntimeError from file_lock instead of deadlocking.
+      Other files are fine (save_weekly_plan archives into plan_history.json).
+
+    An exception inside ``mutate`` writes nothing and releases the lock.
+    """
+    path = _resolve(filename, data_dir)
+    if not locked_updates_enabled():
+        if path.exists():
+            data = read_json(filename, data_dir)
+        else:
+            data = copy.deepcopy(default) if default is not None else {}
+        result = mutate(data)
+        if result is not None:
+            data = result
+        write_json(filename, data, data_dir)
+        return data
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path):
+        if path.exists():
+            data = _read_raw(path)
+            data, _applied = apply_migrations(filename, data)
+        else:
+            data = copy.deepcopy(default) if default is not None else {}
+        result = mutate(data)
+        if result is not None:
+            data = result
+        data, _applied = apply_migrations(filename, data)
+        validate_data(filename, data)
+        _ensure_backup_before_upgrade(path, filename, data)
+        _atomic_write(path, data)
+    return data
 
 
 # ---------------------------------------------------------------------------

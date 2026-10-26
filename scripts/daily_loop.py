@@ -67,7 +67,7 @@ from coach.planner import (
 # Days counted back from yesterday whose audit is re-checked on every run while
 # it is still 'missed' or 'unverified'. A session that synced late, or a day
 # audited while Garmin was down, heals instead of staying a false miss.
-REAUDIT_WINDOW_DAYS = 3
+REAUDIT_WINDOW_DAYS = 7  # late syncs heal within the 9-day plan retention
 REAUDIT_STATUSES = ('missed', 'unverified')
 
 

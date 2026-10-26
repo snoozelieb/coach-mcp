@@ -58,6 +58,7 @@ from ..fitness import (
     derive_sport_capacity,
 )
 from ..config import (
+    INGEST_TRAILING_DAYS,
     DATA_DIR,
     TRAINING_CONFIG_FILE,
     TRAINING_PROGRAM_FILE,
@@ -1448,14 +1449,20 @@ def get_compliance_report(days: int = 7) -> str:
 
     Use get_coaching_snapshot() for full context; use this for a focused pillar check.
 
+    Pillar targets are per week; for windows longer than 7 days every
+    requirement is scaled to the window and `compliance.per_week` carries
+    the weekly averages, so a 28-day check never compares four weeks of
+    training against one week of target.
+
     Args:
-        days: Number of days to analyze (default 7 for weekly report)
+        days: Number of days to analyze (default 7 for weekly report; 1-365)
 
     Returns:
         JSON with compliance status per pillar, deficits, safety warnings, and
         upcoming events.
     """
     try:
+        days = max(1, min(int(days), 365))
         today = date.today()
         start_date = today - timedelta(days=days)
 
@@ -1468,8 +1475,8 @@ def get_compliance_report(days: int = 7) -> str:
         )
         activities = parse_activities(raw_activities)
 
-        # Check compliance against pillars
-        compliance = check_weekly_compliance(activities)
+        # Check compliance against pillars, targets scaled to the window
+        compliance = check_weekly_compliance(activities, window_days=days)
 
         # Check safety rules
         safety = check_safety_rules(activities, today=today)
@@ -1630,7 +1637,9 @@ def _compute_coaching_score(
             continue
         if isinstance(day_data, dict):
             recent_activities.extend(day_data.get('activities', []) or [])
-    compliance = check_weekly_compliance(recent_activities)
+    # 28 days of activities against per-week targets: scale the window or
+    # four weeks of strength sessions read as 400 % compliance.
+    compliance = check_weekly_compliance(recent_activities, window_days=28)
 
     achievability_score = 70
     achievability_data = {
@@ -1828,9 +1837,10 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
 
         # 0. Activity ingestion. ALWAYS runs, regardless of sections — this
         # write side effect keeps fitness_history (and therefore CTL/ACWR)
-        # alive. Re-ingests a trailing 3-day window (idempotent —
-        # update_fitness_history overwrites by date), extending back to the
-        # last actual ingest when ingestion has fallen behind.
+        # alive. Re-ingests a trailing INGEST_TRAILING_DAYS window
+        # (idempotent — update_fitness_history overwrites by date, so a
+        # late-syncing watch still lands), extending back to the last
+        # actual ingest when ingestion has fallen behind.
         #
         # Staleness is tracked via the dedicated last_activity_ingest_date:
         # sleep/readiness persistence bumps last_updated on every snapshot,
@@ -1842,7 +1852,7 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             existing_loads = history.get('daily_loads', {})
             last_ingest = max(existing_loads.keys()) if existing_loads else None
 
-        ingest_start = today - timedelta(days=3)
+        ingest_start = today - timedelta(days=INGEST_TRAILING_DAYS)
         if last_ingest:
             try:
                 ingest_start = min(ingest_start, date.fromisoformat(last_ingest))

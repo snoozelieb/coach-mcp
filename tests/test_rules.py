@@ -2,6 +2,8 @@
 Tests for training rule engine.
 """
 from unittest.mock import patch
+
+import pytest
 from coach.rules import (
     classify_activity,
     check_weekly_compliance,
@@ -246,6 +248,66 @@ class TestCheckWeeklyCompliance:
         assert result['mobility']['completed'] == 0
         assert result['long_effort']['completed'] == 0
         assert result['overall_compliant'] is False
+
+    def test_one_week_window_keeps_configured_requirements(self):
+        pillars = {
+            'strength_sessions_per_week': 2,
+            'mobility_minutes_per_week': 90,
+            'long_effort_per_week': 1,
+            'weekly_volume_target_hrs': 8.0,
+        }
+
+        result = check_weekly_compliance([], pillars, window_days=7)
+
+        assert result['strength']['required'] == 2
+        assert result['mobility']['required'] == 90
+        assert result['volume']['target_hrs'] == 8.0
+        assert result['window'] == {'days': 7, 'weeks': 1.0}
+
+    def test_28_day_window_scales_targets_to_four_weeks(self):
+        """The athlete's report: 22.4 h over 4 weeks against an 8 h weekly
+        target was flagged "280 % of target, overtraining risk". It is 70 %."""
+        activities = [{'type': 'cycling', 'duration_mins': 1344}]  # 22.4 h
+        activities += [{'type': 'yoga', 'duration_mins': 60}] * 3  # 180 min
+        pillars = {
+            'strength_sessions_per_week': 2,
+            'mobility_minutes_per_week': 90,
+            'long_effort_per_week': 0,
+            'weekly_volume_target_hrs': 8.0,
+        }
+
+        result = check_weekly_compliance(activities, pillars, window_days=28)
+
+        assert result['volume']['target_hrs'] == 32.0
+        assert result['volume']['actual_hrs'] == 25.4
+        assert result['volume']['percent'] == 79.4
+        assert result['volume']['over_volume'] is False
+        assert not any('overtraining' in w for w in result['warnings'])
+        assert result['mobility']['required'] == 360.0
+        assert result['mobility']['completed'] == 180
+        assert result['mobility']['compliant'] is False
+        assert result['strength']['required'] == 8.0
+        assert result['window'] == {'days': 28, 'weeks': 4.0}
+        assert result['per_week']['mobility_mins'] == 45.0
+        assert result['per_week']['volume_hrs'] == round(25.4 / 4, 1)
+
+    def test_window_warning_names_the_window(self):
+        activities = [{'type': 'cycling', 'duration_mins': 60 * 50}]  # 50 h
+        pillars = {
+            'strength_sessions_per_week': 0,
+            'mobility_minutes_per_week': 0,
+            'long_effort_per_week': 0,
+            'weekly_volume_target_hrs': 8.0,
+        }
+
+        result = check_weekly_compliance(activities, pillars, window_days=14)
+
+        assert result['volume']['over_volume'] is True
+        assert any('over 14 days' in w for w in result['warnings'])
+
+    def test_rejects_zero_day_window(self):
+        with pytest.raises(ValueError):
+            check_weekly_compliance([], {'strength_sessions_per_week': 0}, window_days=0)
 
 
 class TestCheckSafetyRules:

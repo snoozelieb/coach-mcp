@@ -91,6 +91,12 @@ TOKEN_DIR = resolve_token_dir(DATA_DIR)  # String for garminconnect's tokenstore
 # silently erased history (14 sleep nights survived a year of coaching) and
 # were retired as a defect on 2026-08-27.
 SLEEP_HISTORY_RETENTION_DAYS: int | None = None
+
+# Every snapshot re-fetches this many trailing days of activities and
+# re-ingests them (idempotent per day), so a watch that syncs late still
+# lands in fitness_history. 3 days silently lost anything synced later
+# than that; 14 costs one paginated Garmin call either way.
+INGEST_TRAILING_DAYS = 14
 READINESS_HISTORY_RETENTION_DAYS: int | None = None
 SNAPSHOT_RETENTION_DAYS: int | None = None
 

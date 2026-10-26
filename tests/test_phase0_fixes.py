@@ -412,8 +412,13 @@ class TestSnapshotIngestion:
         # Ingestion is fresh — no stale flag
         assert result.get('data_quality', {}).get('fitness_history') != 'stale'
 
-    async def test_trailing_3_day_reingest_always_runs(
+    async def test_trailing_reingest_window_always_runs(
             self, data_env, mock_ctx, monkeypatch):
+        """Every snapshot re-ingests INGEST_TRAILING_DAYS (14) of activities
+        even when the watermark is fresh, so a watch that syncs a session
+        days late still lands in fitness_history (3 days lost a 5.6 h
+        tournament day until a manual refresh)."""
+        from coach.config import INGEST_TRAILING_DAYS
         client = FakeGarminClient(raw_activities=[_raw_activity(TODAY)])
         _seed_snapshot_env(data_env)
         _patch_garmin(monkeypatch, client)
@@ -423,7 +428,8 @@ class TestSnapshotIngestion:
         await get_coaching_snapshot(mock_ctx)  # fully fresh — must STILL re-ingest
 
         second_ingest_start, _ = client.activity_calls[calls_after_first]
-        assert second_ingest_start == (TODAY - timedelta(days=3)).isoformat()
+        assert INGEST_TRAILING_DAYS >= 14
+        assert second_ingest_start == (TODAY - timedelta(days=INGEST_TRAILING_DAYS)).isoformat()
 
     async def test_coaching_memory_is_most_recent_first(
             self, data_env, mock_ctx, monkeypatch):

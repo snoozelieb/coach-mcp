@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from coach.storage import (
     main as storage_main,
     migrate_data_files,
     read_json,
+    update_json,
     validate_data,
     write_json,
 )
@@ -856,3 +858,125 @@ class TestDelegation:
         saved = json.loads((data_dir / 'weekly_plan.json').read_text(encoding='utf-8'))
         assert saved['week_start'] == today
         assert saved['schema_version'] == 1
+
+
+# ---------------------------------------------------------------------------
+# Locked read-modify-write (update_json) — the lost-update fix
+# ---------------------------------------------------------------------------
+
+_UPDATE_CHILD_SCRIPT = """
+import sys, time
+from coach.storage import update_json
+
+data_dir, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def mutate(data):
+    time.sleep(0.4)   # hold the lock long enough for the other process to collide
+    data.setdefault('daily_loads', {})[key] = {'total': float(value), 'by_sport': {}, 'activities': []}
+
+update_json('fitness_history.json', mutate, data_dir=data_dir,
+            default={'schema_version': 2, 'daily_loads': {}, 'snapshots': []})
+"""
+
+
+class TestUpdateJson:
+    def test_in_place_mutation_is_written_and_returned(self, data_dir):
+        write_json('coaching_log.json', {'decisions': [1]}, data_dir=data_dir)
+        out = update_json('coaching_log.json',
+                          lambda d: d['decisions'].append(2), data_dir=data_dir)
+        assert out['decisions'] == [1, 2]
+        assert read_json('coaching_log.json', data_dir=data_dir)['decisions'] == [1, 2]
+
+    def test_returned_replacement_wins(self, data_dir):
+        write_json('coaching_log.json', {'decisions': [1]}, data_dir=data_dir)
+        update_json('coaching_log.json', lambda d: {'decisions': [9]}, data_dir=data_dir)
+        assert read_json('coaching_log.json', data_dir=data_dir)['decisions'] == [9]
+
+    def test_missing_file_starts_from_a_copy_of_default(self, data_dir):
+        default = {'days': {}, 'seed': 1}
+        out = update_json('weekly_plan.json', lambda d: d.update(x=1),
+                          data_dir=data_dir, default=default)
+        assert out['seed'] == 1 and out['x'] == 1
+        assert default == {'days': {}, 'seed': 1}  # caller's default untouched
+
+    def test_exception_in_mutate_writes_nothing_and_releases_lock(self, data_dir):
+        write_json('coaching_log.json', {'a': 1}, data_dir=data_dir)
+
+        def boom(d):
+            d['a'] = 2
+            raise ValueError('abort')
+
+        with pytest.raises(ValueError):
+            update_json('coaching_log.json', boom, data_dir=data_dir)
+        assert read_json('coaching_log.json', data_dir=data_dir)['a'] == 1
+        assert not (data_dir / 'coaching_log.json.lock').exists()
+
+    def test_reentry_on_same_file_fails_fast(self, data_dir):
+        """A callback that reads the file it is updating would otherwise wait
+        out the 10 s lock timeout (or break its own lock as stale)."""
+        write_json('coaching_log.json', {}, data_dir=data_dir)
+        start = time.monotonic()
+        with pytest.raises(RuntimeError, match='re-entry'):
+            update_json('coaching_log.json',
+                        lambda d: read_json('coaching_log.json', data_dir=data_dir),
+                        data_dir=data_dir)
+        assert time.monotonic() - start < 2
+        assert not (data_dir / 'coaching_log.json.lock').exists()
+        # Lock usable again afterwards
+        update_json('coaching_log.json', lambda d: d.update(ok=True), data_dir=data_dir)
+
+    def test_other_files_may_be_written_inside_the_callback(self, data_dir):
+        def mutate(plan):
+            write_json('plan_history.json', {'archived_days': []}, data_dir=data_dir)
+            plan['days'] = {}
+
+        update_json('weekly_plan.json', mutate, data_dir=data_dir)
+        assert read_json('plan_history.json', data_dir=data_dir)['archived_days'] == []
+
+    def test_kill_switch_degrades_to_plain_read_then_write(self, data_dir, monkeypatch):
+        monkeypatch.setenv('COACH_LOCKED_UPDATES', '0')
+        write_json('coaching_log.json', {'a': 1}, data_dir=data_dir)
+        out = update_json('coaching_log.json', lambda d: d.update(b=2), data_dir=data_dir)
+        assert out['a'] == 1
+        assert read_json('coaching_log.json', data_dir=data_dir)['b'] == 2
+
+    def test_threads_merging_the_same_file_keep_every_write(self, data_dir):
+        write_json('coaching_log.json', {'ids': []}, data_dir=data_dir)
+        errors = []
+
+        def worker(i):
+            try:
+                update_json('coaching_log.json', lambda d: d['ids'].append(i),
+                            data_dir=data_dir)
+            except Exception as e:  # pragma: no cover - surfaced by the assert
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=30)
+        assert not errors
+        assert sorted(read_json('coaching_log.json', data_dir=data_dir)['ids']) == list(range(8))
+
+    def test_two_processes_merging_the_same_file_keep_both_writes(self, tmp_path):
+        """The athlete's bug: two server processes (Claude Desktop runs two,
+        Claude Code one, the morning audit a fourth) each ingest a day. With
+        load-then-save the slower one overwrote the other's day; with
+        update_json both days survive."""
+        script = tmp_path / 'update_child.py'
+        script.write_text(_UPDATE_CHILD_SCRIPT, encoding='utf-8')
+        data_dir = tmp_path / 'merge_data'
+        data_dir.mkdir()
+        env = {**os.environ, 'PYTHONPATH': str(REPO_ROOT)}
+        procs = [
+            subprocess.Popen([sys.executable, str(script), str(data_dir), day, str(i + 1)],
+                             env=env, cwd=str(REPO_ROOT))
+            for i, day in enumerate(('2026-01-01', '2026-01-02'))
+        ]
+        for proc in procs:
+            assert proc.wait(timeout=90) == 0
+
+        data = json.loads((data_dir / 'fitness_history.json').read_text(encoding='utf-8'))
+        assert set(data['daily_loads']) == {'2026-01-01', '2026-01-02'}
+        assert not (data_dir / 'fitness_history.json.lock').exists()
