@@ -2,5 +2,6 @@
 # (the weekly CI cron exists to catch date-rot, not dependency drift).
 # Install with: pip install -r requirements-dev.txt
 -r requirements.txt
-pytest==9.0.3
-pytest-asyncio==1.3.0
+pytest==9.1.1
+pytest-asyncio==1.4.1
+ruff==0.15.11           # lint gate: CI runs `ruff check .` (config in pyproject.toml)

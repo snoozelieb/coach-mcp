@@ -12,7 +12,7 @@ Verifies:
 """
 import time
 import pytest
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, patch
 
 from garminconnect import (
     GarminConnectAuthenticationError,
@@ -23,7 +23,6 @@ from coach.garmin_client import (
     GarminAuthRequiredError,
     garmin_api_call,
     get_garmin_client,
-    _cached_client,
 )
 import coach.garmin_client as garmin_client
 
@@ -51,7 +50,6 @@ class TestGarminApiCallAuthRetry:
         mock_get_client.side_effect = [stale_client, fresh_client]
 
         # First attempt raises auth error, second succeeds
-        stale_client_call_count = 0
 
         def mock_fn(client):
             if client is stale_client:
@@ -178,7 +176,7 @@ class TestGarminApiCallHappyPath:
         mock_client = Mock()
         mock_get_client.return_value = mock_client
 
-        result = garmin_api_call(lambda c: c.get_activities_by_date("2025-01-01", "2025-01-07"))
+        garmin_api_call(lambda c: c.get_activities_by_date("2025-01-01", "2025-01-07"))
 
         mock_client.get_activities_by_date.assert_called_once_with("2025-01-01", "2025-01-07")
 

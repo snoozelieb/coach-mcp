@@ -1,7 +1,7 @@
 """Tests for tools/injury_tools.py — diagnose, research, and track injuries."""
 import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from datetime import date
 
 import coach.planner as planner
@@ -13,7 +13,6 @@ from coach.tools.injury_tools import (
     _is_significant_redirect,
     _extract_clinical_info,
     _fetch_injury_research,
-    _save_diagnosis_to_profile,
 )
 
 
@@ -33,9 +32,6 @@ def injury_dir(data_dir, monkeypatch):
     monkeypatch.setattr(injury_mod, 'save_json_file', lambda fn, data: (
         (data_dir / fn).write_text(json.dumps(data, indent=2))
     ))
-    monkeypatch.setattr(injury_mod, 'load_json_file', lambda fn: json.loads(
-        (data_dir / fn).read_text()
-    ) if (data_dir / fn).exists() else {})
     # Seed minimal athlete
     (data_dir / 'athlete.json').write_text(json.dumps({
         'personal': {'name': 'Test', 'age': 30},

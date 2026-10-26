@@ -31,7 +31,6 @@ from .config import (
     ACWR_HIGH_THRESHOLD,
     ACWR_DANGER_THRESHOLD,
     MIN_DAYS_FOR_CTL,
-    MIN_DAYS_FOR_TRENDS,
     CTL_TARGETS,
     TSS_PER_HOUR_ESTIMATE,
     MAX_WEEKLY_LOAD_INCREASE_PCT,
@@ -327,12 +326,8 @@ def calculate_ctl_target(
     # Calculate safe increase from current load
     if current_weekly_tss and current_weekly_tss > 0:
         max_safe_tss = current_weekly_tss * (1 + MAX_WEEKLY_LOAD_INCREASE_PCT / 100)
-        recommended_tss = min(required_weekly_tss, max_safe_tss)
-        safe_to_increase = required_weekly_tss <= max_safe_tss
     else:
         max_safe_tss = required_weekly_tss
-        recommended_tss = required_weekly_tss
-        safe_to_increase = True
 
     # Return DATA only - no prescriptions, no directives
     # LLM uses load_increase_guidance ranges to decide based on adaptation signals
@@ -1964,7 +1959,6 @@ def summarize_sleep_records(sleep_records: list[dict], sleep_need: dict | None =
             quality_issues.append(f'Inconsistent sleep ({variance:.1f}hr variance) - poor sleep hygiene')
 
     # CHRONIC STATUS: 7-day average for overall training load decisions
-    quantity_ok = avg_duration >= (target_hrs - 0.5)  # Within 30min of target
     quality_ok = avg_score and avg_score >= SLEEP_SCORE_ADEQUATE and avg_deep_pct >= SLEEP_DEEP_PCT_MIN
 
     # ACUTE STATUS: Recent nights (last 2-3) for "can I do hard session tomorrow?"
@@ -2011,13 +2005,13 @@ def summarize_sleep_records(sleep_records: list[dict], sleep_need: dict | None =
     # Generate recommendation based on BOTH chronic and acute status
     # Chronic status commentary
     if chronic_status == 'severe_deficit':
-        chronic_note = f'CRITICAL: Severe sleep deficit. Training is catabolic.'
+        chronic_note = 'CRITICAL: Severe sleep deficit. Training is catabolic.'
     elif chronic_status == 'deficit':
         chronic_note = f'Sleep deficit ({weekly_deficit:.0f}hrs/week vs target {target_hrs}hrs/night).'
     elif chronic_status == 'quality_issue':
-        chronic_note = f'Duration OK but quality poor. Focus on sleep hygiene.'
+        chronic_note = 'Duration OK but quality poor. Focus on sleep hygiene.'
     elif chronic_status == 'borderline':
-        chronic_note = f'Close to target. Add 30 mins tonight.'
+        chronic_note = 'Close to target. Add 30 mins tonight.'
     else:
         chronic_note = 'Sleep adequate for training adaptation.'
 
@@ -2028,7 +2022,7 @@ def summarize_sleep_records(sleep_records: list[dict], sleep_need: dict | None =
         else:
             acute_note = f'Recent sleep good (avg score {recent_avg_score}, {recent_avg_duration}hrs). Ready for hard efforts.'
     elif acute_status == 'cautious':
-        acute_note = f'Recent sleep mixed. Proceed with intensity but monitor how you feel.'
+        acute_note = 'Recent sleep mixed. Proceed with intensity but monitor how you feel.'
     else:
         acute_note = f'Recent sleep poor ({recent_avg_duration}hrs avg). Skip max efforts today.'
 

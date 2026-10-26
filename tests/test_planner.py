@@ -2,16 +2,11 @@
 Tests for planner module - context building, plan and suggestion management.
 """
 import json
-import pytest
-from pathlib import Path
 from datetime import date, timedelta
 from coach.planner import (
     build_planning_context,
     create_empty_week_template,
-    save_json_file,
-    load_json_file,
     get_week_constraints,
-    DATA_DIR,
 )
 import coach.planner as planner
 

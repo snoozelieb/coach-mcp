@@ -572,7 +572,7 @@ def analyze_ftp_test(activity_id: str = None) -> str:
         # 7. COACH RECOMMENDATION
         if crash_detected:
             suggested_ftp = int(estimated_ftp * 0.95) if estimated_ftp else None  # Extra conservative
-            rationale = f"Athlete crashed during test. Set conservative FTP to ensure proper zone training."
+            rationale = "Athlete crashed during test. Set conservative FTP to ensure proper zone training."
             retest_weeks = 4
         elif not test_completed:
             suggested_ftp = int(estimated_ftp * 0.97) if estimated_ftp else None

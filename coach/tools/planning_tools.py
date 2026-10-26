@@ -579,7 +579,6 @@ def get_weekly_prescription() -> dict:
 
         # Calculate prescribed volume
         base_volume_hrs = current_block.get('weekly_volume_target_hrs', 6.0)
-        volume_trend = phase_info.get('volume_trend', 'stable')
 
         # Adjust volume based on ACWR if available
         if fitness_metrics:

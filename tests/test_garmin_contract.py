@@ -15,7 +15,7 @@ This file makes any such dependency rename fail loudly in CI instead:
   library even if nobody updates the static tables below.
 
 No network access: tests only construct ``Garmin()`` (pure attribute setup —
-verified against the installed 0.3.5 and 0.3.17 source) and inspect signatures/source.
+verified against the installed 0.3.5, 0.3.17 and 0.3.20 source) and inspect signatures/source.
 """
 import inspect
 import re

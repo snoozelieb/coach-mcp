@@ -162,7 +162,7 @@ are read by FastMCP itself, not by repo code.
 
 ### Garmin Authentication
 
-garminconnect 0.3.17 (exact pin) directly — no custom Cloudflare code (the library's `curl_cffi`
+garminconnect 0.3.20 (exact pin) directly — no custom Cloudflare code (the library's `curl_cffi`
 handles Garmin's SSO natively). Token-first restore from `.garth/garmin_tokens.json`;
 on failure ONE non-interactive credential login (MFA is a hard stop — never blocks
 on input); tools then raise `GarminAuthRequiredError` whose message names the fix
@@ -172,8 +172,9 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,422 tests across 39 files (CI: GitHub Actions on push/PR + weekly cron;
-installs `requirements-dev.txt`). Four patterns are THE way tests are written:
+1,422 tests across 39 files (CI: GitHub Actions on push/PR + weekly cron —
+a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
+`requirements-dev.txt`). Four patterns are THE way tests are written:
 
 - **FakeGarminClient** (`tests/conftest.py`) — canonical fake for ALL Garmin
   traffic; realistic response shapes (list-vs-dict fidelity is load-bearing).

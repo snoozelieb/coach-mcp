@@ -122,16 +122,31 @@ All notable changes to coach-mcp are documented here. The format follows
   project Claude Code skills added under `.claude/skills/` (release,
   new-tool, capture-fixtures, acwr-recompute) and — together with the
   pre-existing mcp-builder — un-ignored so all five ship with the repo.
-- **garminconnect 0.3.5 → 0.3.17** (exact pin). Picks up upstream's
+- **garminconnect 0.3.5 → 0.3.20** (exact pin). 0.3.17 picked up upstream's
   token-storage and auth security hardening (atomic, symlink-safe token
   writes; fail-closed MFA resume), the `display_name` retry fix that kept
   sleep/RHR/PR endpoints working after a transient profile fetch, and capped
-  activity pagination. Verified before bumping: full suite, a payload diff
-  of the workouts coach pushes (only change: HR/power targets serialize as
-  floats, e.g. `120.0`), and a read-only live run of every Garmin read the
-  coach makes. The token file format is unchanged, so rolling back is a
-  plain re-pin. The contract test now pins the token file name by
-  behavior instead of library source text.
+  activity pagination. 0.3.18–0.3.20 add the fix for Garmin's 429 on every
+  fresh mobile login (the credential fallback and `scripts/garmin_login.py`
+  path had been blocked upstream since April), cross-process MFA resume,
+  HTTP 427 handled as rate limiting, and profile-timezone date handling
+  (`tzdata` on Windows). Verified before each bump: full suite, a diff of
+  every workout payload the coach pushes serialized through the library's
+  own models (0.3.5 → 0.3.17: HR/power targets serialize as floats, e.g.
+  `120.0`; 0.3.17 → 0.3.20: byte-identical), and a read-only live run of
+  every Garmin read the coach makes. The token file format is unchanged, so
+  rolling back is a plain re-pin. The contract test now pins the token file
+  name by behavior instead of library source text.
+- FastMCP stays on `>=3.4,<4`; the project is developed and released
+  against 3.4.11 (the 3.x line still receives security backports). FastMCP 4
+  (MCP SDK 2, httpx2) is deferred to a dedicated release.
+- Dev toolchain: pytest 9.0.3 → 9.1.1, pytest-asyncio 1.3.0 → 1.4.1; `ruff`
+  0.15.11 pinned in `requirements-dev.txt` with its rule set in
+  `pyproject.toml` (`[tool.ruff]`). CI gained a lint job (`ruff check .`)
+  and now runs the suite on Python 3.12, 3.13 and 3.14 — the versions
+  `pyproject.toml` advertises — instead of 3.14 only. Unused imports,
+  placeholder-less f-strings and dead assignments were cleaned up; no
+  behaviour change.
 - `.gitignore` now treats everything under `data/` as private by default
   (only the shipped `methodology.json` template is tracked), so new data
   files such as `training_program.json` can't be committed by accident.

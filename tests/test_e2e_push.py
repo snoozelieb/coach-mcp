@@ -19,7 +19,6 @@ from datetime import date, timedelta
 
 import pytest
 
-import coach.garmin_client as garmin_client_mod
 import coach.planner as planner
 import coach.rules as rules
 import coach.fitness as fitness_mod

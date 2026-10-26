@@ -1,7 +1,7 @@
 # Runtime dependencies (test/dev deps live in requirements-dev.txt).
 # Exact pins where stability matters; bounded ranges elsewhere. Keep in
 # sync with [project].dependencies in pyproject.toml.
-garminconnect==0.3.17    # auth stack rebuilt on 0.3.5 (Phase 1), re-verified live on 0.3.17 — do not bump casually
+garminconnect==0.3.20    # auth stack rebuilt on 0.3.5 (Phase 1); re-verified live on 0.3.17 and 0.3.20 — do not bump casually
 fastmcp>=3.4,<4          # 3.4.x pinned for tool annotations + typed output schemas
 pydantic>=2.13,<3        # schema layer tested floor; v3 would break the models
 python-dotenv>=1.0,<2

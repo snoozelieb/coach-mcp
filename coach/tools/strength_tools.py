@@ -3,7 +3,7 @@
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call
 from ..parsers import parse_activities
-from ..planner import load_json_file, save_json_file, load_athlete
+from ..planner import save_json_file, load_athlete
 from ..config import (
     DEFAULT_EQUIVALENCE_GROUPS,
     PROGRESSION_INCREMENT_KG,
@@ -567,7 +567,6 @@ def generate_strength_workout(
         athlete = load_athlete()
         injury_history = athlete.get("injury_history", [])
         active_injuries = [i for i in injury_history if i.get("status") == "active"]
-        past_injuries = [i for i in injury_history if i.get("status") in ["resolved", "improving"]]
 
         # Load exercise library
         exercises_file = DATA_DIR / "exercises.json"

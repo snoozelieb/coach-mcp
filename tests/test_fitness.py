@@ -11,15 +11,11 @@ Tests cover:
 - Helper functions (_extract_total_loads, _extract_sport_loads)
 """
 import json
-import pytest
 from datetime import date, timedelta
-from unittest.mock import patch
 
 from coach.fitness import (
     calculate_training_load,
     calculate_daily_load,
-    calculate_fitness_metrics,
-    calculate_ewma,
     calculate_intensity_distribution,
     migrate_fitness_history,
     load_fitness_history,

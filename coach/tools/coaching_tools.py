@@ -62,12 +62,10 @@ from ..config import (
     TRAINING_CONFIG_FILE,
     TRAINING_PROGRAM_FILE,
     CTL_TARGETS,
-    DEFAULT_EQUIVALENCE_GROUPS,
     RACE_TIME_WEIGHTS,
     RACE_TIME_WEIGHT_DEFAULT,
 )
 from ..taxonomy import (
-    types_match,
     types_match_with_name,
     is_mobility_by_name,
     is_known_type,

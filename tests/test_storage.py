@@ -22,7 +22,6 @@ import pytest
 
 import coach.planner as planner
 import coach.fitness as fitness_mod
-import coach.storage as storage
 from coach.schemas import SCHEMA_MODELS
 from coach.storage import (
     apply_migrations,
@@ -30,7 +29,6 @@ from coach.storage import (
     file_lock,
     main as storage_main,
     migrate_data_files,
-    pending_migrations,
     read_json,
     validate_data,
     write_json,

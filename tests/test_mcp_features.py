@@ -4,7 +4,6 @@ Smoke tests to verify these features don't crash on clean or normal installs.
 """
 import json
 import pytest
-from unittest.mock import AsyncMock
 
 import coach.planner as planner
 import coach.rules as rules

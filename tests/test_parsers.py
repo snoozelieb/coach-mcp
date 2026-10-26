@@ -3,7 +3,6 @@ Tests for parsers.py - pure parsing functions for Garmin API responses.
 
 These tests have zero MCP dependency and test pure data transformations.
 """
-import json
 import pytest
 from datetime import date, datetime
 from coach.parsers import (

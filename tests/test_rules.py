@@ -1,7 +1,6 @@
 """
 Tests for training rule engine.
 """
-import pytest
 from unittest.mock import patch
 from coach.rules import (
     classify_activity,

@@ -14,15 +14,38 @@ on:
     - cron: '0 5 * * 1'
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          # Matches local dev (3.14); all pinned deps support it.
           python-version: '3.14'
+          cache: pip
+
+      - name: Install dev dependencies (pins ruff)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        # Rule set and per-file ignores live in pyproject.toml [tool.ruff].
+        run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml advertises >=3.12; local dev runs 3.14.
+        python-version: ['3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install dependencies

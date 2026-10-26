@@ -6,7 +6,6 @@ that can be uploaded and scheduled to Garmin Connect.
 """
 import json
 from pathlib import Path
-from typing import Any
 
 from .config import DATA_DIR, ATHLETE_FILE
 from .fitness import get_athlete_hr_zones
@@ -17,10 +16,6 @@ from garminconnect.workout import (
     WorkoutSegment,
     ExecutableStep,
     RepeatGroup,
-    create_warmup_step,
-    create_cooldown_step,
-    create_interval_step,
-    create_recovery_step,
 )
 import logging
 
@@ -1491,7 +1486,6 @@ def build_padel_workout(session: dict, date: str) -> dict:
     """
     duration_mins = session.get("duration_mins", 90)
     description = session.get("description", "")
-    notes = session.get("notes", "")
 
     # Generate workout name
     if description and description.lower() != "padel":

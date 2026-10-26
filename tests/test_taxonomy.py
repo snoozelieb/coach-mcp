@@ -28,7 +28,6 @@ from coach.taxonomy import (
     race_sport_for,
     types_in_family,
     garmin_types_in_sport_group,
-    pillar_types,
     high_intensity_types,
 )
 import coach.rules as rules

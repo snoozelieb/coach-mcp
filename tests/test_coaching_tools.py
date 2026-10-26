@@ -1,6 +1,5 @@
 """Tests for tools/coaching_tools.py — helper functions (pure logic, no mocking needed)."""
 import json
-import pytest
 from datetime import date, timedelta
 from unittest.mock import patch
 

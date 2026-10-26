@@ -5,9 +5,8 @@ for structured coaching interactions.
 """
 
 from .mcp_app import mcp
-from .planner import load_athlete, load_methodology, get_current_plan, load_coaching_log
+from .planner import load_athlete
 from .rules import load_training_config, get_upcoming_events
-from .config import DATA_DIR, TRAINING_CONFIG_FILE
 from fastmcp.prompts import PromptResult, Message
 from datetime import date, timedelta
 import json
@@ -24,9 +23,7 @@ logger = logging.getLogger(__name__)
 def weekly_planning_prompt(notes: str = "") -> PromptResult:
     """Build next week's training plan with full coaching context."""
     athlete = load_athlete()
-    plan = get_current_plan()
     training_config = load_training_config()
-    methodology = load_methodology()
 
     today = date.today()
     next_monday = today + timedelta(days=(7 - today.weekday()))
@@ -90,25 +87,25 @@ def morning_brief_prompt() -> PromptResult:
     return PromptResult(
         messages=[
             Message(
-                f"Generate a coaching brief grounded in the current time.\n\n"
-                f"## Your task\n"
-                f"1. Call get_coaching_snapshot() — the first key is "
-                f"`current_time_context`. Greet the athlete appropriate to "
-                f"the time_period ('Good morning' only if morning; otherwise "
-                f"match the period honestly).\n"
-                f"2. Check yesterday's planned vs actual — investigate any anomalies\n"
-                f"3. Review today's planned session and readiness/recovery. If "
-                f"time_period is evening or night and today's session is "
-                f"already done, shift the brief toward recovery and tomorrow.\n"
-                f"4. Check sleep data — is the athlete recovered enough for today's plan?\n"
-                f"5. Adapt today's session if needed (readiness gate)\n\n"
-                f"## Output format\n"
-                f"- **Time-appropriate greeting** referencing day and time_period\n"
-                f"- **Yesterday**: What happened vs what was planned (flag anomalies)\n"
-                f"- **Today's session**: What's planned and why (note if already completed)\n"
-                f"- **Readiness check**: Score, sleep, recovery — is today's plan appropriate?\n"
-                f"- **Adjustments**: Any modifications needed based on current state\n"
-                f"- **One thing to focus on**: The single most important thing for the rest of today"
+                "Generate a coaching brief grounded in the current time.\n\n"
+                "## Your task\n"
+                "1. Call get_coaching_snapshot() — the first key is "
+                "`current_time_context`. Greet the athlete appropriate to "
+                "the time_period ('Good morning' only if morning; otherwise "
+                "match the period honestly).\n"
+                "2. Check yesterday's planned vs actual — investigate any anomalies\n"
+                "3. Review today's planned session and readiness/recovery. If "
+                "time_period is evening or night and today's session is "
+                "already done, shift the brief toward recovery and tomorrow.\n"
+                "4. Check sleep data — is the athlete recovered enough for today's plan?\n"
+                "5. Adapt today's session if needed (readiness gate)\n\n"
+                "## Output format\n"
+                "- **Time-appropriate greeting** referencing day and time_period\n"
+                "- **Yesterday**: What happened vs what was planned (flag anomalies)\n"
+                "- **Today's session**: What's planned and why (note if already completed)\n"
+                "- **Readiness check**: Score, sleep, recovery — is today's plan appropriate?\n"
+                "- **Adjustments**: Any modifications needed based on current state\n"
+                "- **One thing to focus on**: The single most important thing for the rest of today"
             )
         ],
         description="Coaching brief grounded in current time",
@@ -162,28 +159,28 @@ def week_review_prompt() -> PromptResult:
     return PromptResult(
         messages=[
             Message(
-                f"## End-of-week coaching review\n\n"
-                f"1. Call get_coaching_snapshot() for current state. Verify "
-                f"`current_time_context` — confirm it's actually end-of-week "
-                f"(day_of_week Sunday/Monday, or the athlete's review day).\n"
-                f"2. Call get_compliance_report() for detailed pillar analysis\n"
-                f"3. Call query_metrics(kind='intensity') for zone analysis (or "
-                f"request snapshot sections=['fitness', 'activities'])\n\n"
-                f"## Review checklist\n"
-                f"- **Compliance**: What was hit, what was missed, and WHY?\n"
-                f"- **Load response**: How did the athlete handle this week's load?\n"
-                f"- **Sleep & recovery**: Trends over the week\n"
-                f"- **Key sessions**: Were the important ones completed with quality?\n"
-                f"- **Anomalies**: Anything unusual that needs discussion?\n\n"
-                f"## Adaptation decisions\n"
-                f"- Record athlete response: call record_athlete_response() with load/compliance data\n"
-                f"- Should volume change next week? Check adaptation_patterns\n"
-                f"- Any pillar adjustments needed?\n"
-                f"- Log decisions with log_coaching_decision()\n\n"
-                f"## Output\n"
-                f"- Summary of the week (what went well, what didn't)\n"
-                f"- Specific adaptation recommendations for next week\n"
-                f"- One thing to celebrate, one thing to improve"
+                "## End-of-week coaching review\n\n"
+                "1. Call get_coaching_snapshot() for current state. Verify "
+                "`current_time_context` — confirm it's actually end-of-week "
+                "(day_of_week Sunday/Monday, or the athlete's review day).\n"
+                "2. Call get_compliance_report() for detailed pillar analysis\n"
+                "3. Call query_metrics(kind='intensity') for zone analysis (or "
+                "request snapshot sections=['fitness', 'activities'])\n\n"
+                "## Review checklist\n"
+                "- **Compliance**: What was hit, what was missed, and WHY?\n"
+                "- **Load response**: How did the athlete handle this week's load?\n"
+                "- **Sleep & recovery**: Trends over the week\n"
+                "- **Key sessions**: Were the important ones completed with quality?\n"
+                "- **Anomalies**: Anything unusual that needs discussion?\n\n"
+                "## Adaptation decisions\n"
+                "- Record athlete response: call record_athlete_response() with load/compliance data\n"
+                "- Should volume change next week? Check adaptation_patterns\n"
+                "- Any pillar adjustments needed?\n"
+                "- Log decisions with log_coaching_decision()\n\n"
+                "## Output\n"
+                "- Summary of the week (what went well, what didn't)\n"
+                "- Specific adaptation recommendations for next week\n"
+                "- One thing to celebrate, one thing to improve"
             )
         ],
         description="End-of-week review and adaptation prompt",
@@ -200,34 +197,34 @@ def onboarding_prompt() -> PromptResult:
     return PromptResult(
         messages=[
             Message(
-                f"## New athlete onboarding\n\n"
-                f"You are onboarding a new athlete. Your job is to UNDERSTAND them "
-                f"deeply, then PRESCRIBE their training approach with authority.\n\n"
-                f"### Phase 0: Ground the conversation\n"
-                f"Read the `coach://context/now` resource (or call "
-                f"get_coaching_snapshot() and check `current_time_context`) so "
-                f"your greeting, scheduling suggestions, and first-session "
-                f"timing match the current day and time_period.\n\n"
-                f"### Phase 1: Understand\n"
-                f"Ask about (one area at a time, conversationally):\n"
-                f"- Sports and training background\n"
-                f"- Current fitness level and recent training\n"
-                f"- Goals — what does success look like?\n"
-                f"- Events or races they're targeting\n"
-                f"- Injuries, limitations, health concerns\n"
-                f"- Life constraints (work schedule, family, travel)\n"
-                f"- Available training hours per week (be realistic)\n"
-                f"- Equipment and facilities access\n\n"
-                f"### Phase 2: Prescribe\n"
-                f"Based on what you learned:\n"
-                f"1. Call refresh_athlete_baseline() to pull Garmin data\n"
-                f"2. Tell them what their training pillars will be and WHY\n"
-                f"3. Use update_athlete() to save their profile\n"
-                f"4. If they have races, use races(action='add', ...) to register them\n"
-                f"5. Build their first weekly plan\n\n"
-                f"### Key principle\n"
-                f"Don't offer a menu of options. You are the expert — "
-                f"TELL them what they need based on evidence and experience."
+                "## New athlete onboarding\n\n"
+                "You are onboarding a new athlete. Your job is to UNDERSTAND them "
+                "deeply, then PRESCRIBE their training approach with authority.\n\n"
+                "### Phase 0: Ground the conversation\n"
+                "Read the `coach://context/now` resource (or call "
+                "get_coaching_snapshot() and check `current_time_context`) so "
+                "your greeting, scheduling suggestions, and first-session "
+                "timing match the current day and time_period.\n\n"
+                "### Phase 1: Understand\n"
+                "Ask about (one area at a time, conversationally):\n"
+                "- Sports and training background\n"
+                "- Current fitness level and recent training\n"
+                "- Goals — what does success look like?\n"
+                "- Events or races they're targeting\n"
+                "- Injuries, limitations, health concerns\n"
+                "- Life constraints (work schedule, family, travel)\n"
+                "- Available training hours per week (be realistic)\n"
+                "- Equipment and facilities access\n\n"
+                "### Phase 2: Prescribe\n"
+                "Based on what you learned:\n"
+                "1. Call refresh_athlete_baseline() to pull Garmin data\n"
+                "2. Tell them what their training pillars will be and WHY\n"
+                "3. Use update_athlete() to save their profile\n"
+                "4. If they have races, use races(action='add', ...) to register them\n"
+                "5. Build their first weekly plan\n\n"
+                "### Key principle\n"
+                "Don't offer a menu of options. You are the expert — "
+                "TELL them what they need based on evidence and experience."
             )
         ],
         description="New athlete onboarding prompt",

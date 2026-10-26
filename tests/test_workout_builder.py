@@ -12,7 +12,6 @@ from garminconnect.workout import CyclingWorkout, RunningWorkout, ExecutableStep
 from coach.workout_builder import (
     is_indoor_cycling,
     is_simple_outdoor_ride,
-    get_workout_type_name,
     build_workout,
     build_cycling_workout,
     build_running_workout,
@@ -25,8 +24,6 @@ from coach.workout_builder import (
     build_ftp_test_workout,
     build_structured_cycling_workout,
     get_hr_target_for_intensity,
-    get_power_target_for_intensity,
-    get_pace_target_for_intensity,
     STEP_WARMUP,
     STEP_COOLDOWN,
     STEP_INTERVAL,

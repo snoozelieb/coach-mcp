@@ -8,8 +8,6 @@ from .mcp_app import mcp
 from .parsers import build_current_time_context
 from .planner import load_athlete, get_current_plan, load_coaching_log
 from .rules import load_training_config
-from .config import DATA_DIR, ATHLETE_FILE, WEEKLY_PLAN_FILE, TRAINING_CONFIG_FILE
-from datetime import date
 import json
 import logging
 
