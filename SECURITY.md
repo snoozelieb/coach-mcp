@@ -22,7 +22,10 @@ package is `methodology.json` (generic safety rules and race templates).
    governed by your MCP client and LLM provider, not by this server.
 3. **Public web pages** — when the coach researches a race, injury, sport,
    or exercise, the server fetches public pages; the request reveals only
-   the search target (e.g. a race name).
+   the search target (e.g. a race name). Only `https` URLs that resolve to
+   public addresses are fetched — never loopback, private or link-local
+   ranges, on the first request or on any redirect — with a 2 MB size cap,
+   and the text comes back to the model labelled as untrusted data.
 
 Nothing else. No analytics, no crash reporting. FastMCP would check PyPI for a newer version at startup; the server disables that banner check.
 

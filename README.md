@@ -282,7 +282,7 @@ COACH_CODE_MODE=1 garmin-coach-mcp
 # Standalone morning audit
 python scripts/daily_loop.py          # ingest + audit yesterday + template brief (exit 1 if unverified)
 
-# Tests (1,436 tests; clean checkouts use committed sanitized fixtures)
+# Tests (1,546 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```

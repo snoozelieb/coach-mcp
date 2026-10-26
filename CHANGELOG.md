@@ -6,15 +6,95 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-26
+
+A safety release: the lost-update class is closed, the four mandates have
+code behind them, and consent is enforced where protection is lifted. Two
+athlete-reported bugs are fixed (window-blind compliance; an activity that
+vanished from local history).
+
+### Fixed
+- **Compliance scaled to its window.** A 28-day report compared four weeks
+  of training with a one-week target ("280 % of target, overtraining risk"
+  for 22.4 h against 8 h/week). Requirements now scale to the window, the
+  report carries per-week averages and, for windows longer than a week,
+  per-week rows (`weeks`, `weeks_met`, per-pillar weeks met, per-week spike
+  warnings). The coaching score's achievability counts weeks met.
+- **Activities vanishing from local history.** Several server processes
+  (two from Claude Desktop, Claude Code, the morning audit) shared the data
+  files through load-mutate-save, and a plain `open()` of a data file in
+  one process made another process's atomic write fail with "access
+  denied" on Windows, which the snapshot swallowed as a failed ingest.
+  Every shared-file write is now a locked read-modify-write merge
+  (`storage.update_json`), every read goes through the storage lock (a
+  lint test forbids bare file I/O in the package), the lockfile carries a
+  per-acquisition token and the stale-lock path no longer spins. Snapshots
+  re-ingest a trailing 14-day window so a late-syncing watch still lands;
+  a day that shrinks is logged; days absent from a payload are kept;
+  `refresh_fitness_history` reports `days_added` / `days_changed`.
+- **Push bookkeeping.** Workouts that fail to delete stay tracked, ids gone
+  from the Garmin library are dropped, an uploaded workout whose scheduling
+  fails stays tracked and is reported, and `pushed_workout_ids` is merged
+  whenever anything changed (the old save also bypassed migrations).
+- `remove_race` matches the exact name only; an empty name used to match
+  every event.
+- Plan resends no longer wipe the morning audit's per-day verdicts, and a
+  pruned day leaves the plan only after its archive write succeeded.
+
 ### Added
-- **MCP Registry publish in CI.** The Release workflow now registers
-  `server.json` with the official registry after the PyPI publish succeeds,
-  authenticating with the job's GitHub Actions OIDC token (no stored secret; the
-  registry grants `io.github.<owner>/*` to the repository owner). The
-  `mcp-publisher` binary is pinned to v1.8.5 and verified against its Sigstore
-  bundle and SHA-256 before it runs, and the publish retries while PyPI's
-  metadata lags the upload. Manual `mcp-publisher publish` stays as a fallback
-  (`docs/PUBLISHING.md`).
+- **SNAPSHOT FIRST in code** (`coach/session_state.py`): `update_weekly_plan`,
+  `training_program(set)`, `push_plan_to_garmin`, `update_phase` and injury
+  status transitions return `snapshot_required` / `snapshot_stale` until
+  `get_coaching_snapshot` has run in this process today, under 2 hours ago
+  (`COACH_SNAPSHOT_GATE=0` disables, `COACH_SNAPSHOT_MAX_AGE_MIN` tunes).
+- **Setup mode.** Without `athlete.json` the same writes return
+  `setup_required` naming the data directory, the console scripts and the
+  in-chat path (`COACH_SETUP_GATE=0` disables).
+- **Athlete claims** (`record_activity_claim`, 51st tool): what the athlete
+  says they did when Garmin cannot confirm it. Stored as coaching memory,
+  checked against Garmin at once, re-verified on every snapshot and
+  morning audit, listed under `unverified_claims` and on `week_grid` days,
+  turned into an anomaly after 14 days. A claimed planned session is
+  `claimed`, not `missed`. Claims never count as training.
+- **Week-grid source.** Each day carries `source` (`garmin`, `persisted`,
+  `unavailable`); an unavailable day has `is_rest: null` and
+  `types_summary: "UNKNOWN"`, never a false REST. The instructions say to
+  challenge a claim only on a `garmin` day older than yesterday.
+- **Consent fields.** Resolving an injury or relaxing its restrictions
+  needs `athlete_statement` and `rationale` and logs a reviewable decision;
+  overriding the injury gate on a plan, program or push needs
+  `athlete_statement` and `override_rationale` and logs a `gate_override`
+  decision. `update_injury_status` can set `restricted_activities` /
+  `safe_activities`; the snapshot flags active injuries without
+  restrictions (`data_quality.injury_without_restrictions`).
+- **Two-step push.** `push_plan_to_garmin` previews (sessions, workouts to
+  delete, grounding warnings, violations) and writes only with the
+  single-use `confirm_token` it issued, valid 10 minutes and bound to the
+  planned sessions; `anthropic/requiresUserInteraction` on push and
+  `remove_race`.
+- **Device-day context.** `current_time_context` carries `garmin_date`,
+  `garmin_utc_offset_minutes`, `source` and `date_mismatch` from the device
+  clock of the newest activity.
+- **SSRF-safe research.** Only public https URLs are fetched, every
+  redirect hop validated, the connected peer re-checked, 2 MB and 20 s
+  caps, text content types only. Research tools return fetched text as
+  `untrusted_content` with a notice; web-derived exercise notes are
+  sanitised before caching and before Garmin.
+- Console scripts `garmin-coach-setup` and `garmin-coach-login`; the auth
+  error names both recovery commands; README shell snippets for PowerShell
+  and bash.
+- MCP Registry publish in CI (OIDC, pinned and signature-verified
+  publisher, retries while PyPI lags) — see `docs/PUBLISHING.md`.
+
+### Changed
+- `override_purpose_gate` is deprecated and no longer bypasses the purpose
+  gate.
+- `get_activities_range` pages at 92 days (`next_start`), `list_exercises`
+  clamps its limit, large payloads drop indentation.
+- Fitness backups live in `<data_dir>/backups/`; the morning audit
+  re-checks 7 days.
+- The Garmin login path is serialised; a forced refresh skips the re-login
+  when another thread already replaced the failed client.
 
 ## [1.3.0] - 2026-10-26
 
@@ -381,7 +461,8 @@ First publishable release — the end of a five-phase modernization
 
 Pre-1.0 history (the 0.x checkout-only era) lives in the git log.
 
-[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.0.0...v1.1.0
