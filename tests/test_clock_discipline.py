@@ -56,6 +56,7 @@ ALLOWLIST = {
     # [stamp] metadata.last_updated audit stamp on every coaching_log save
     ('coach/planner.py', 'save_coaching_log'),
     ('coach/planner.py', 'update_coaching_log'),
+    ('coach/planner.py', 'append_decision'),
     # [bare-call] storage boundary; scripts/daily_loop.py calls it bare —
     # resolves today once, threads it into _prune_and_archive_plan_days
     ('coach/planner.py', 'save_weekly_plan'),
@@ -79,6 +80,7 @@ ALLOWLIST = {
     ('coach/tools/decision_tools.py', 'approve_proposal'),
     ('coach/tools/decision_tools.py', 'reject_proposal'),
     ('coach/tools/decision_tools.py', 'record_athlete_response'),
+    ('coach/tools/decision_tools.py', 'record_activity_claim'),
     ('coach/tools/decision_tools.py', 'resolve_anomaly'),
     # [stamp] created/updated stamps on new anomaly-registry entries, also
     # the fallback default for `today` when not threaded (snapshot threads it)

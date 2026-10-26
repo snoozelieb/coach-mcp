@@ -193,7 +193,7 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 
 ## MCP surface
 
-50 tools — you don't call them directly; the coach uses them during
+51 tools — you don't call them directly; the coach uses them during
 conversation:
 
 | Category | Tools |

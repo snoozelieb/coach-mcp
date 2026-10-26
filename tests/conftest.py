@@ -96,6 +96,17 @@ def sandbox_data_dir(tmp_path, monkeypatch):
     yield sandbox
 
 
+@pytest.fixture(autouse=True)
+def gates_satisfied():
+    """SNAPSHOT FIRST is code now (coach.session_state). Tests exercise tools
+    in isolation, so mark a fresh snapshot as taken; tests of the gate itself
+    call session_state.reset() and assert the refusal."""
+    import coach.session_state as session_state
+    session_state.mark_snapshot_taken(date.today())
+    yield
+    session_state.reset()
+
+
 # ---------------------------------------------------------------------------
 # Sample data constants (importable by any test file via: from conftest import X)
 # ---------------------------------------------------------------------------

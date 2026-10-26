@@ -7,7 +7,9 @@ severity assessment, and research content for the LLM to reason about.
 
 from ..mcp_app import mcp
 from ..web_utils import fetch_page_text_validated
-from ..planner import save_json_file, load_athlete
+from ..planner import save_json_file, load_athlete, update_json_file, append_decision
+from ..rules import normalize_injury
+from ..session_state import require_snapshot
 from ..config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
                     INJURY_STATUS_OPTIONS, ATHLETE_FILE,
                     PHYSIOPEDIA_BASE_URL)
@@ -609,80 +611,164 @@ def update_injury_status(
     injury_date: str,
     new_status: str = None,
     notes: str = None,
-    severity: str = None
+    severity: str = None,
+    restricted_activities: list[str] | None = None,
+    safe_activities: list[str] | None = None,
+    athlete_statement: str = None,
+    rationale: str = None,
 ) -> str:
     """
-    Update an existing injury's status and add progress notes.
+    Update an existing injury: status, severity, progress notes and the
+    restriction lists that ARM the injury gate.
+
+    RESTRICTIONS ARM THE GATE. An active/improving injury with an empty
+    restricted_activities blocks nothing (the snapshot lists such injuries
+    under data_quality.injury_without_restrictions). Set restricted_activities
+    here with taxonomy terms ('running', 'cycling', 'jumping', ...); adding
+    restrictions needs no confirmation.
+
+    CONSENT, code-enforced. Lifting protection needs the athlete's own words
+    plus the coach's reasoning; both are logged as a coaching decision:
+    - new_status='resolved' -> athlete_statement + rationale; decision type
+      'injury_resolved' with a 14-day review so the coach re-asks.
+    - removing or narrowing restricted_activities -> athlete_statement +
+      rationale; decision type 'injury_restrictions_relaxed'.
+    Without both fields the call returns error 'athlete_confirmation_required'
+    and changes nothing.
+
+    SNAPSHOT FIRST: a status transition needs a snapshot from this session
+    (errors 'snapshot_required' / 'snapshot_stale'); notes, severity and
+    restriction edits do not.
 
     Args:
         injury_date: Date of the injury to update (YYYY-MM-DD)
         new_status: New status (active, improving, resolved)
         notes: Progress note to add
         severity: Updated severity (mild, moderate, severe)
+        restricted_activities: Full replacement list of restricted activities
+        safe_activities: Full replacement list of activities cleared as safe
+        athlete_statement: The athlete's own words agreeing (quote them)
+        rationale: Why the coach agrees, citing the evidence
 
     Returns:
         Confirmation with updated injury details.
     """
     try:
+        today = date.today()
+        if new_status:
+            gate = require_snapshot('update_injury_status', today)
+            if gate:
+                return json.dumps(gate)
+
         athlete = load_athlete()
-        # Remove baseline data before saving
-        athlete.pop('baseline', None)
-        athlete.pop('personal_records', None)
-
         injury_history = athlete.get('injury_history', [])
-
-        # Find the injury by date
-        found_injury = None
-        for injury in injury_history:
-            if injury.get('date') == injury_date:
-                found_injury = injury
-                break
-
+        found_injury = next((i for i in injury_history
+                             if isinstance(i, dict) and i.get('date') == injury_date), None)
         if not found_injury:
             return json.dumps({
                 "error": f"No injury found for date {injury_date}",
                 "existing_injuries": [i.get('date') for i in injury_history]
             })
 
-        changes = []
-
-        if new_status:
-            if new_status.lower() not in INJURY_STATUS_OPTIONS:
-                return json.dumps({
-                    "error": f"Invalid status. Must be one of: {INJURY_STATUS_OPTIONS}"
-                })
-            found_injury['status'] = new_status.lower()
-            changes.append(f"status -> {new_status.lower()}")
-
-        if severity:
-            if severity.lower() not in INJURY_SEVERITY_LEVELS:
-                return json.dumps({
-                    "error": f"Invalid severity. Must be one of: {INJURY_SEVERITY_LEVELS}"
-                })
-            found_injury['severity'] = severity.lower()
-            changes.append(f"severity -> {severity.lower()}")
-
-        if notes:
-            # Add to progress notes
-            if 'progress_notes' not in found_injury:
-                found_injury['progress_notes'] = []
-            found_injury['progress_notes'].append({
-                "date": date.today().isoformat(),
-                "note": notes
+        if new_status and new_status.lower() not in INJURY_STATUS_OPTIONS:
+            return json.dumps({
+                "error": f"Invalid status. Must be one of: {INJURY_STATUS_OPTIONS}"
             })
-            changes.append("progress note added")
+        if severity and severity.lower() not in INJURY_SEVERITY_LEVELS:
+            return json.dumps({
+                "error": f"Invalid severity. Must be one of: {INJURY_SEVERITY_LEVELS}"
+            })
 
-        if not changes:
+        # Consent: lifting protection needs the athlete's words + the reason
+        resolving = bool(new_status) and new_status.lower() == 'resolved'
+        old_restricted = set(normalize_injury(found_injury)['restricted_activities'])
+        new_restricted = None
+        if restricted_activities is not None:
+            new_restricted = sorted({str(x).strip().lower() for x in restricted_activities
+                                     if str(x).strip()})
+        relaxing = new_restricted is not None and not old_restricted <= set(new_restricted)
+        statement = (athlete_statement or '').strip()
+        why = (rationale or '').strip()
+        if (resolving or relaxing) and not (statement and why):
+            what = 'resolve this injury' if resolving else 'remove restrictions'
+            return json.dumps({
+                'error': 'athlete_confirmation_required',
+                'message': (f"To {what} the athlete must agree and the coach must say "
+                            "why — nothing was changed."),
+                'hint': ("Pass athlete_statement (the athlete's own words, quoted) and "
+                         "rationale (the evidence). Both are logged as a decision."),
+                'current_restricted_activities': sorted(old_restricted),
+            })
+
+        clean_safe = None
+        if safe_activities is not None:
+            clean_safe = sorted({str(x).strip().lower() for x in safe_activities
+                                 if str(x).strip()})
+        if not any([new_status, severity, notes, new_restricted is not None,
+                    clean_safe is not None]):
             return json.dumps({"error": "No updates provided"})
 
-        # Save back
-        save_json_file(ATHLETE_FILE, athlete)
+        changes: list[str] = []
+        updated: dict = {}
 
-        return json.dumps({
+        def _apply(athlete_doc):
+            # Re-find on the CURRENT on-disk profile under its lock.
+            for injury in athlete_doc.get('injury_history', []) or []:
+                if isinstance(injury, dict) and injury.get('date') == injury_date:
+                    break
+            else:
+                raise RuntimeError(f"Injury {injury_date} disappeared before the update")
+            if new_status:
+                injury['status'] = new_status.lower()
+                changes.append(f"status -> {new_status.lower()}")
+            if severity:
+                injury['severity'] = severity.lower()
+                changes.append(f"severity -> {severity.lower()}")
+            if new_restricted is not None:
+                injury['restricted_activities'] = new_restricted
+                changes.append(f"restricted_activities -> {new_restricted}")
+            if clean_safe is not None:
+                injury['safe_activities'] = clean_safe
+                changes.append(f"safe_activities -> {clean_safe}")
+            if notes:
+                injury.setdefault('progress_notes', []).append({
+                    "date": today.isoformat(),
+                    "note": notes
+                })
+                changes.append("progress note added")
+            injury['last_updated'] = today.isoformat()
+            updated.update(injury)
+
+        update_json_file(ATHLETE_FILE, _apply)
+
+        decisions = []
+        name = normalize_injury(updated)['name']
+        if resolving:
+            decisions.append(append_decision(
+                'injury_resolved',
+                f"Injury '{name}' ({injury_date}) resolved — the injury gate is lifted",
+                why, review_days=14, athlete_statement=statement,
+                extra={'injury_date': injury_date}, today=today))
+        if relaxing:
+            decisions.append(append_decision(
+                'injury_restrictions_relaxed',
+                f"Injury '{name}' ({injury_date}): restrictions "
+                f"{sorted(old_restricted)} -> {new_restricted}",
+                why, review_days=14, athlete_statement=statement,
+                extra={'injury_date': injury_date}, today=today))
+
+        result = {
             "status": "success",
             "message": f"Updated injury from {injury_date}: {', '.join(changes)}",
-            "injury": found_injury
-        }, indent=2)
+            "injury": updated,
+        }
+        if decisions:
+            result['decisions_logged'] = [d.get('id') for d in decisions]
+        if (updated.get('status') in ('active', 'improving')
+                and not normalize_injury(updated)['restricted_activities']):
+            result['warning'] = ('This injury has no restricted_activities — the injury '
+                                 'gate is not armed. Set them.')
+        return json.dumps(result, indent=2)
 
     except Exception as e:
         logger.exception("update_injury_status failed")

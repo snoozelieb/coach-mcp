@@ -19,7 +19,11 @@ from ..garmin_client import (
     GarminAuthRequiredError,
 )
 from ..parsers import parse_activities, build_current_time_context
+from ..session_state import mark_snapshot_taken
+from ..claims import (verify_claims, unverified_claims_view, claim_anomaly,
+                      pending_claims)
 from ..planner import (
+    update_coaching_log, NoChange,
     get_current_plan,
     load_athlete,
     load_json_file,
@@ -29,6 +33,7 @@ from ..planner import (
     validate_season_config,
 )
 from ..rules import (
+    normalize_injury,
     check_weekly_compliance,
     check_safety_rules,
     get_upcoming_events,
@@ -930,40 +935,82 @@ def _summarize_plan_adherence_by_pillar(plan: dict, activities: list,
 
 
 def _build_week_grid(activities: list, today: date,
-                     daily_loads: dict | None = None) -> dict:
+                     daily_loads: dict | None = None, *,
+                     source: str = 'garmin') -> dict:
     """7-day rolling activity grid ending today.
 
     Rest days are explicit ('types_summary' = 'REST'). Aggregate metrics (CTL,
     ACWR, compliance totals) hide zero-activity days — the grid surfaces them
     so the coach can see the full week at a glance.
+
+    Every day carries ``source``: 'garmin' when the live fetch succeeded;
+    when it failed the grid is rebuilt from persisted history, and a day
+    becomes 'persisted' (it has ingested activities — presence is real) or
+    'unavailable' (nothing persisted: Garmin could not be asked, so
+    is_rest is None and types_summary is 'UNKNOWN', never a false REST).
+    VERIFY BEFORE CONFIRMING challenges a claim only on a 'garmin' day.
     """
     grid = {}
+    live = source == 'garmin'
     for offset in range(6, -1, -1):
         day = today - timedelta(days=offset)
         day_str = day.isoformat()
         day_acts = [a for a in activities if a.get('date') == day_str]
         types = sorted({a.get('type', 'unknown') for a in day_acts})
         total_mins = sum(a.get('duration_mins', 0) or 0 for a in day_acts)
-
         total_load = None
         entry = (daily_loads or {}).get(day_str)
         if isinstance(entry, dict):
             total_load = entry.get('total')
         elif isinstance(entry, (int, float)):
             total_load = entry
-
+        known = live or bool(day_acts)
         grid[day_str] = {
             'day_of_week': day.strftime('%A'),
             'days_ago': offset,  # 0 = today, 1 = yesterday — authoritative
-            'activity_count': len(day_acts),
+            'activity_count': len(day_acts) if known else None,
             'types': types,
-            'types_summary': '+'.join(types) if types else 'REST',
+            'types_summary': ('+'.join(types) if types else 'REST') if known else 'UNKNOWN',
             'total_duration_mins': round(total_mins, 1),
             'total_load': round(total_load, 1) if total_load is not None else None,
-            'is_rest': len(day_acts) == 0,
+            'is_rest': (len(day_acts) == 0) if known else None,
             'is_today': day == today,
+            'source': 'garmin' if live else ('persisted' if day_acts else 'unavailable'),
         }
     return grid
+
+
+def _project_claims_into_grid(grid: dict | None, log: dict) -> None:
+    """Attach pending athlete claims to their week_grid day (never as activities)."""
+    if not isinstance(grid, dict):
+        return
+    for claim in pending_claims(log):
+        day = grid.get(claim.get('date'))
+        if isinstance(day, dict):
+            day.setdefault('claims', []).append({
+                'activity_type': claim.get('activity_type'),
+                'duration_mins': claim.get('duration_mins'),
+                'note': claim.get('note'),
+                'status': 'unverified',
+            })
+
+
+def _verify_claims_in_log(daily_loads: dict, today: date) -> list[dict]:
+    """Verify pending athlete claims against the merged history (locked
+    read-modify-write), and register expired ones as anomalies."""
+    changed: list[dict] = []
+
+    def _apply(log):
+        result = verify_claims(log, daily_loads, today)
+        if not result:
+            raise NoChange()
+        changed.extend(result)
+
+    update_coaching_log(_apply)
+    expired = [claim_anomaly(c) for c in changed if c.get('verified') is False]
+    if expired:
+        register_detected_anomalies(expired, today)
+    return changed
 
 
 def _count_decisions_due_review(active_decisions: list, today: date,
@@ -1238,6 +1285,10 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
         'flags': full.get('flags', {}),
         'week_grid': full.get('week_grid'),
         'week_grid_today': full.get('week_grid_today'),
+        'week_grid_source': full.get('week_grid_source'),
+        # Athlete claims Garmin has not confirmed — core so they are never
+        # forgotten and never mistaken for verified sessions
+        'unverified_claims': full.get('unverified_claims') or [],
         'weekly_plan': weekly_plan,
         'plan_adherence': full.get('plan_adherence'),
         'planned_vs_actual': pva,
@@ -1881,6 +1932,13 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             logger.warning("Activity ingestion failed", exc_info=True)
 
         daily_loads = history.get('daily_loads', {})
+
+        # Athlete claims ("I ran this morning" when Garmin showed nothing):
+        # verify against the freshly merged history, expire stale ones.
+        try:
+            _verify_claims_in_log(daily_loads, today)
+        except Exception:
+            logger.warning("Claim verification failed", exc_info=True)
         await ctx.report_progress(1, 10, "Fitness history loaded")
 
         # 1. Current Weekly Plan
@@ -2420,10 +2478,13 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 'total_duration_mins': sum(a.get('duration_mins', 0) or 0 for a in activities_this_week),
             },
 
-            'week_grid': _build_week_grid(all_fetched_activities, today, daily_loads),
+            'week_grid': _build_week_grid(
+                all_fetched_activities, today, daily_loads,
+                source='persisted' if activities_error else 'garmin'),
 
             # The ISO date the grid (and its days_ago fields) anchors to
             'week_grid_today': today.isoformat(),
+            'week_grid_source': 'persisted' if activities_error else 'garmin',
 
             'plan_adherence': _summarize_plan_adherence_by_pillar(
                 current_plan, all_fetched_activities, today),
@@ -2509,6 +2570,16 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             data_quality['sleep_fetch_error'] = sleep_fetch_error
         if auth_error:
             data_quality['garmin_auth'] = 'required'
+        # An active/improving injury with no restricted_activities never arms
+        # the injury gate — the coach must set them via update_injury_status.
+        unarmed = [
+            normalize_injury(i).get('name')
+            for i in (athlete.get('injury_history') or [])
+            if isinstance(i, dict) and i.get('status') in ('active', 'improving')
+            and not normalize_injury(i).get('restricted_activities')
+        ]
+        if unarmed:
+            data_quality['injury_without_restrictions'] = unarmed
         # Season-layer config validation (Phase 3): invalid block dates,
         # A-race in the past, no upcoming events, overdue phase transition.
         # Flags the coach must SURFACE to the athlete — never auto-fixed.
@@ -2560,6 +2631,17 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             logger.warning("Failed to load coaching memory", exc_info=True)
             snapshot['coaching_memory'] = {'status': 'unavailable'}
 
+        # Athlete claims Garmin has not confirmed: core payload + week_grid
+        # projection, so they are never forgotten and never mistaken for
+        # verified sessions.
+        try:
+            claim_log = load_coaching_log()
+            snapshot['unverified_claims'] = unverified_claims_view(claim_log, today)
+            _project_claims_into_grid(snapshot.get('week_grid'), claim_log)
+        except Exception:
+            logger.warning("Failed to load athlete claims", exc_info=True)
+            snapshot['unverified_claims'] = []
+
         await ctx.report_progress(9, 10, "Building snapshot")
 
         # Snapshot flags — quick-scan summary for the LLM (built from the
@@ -2582,6 +2664,9 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                           f'Snapshot degraded to locally persisted data.'),
                 **payload,
             }
+        # SNAPSHOT FIRST, in code: only a completed snapshot (degraded ones
+        # included — the data is real, just persisted) satisfies the gate.
+        mark_snapshot_taken(today, degraded=bool(auth_error or activities_error))
         return json.dumps(payload)
 
     except Exception as e:

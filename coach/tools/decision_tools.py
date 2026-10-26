@@ -16,6 +16,9 @@ Also owns the Phase 3 memory lifecycles:
 
 from ..mcp_app import mcp
 from ..planner import load_coaching_log, save_coaching_log, update_coaching_log, NoChange
+from ..garmin_client import garmin_api_call
+from ..parsers import parse_activities
+from ..claims import new_claim, upsert_claim, activities_match_claim
 from ..config import ADAPTATION_PATTERN_REGISTRY
 from datetime import date, timedelta
 import json
@@ -131,6 +134,11 @@ def _anomaly_summary(anomaly: dict, today: date | None = None) -> str:
         base += ")"
         if anomaly.get('on_rest_day'):
             base += " on a rest day"
+    elif a_type == 'unverified_claim':
+        mins = anomaly.get('duration_mins')
+        base = (f"Athlete reported {anomaly.get('activity_type')}"
+                + (f" ({mins}min)" if mins else '')
+                + " that Garmin never showed within 14 days")
     else:
         base = a_type
     a_date = anomaly.get('date')
@@ -1037,3 +1045,93 @@ def resolve_anomaly(anomaly_id: str, explanation: str,
     except Exception as e:
         logger.exception("resolve_anomaly failed")
         return json.dumps({'error': str(e)})
+
+
+@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                       'idempotentHint': True, 'openWorldHint': True})
+def record_activity_claim(activity_date: str, activity_type: str,
+                          duration_mins: float | None = None,
+                          note: str | None = None) -> dict:
+    """
+    Record what the athlete says they did when Garmin does not show it yet.
+
+    VERIFY BEFORE CONFIRMING, honestly: when week_grid[date].source is not
+    'garmin', or the day is today/yesterday and the watch may not have
+    synced, neither deny the session nor confirm it — record the claim.
+    The server checks Garmin for that date first (a fresh fetch, not the
+    cache): a matching activity verifies the claim on the spot; otherwise it
+    stays pending and every snapshot and morning audit re-checks it. A claim
+    never counts in compliance, adherence or load. Unverified for 14 days,
+    it becomes an anomaly to raise with the athlete.
+
+    When Garmin is reachable, the day is older than yesterday and it shows
+    nothing, ask what happened FIRST; then record the claim with the
+    athlete's explanation as `note`.
+
+    Args:
+        activity_date: ISO date of the claimed session (today or earlier)
+        activity_type: What the athlete says they did ('running', 'padel', ...)
+        duration_mins: Claimed duration, if given
+        note: The athlete's own words or explanation
+
+    Returns:
+        {'status': 'verified' | 'recorded', 'claim': {...},
+         'garmin_state_at_claim': 'present' | 'absent' | 'unavailable', 'next': ...}
+    """
+    try:
+        today = date.today()
+        try:
+            claim_day = date.fromisoformat(str(activity_date).strip())
+        except ValueError:
+            return {'error': 'invalid_date', 'message': 'activity_date must be YYYY-MM-DD'}
+        if claim_day > today:
+            return {'error': 'future_date',
+                    'message': f'{claim_day.isoformat()} is after today ({today.isoformat()})'}
+        if not str(activity_type or '').strip():
+            return {'error': 'missing_type', 'message': 'activity_type is required'}
+
+        # Network BEFORE the locked write: a fresh look at Garmin for that day.
+        day_iso = claim_day.isoformat()
+        claim = new_claim(date_iso=day_iso, activity_type=activity_type,
+                          duration_mins=duration_mins, note=note, today=today,
+                          garmin_state='unavailable')
+        try:
+            raw = garmin_api_call(lambda c: c.get_activities_by_date(day_iso, day_iso))
+            fetched = parse_activities(raw or []) if isinstance(raw, list) else []
+            if activities_match_claim(claim, fetched):
+                claim.update(garmin_state_at_claim='present', verified=True,
+                             verified_on=today.isoformat(), verified_by='garmin')
+            else:
+                claim['garmin_state_at_claim'] = 'absent'
+        except Exception as e:
+            logger.info("Claim check: Garmin unavailable for %s: %s", day_iso, e)
+            claim['garmin_state_at_claim'] = 'unavailable'
+
+        stored: dict = {}
+
+        def _apply(log):
+            stored.update(upsert_claim(log, claim))
+
+        update_coaching_log(_apply)
+
+        if stored.get('verified') is True:
+            status, nxt = 'verified', ('Garmin shows a matching activity — confirm the '
+                                       'session to the athlete.')
+        elif stored.get('garmin_state_at_claim') == 'absent':
+            status, nxt = 'recorded', ('Garmin is reachable but shows nothing for that '
+                                       'date. Ask about the sync (watch, phone app); '
+                                       'the claim is re-checked on every snapshot and '
+                                       'morning audit. It counts in no compliance figure.')
+        else:
+            status, nxt = 'recorded', ('Garmin could not be checked. The claim is '
+                                       're-checked on every snapshot and morning audit; '
+                                       'it counts in no compliance figure.')
+        return {
+            'status': status,
+            'claim': stored,
+            'garmin_state_at_claim': stored.get('garmin_state_at_claim'),
+            'next': nxt,
+        }
+    except Exception as e:
+        logger.exception("record_activity_claim failed")
+        return {'error': str(e)}

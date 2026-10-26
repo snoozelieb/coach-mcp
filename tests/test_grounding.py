@@ -414,7 +414,8 @@ class TestTrainingProgramTool:
         assert blocked['violations'][0]['matched_restrictions'] == ['running']
 
         overridden = training_program(action='set', program=_program(),
-                                      override_injury_gate=True)
+                                      override_injury_gate=True,
+                                      athlete_statement='I understand the risk and want to continue', override_rationale='test override with consent')
         assert overridden['status'] == 'success'
         assert any(n.get('injury_gate_overridden')
                    for n in overridden['notes'])

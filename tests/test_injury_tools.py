@@ -601,9 +601,12 @@ class TestUpdateInjuryStatus:
         persisted record stops matching the active/improving filter every
         gate consumer uses."""
         result = json.loads(update_injury_status(
-            '2026-05-20', new_status='resolved'))
+            '2026-05-20', new_status='resolved',
+            athlete_statement='Three pain-free weeks, physio cleared me, I want to run',
+            rationale='physio clearance + 3 weeks symptom-free walking/cycling'))
 
         assert result['status'] == 'success'
+        assert result['decisions_logged']
         athlete = json.loads(
             (injury_status_dir / 'athlete.json').read_text())
         gating = [i for i in athlete['injury_history']

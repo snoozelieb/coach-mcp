@@ -35,6 +35,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from coach.config import DATA_DIR
+from coach.claims import pending_claim_types
+from coach.taxonomy import types_match
 
 # Configure logging. The log lives in the data directory, with the rest of
 # the personal data. The FileHandler is best-effort: if a scheduler wrapper
@@ -60,6 +62,7 @@ from coach.tools.coaching_tools import get_compliance_report, get_coaching_snaps
 from coach.tools.data_tools import get_activities_range
 from coach.tools.fitness_tools import query_metrics
 from coach.planner import (
+    load_coaching_log,
     get_current_plan,
     merge_plan_days,
 )
@@ -68,7 +71,7 @@ from coach.planner import (
 # it is still 'missed' or 'unverified'. A session that synced late, or a day
 # audited while Garmin was down, heals instead of staying a false miss.
 REAUDIT_WINDOW_DAYS = 7  # late syncs heal within the 9-day plan retention
-REAUDIT_STATUSES = ('missed', 'unverified')
+REAUDIT_STATUSES = ('missed', 'unverified', 'claimed')
 
 
 class _NullContext:
@@ -212,6 +215,15 @@ def _fetch_actual(day_str: str) -> list[dict[str, Any]] | None:
     return [a for a in payload if isinstance(a, dict)]
 
 
+def _claimed_types(day_str: str) -> list[str]:
+    """Activity types the athlete claimed for the day, still unverified."""
+    try:
+        return pending_claim_types(load_coaching_log(), day_str)
+    except Exception:
+        logger.warning("Could not read athlete claims for %s", day_str, exc_info=True)
+        return []
+
+
 def _audit_day(plan: dict[str, Any], day_str: str) -> dict[str, Any]:
     """Audit one plan day against Garmin and update the plan day in place.
 
@@ -248,8 +260,17 @@ def _audit_day(plan: dict[str, Any], day_str: str) -> dict[str, Any]:
         actual_types = [str(a.get('type', '')).lower() for a in actual_activities]
 
         if not actual_activities:
-            status = 'missed'
-            message = f"Planned {' + '.join(planned_types)} was missed"
+            claimed = _claimed_types(day_str)
+            if any(types_match(p, c) or types_match(c, p)
+                   for p in planned_types for c in claimed):
+                # The athlete says it happened and Garmin shows nothing
+                # (yet): neither a miss nor a completion — re-checked daily.
+                status = 'claimed'
+                message = (f"Planned {' + '.join(planned_types)}: the athlete "
+                           "reports it done, Garmin shows nothing yet")
+            else:
+                status = 'missed'
+                message = f"Planned {' + '.join(planned_types)} was missed"
         else:
             matched = [t for t in planned_types if t.lower() in actual_types]
             unmatched_planned = [t for t in planned_types if t.lower() not in actual_types]

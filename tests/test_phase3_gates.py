@@ -104,7 +104,7 @@ class TestPurposeGate:
             'date': TOMORROW, 'type': 'cycling', 'name': 'No-why ride',
             'warning': 'missing purpose',
         }]
-        assert 'override_purpose_gate' in result['hint']
+        assert 'deprecated' in result['hint']
         assert not (data_env / 'weekly_plan.json').exists(), \
             "plan saved despite purpose gate"
 
@@ -116,20 +116,20 @@ class TestPurposeGate:
         assert result['error'] == 'purpose_gate'
         assert len(result['missing_purpose']) == 1
 
-    def test_override_saves_with_logged_note(self, data_env, caplog):
+    def test_purpose_override_is_deprecated_and_ignored(self, data_env, caplog):
+        """PURPOSE is the coach's obligation; the athlete cannot consent to the
+        coach not knowing why a session exists. The flag is accepted for
+        old clients but bypasses nothing."""
         plan = {'days': {TOMORROW: {'planned': _session(purpose=None)}}}
 
         with caplog.at_level(logging.WARNING,
                              logger='coach.tools.planning_tools'):
             result = update_weekly_plan(plan, override_purpose_gate=True)
 
-        assert result['status'] == 'success'
-        assert result['purpose_gate']['purpose_gate_overridden'] is True
-        assert len(result['purpose_gate']['missing_purpose']) == 1
-        assert len(result['purpose_warnings']) == 1
-        assert 'OVERRIDDEN' in result['message']
-        assert 'Purpose gate OVERRIDDEN' in caplog.text
-        assert (data_env / 'weekly_plan.json').exists()
+        assert result['error'] == 'purpose_gate'
+        assert 'deprecated' in result['override_purpose_gate']
+        assert 'deprecated' in caplog.text
+        assert not (data_env / 'weekly_plan.json').exists()
 
     def test_rest_sessions_exempt(self, data_env):
         plan = {'days': {
@@ -345,7 +345,8 @@ class TestGateComposition:
             'planned': {'type': 'running', 'duration_mins': 30},
         }}}
 
-        result = update_weekly_plan(plan, override_injury_gate=True)
+        result = update_weekly_plan(plan, override_injury_gate=True,
+                                    athlete_statement='I understand the risk and want to continue', override_rationale='test override with consent')
 
         assert result['error'] == 'purpose_gate'
         assert not (data_env / 'weekly_plan.json').exists()
@@ -359,25 +360,44 @@ class TestGateComposition:
         result = update_weekly_plan(plan, override_purpose_gate=True)
 
         assert result['error'] == 'injury_gate'
-        assert 'purpose_gate' not in result  # purpose was overridden
+        assert 'purpose_gate' in result  # the deprecated flag bypassed nothing
         assert not (data_env / 'weekly_plan.json').exists()
 
-    def test_both_overrides_save_with_both_notes(self, data_env, caplog):
+    def test_injury_override_without_consent_is_refused(self, data_env):
         self._injured_env(data_env)
         plan = {'days': {TOMORROW: {
-            'planned': {'type': 'running', 'duration_mins': 30},
+            'planned': {'type': 'running', 'duration_mins': 30, 'purpose': 'test'},
+        }}}
+
+        result = update_weekly_plan(plan, override_injury_gate=True)
+
+        assert result['error'] == 'override_requires_confirmation'
+        assert not (data_env / 'weekly_plan.json').exists()
+        # a statement without a rationale is not enough either
+        result = update_weekly_plan(plan, override_injury_gate=True,
+                                    athlete_statement='go ahead')
+        assert result['error'] == 'override_requires_confirmation'
+
+    def test_injury_override_with_consent_saves_and_logs_a_decision(self, data_env, caplog):
+        self._injured_env(data_env)
+        plan = {'days': {TOMORROW: {
+            'planned': {'type': 'running', 'duration_mins': 30, 'purpose': 'test'},
         }}}
 
         with caplog.at_level(logging.WARNING,
                              logger='coach.tools.planning_tools'):
             result = update_weekly_plan(plan, override_injury_gate=True,
-                                        override_purpose_gate=True)
+                                        athlete_statement='I understand the risk and want to continue', override_rationale='test override with consent')
 
         assert result['status'] == 'success'
         assert result['injury_gate']['injury_gate_overridden'] is True
-        assert result['purpose_gate']['purpose_gate_overridden'] is True
         assert 'Injury gate OVERRIDDEN' in caplog.text
-        assert 'Purpose gate OVERRIDDEN' in caplog.text
+        import coach.planner as planner
+        decisions = planner.load_coaching_log()['decisions']
+        logged = [d for d in decisions if d['id'] == result['decision_logged']]
+        assert logged and logged[0]['type'] == 'gate_override'
+        assert logged[0]['athlete_statement'] == 'I understand the risk and want to continue'
+        assert logged[0]['violations']
         assert (data_env / 'weekly_plan.json').exists()
 
     def test_date_gate_pre_empts_coaching_gates(self, data_env):

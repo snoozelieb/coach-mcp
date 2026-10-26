@@ -88,7 +88,7 @@ under the 4,096-char upfront cap, and gate contracts sit in the first 4,096
 chars of every gated tool's description because tool search indexes only that
 window.
 
-- **50 tools** across 11 modules in `coach/tools/`; every tool declares
+- **51 tools** across 11 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
   is the contract (unclassified tools fail the suite by design).
 - **6 prompts** (`coach/prompts.py`), **6 resources** (`coach/resources.py`,

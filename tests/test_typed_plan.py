@@ -313,7 +313,8 @@ class TestInjuryGateTypedPath:
             'planned': _session(type='running', purpose='gated restart'),
         }}}
 
-        result = update_weekly_plan(plan, override_injury_gate=True)
+        result = update_weekly_plan(plan, override_injury_gate=True,
+                                    athlete_statement='I understand the risk and want to continue', override_rationale='test override with consent')
 
         assert result['status'] == 'success'
         assert result['injury_gate']['injury_gate_overridden'] is True

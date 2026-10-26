@@ -65,6 +65,7 @@ IDEMPOTENT_WRITE_TOOLS = {
     'add_exercise',
     'approve_progression',
     'approve_proposal',
+    'record_activity_claim',  # keyed by date+type — a repeat call updates the same claim
     'get_active_decisions',  # loads decisions, persists overdue->needs_review (idempotent)
     'reject_proposal',
     'remove_race',
@@ -109,6 +110,7 @@ OPEN_WORLD_TOOLS = {
     'get_weekly_prescription',
     'push_plan_to_garmin',
     'query_metrics',        # daily/readiness/intensity/personal_records hit Garmin
+    'record_activity_claim',  # fresh Garmin check of the claimed date
     'refresh_athlete_baseline',
     'refresh_fitness_history',
     'sync_strength_session',

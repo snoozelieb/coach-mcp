@@ -181,6 +181,53 @@ def update_coaching_log(mutate) -> dict[str, Any]:
         return load_coaching_log()
 
 
+def append_decision(decision_type: str, decision: str, rationale: str, *,
+                    review_days: int = 7, athlete_statement: str | None = None,
+                    extra: dict[str, Any] | None = None,
+                    today: date | None = None) -> dict[str, Any]:
+    """Append a coaching decision under the log's lock and return it.
+
+    Used by the consent paths (injury resolution, relaxed restrictions, gate
+    overrides) so every lifted protection leaves an auditable record with
+    the athlete's own words. The date.today() fallback is a write-time
+    stamp — allowlisted in tests/test_clock_discipline.py.
+    """
+    if today is None:
+        today = date.today()
+    created: dict[str, Any] = {}
+
+    def _apply(log):
+        decisions = log.setdefault('decisions', [])
+        log.setdefault('metadata', {}).setdefault('created', today.isoformat())
+        count = len([d for d in decisions
+                     if isinstance(d, dict) and d.get('date') == today.isoformat()])
+        entry = {
+            'id': f"d_{today.strftime('%Y%m%d')}_{count + 1:03d}",
+            'date': today.isoformat(),
+            'type': decision_type,
+            'decision': decision,
+            'rationale': rationale,
+            'status': 'active',
+            'outcome': None,
+            'review_date': (today + timedelta(days=review_days)).isoformat(),
+        }
+        if athlete_statement:
+            entry['athlete_statement'] = athlete_statement
+        if extra:
+            entry.update(extra)
+        decisions.append(entry)
+        created.update(entry)
+
+    update_coaching_log(_apply)
+    return created
+
+
+def update_json_file(filename: str, mutate) -> dict[str, Any]:
+    """Locked read-modify-write of a data file (see storage.update_json)."""
+    from . import storage
+    return storage.update_json(filename, mutate, data_dir=DATA_DIR)
+
+
 def get_coaching_context(today: date) -> dict[str, Any]:
     """
     Get coaching context for LLM continuity.

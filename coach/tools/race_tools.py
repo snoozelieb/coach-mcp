@@ -402,35 +402,53 @@ def races(
         return {'error': str(e)}
 
 
-@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True,
+@mcp.tool(meta={"anthropic/requiresUserInteraction": True},
+          annotations={'readOnlyHint': False, 'destructiveHint': True,
                        'idempotentHint': True, 'openWorldHint': False})
 def remove_race(name: str) -> str:
     """
-    Remove a race/event from the training calendar.
+    Remove a race/event from the training calendar by its EXACT name.
 
     Destructive — the event is deleted from training_config.json. Kept as a
     standalone tool (not a `races` action) so clients see destructiveHint.
+    Matching is exact (case-insensitive) on the full name: a partial name
+    deletes nothing and returns the candidates, and an empty name is
+    rejected (it used to match every event). Confirm with the athlete before
+    calling.
 
     Args:
-        name: Name of the event to remove (case-insensitive partial match)
+        name: Exact name of the event to remove (case-insensitive)
 
-    Returns confirmation or error if not found.
+    Returns confirmation, or an error with suggestions if not found.
     """
     try:
         config = load_training_config()
         events = config.get('events', [])
-
-        # Find matching event
-        name_lower = name.lower()
-        matching = [e for e in events if name_lower in e.get('name', '').lower()]
-
-        if not matching:
-            return json.dumps({'error': f"No event found matching '{name}'"})
-
-        if len(matching) > 1:
-            names = [e.get('name') for e in matching]
+        wanted = (name or '').strip()
+        if not wanted:
             return json.dumps({
-                'error': f"Multiple matches found: {names}. Be more specific."
+                'error': 'missing_name',
+                'message': 'remove_race needs the exact event name — nothing was removed',
+                'events': [e.get('name') for e in events if isinstance(e, dict)],
+            })
+
+        matching = [e for e in events
+                    if isinstance(e, dict)
+                    and (e.get('name') or '').strip().lower() == wanted.lower()]
+        if not matching:
+            suggestions = [e.get('name') for e in events
+                           if isinstance(e, dict)
+                           and wanted.lower() in (e.get('name') or '').lower()]
+            return json.dumps({
+                'error': f"No event named '{wanted}' — nothing was removed",
+                'suggestions': suggestions,
+                'hint': 'Pass the exact name from the suggestions (or races(action=\'list\')).',
+            })
+        if len(matching) > 1:
+            return json.dumps({
+                'error': f"{len(matching)} events share the name '{wanted}' — nothing was removed",
+                'events': matching,
+                'hint': 'Rename one with races(action=\'update\') first.',
             })
 
         removed = matching[0]

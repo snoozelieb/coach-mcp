@@ -716,7 +716,8 @@ class TestInjuryWriteGate:
         }}}
 
         result = update_weekly_plan(plan_json=json.dumps(plan),
-                                    override_injury_gate=True)
+                                    override_injury_gate=True,
+                                    athlete_statement='I understand the risk and want to continue', override_rationale='test override with consent')
 
         assert result['status'] == 'success'
         assert result['injury_gate']['injury_gate_overridden'] is True

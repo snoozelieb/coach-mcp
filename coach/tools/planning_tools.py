@@ -3,7 +3,9 @@
 from ..mcp_app import mcp
 from ..garmin_client import garmin_api_call, schedule_workout
 from ..parsers import parse_activities, parse_training_readiness
+from ..session_state import require_snapshot
 from ..planner import (get_current_plan, save_weekly_plan, merge_plan_fields,
+                     append_decision,
                      create_empty_week_template,
                      load_athlete, load_coaching_log, save_coaching_log,
                      load_json_file, save_json_file,
@@ -735,6 +737,9 @@ def update_phase(new_phase: str, notes: str = None) -> dict:
 
     try:
         today = date.today()
+        gate = require_snapshot('update_phase', today)
+        if gate:
+            return gate
         state: dict = {}
 
         def _apply(config: dict) -> None:
@@ -822,7 +827,9 @@ def get_weekly_plan() -> dict:
 def update_weekly_plan(plan: dict | None = None,
                        override_injury_gate: bool = False,
                        plan_json: str | None = None,
-                       override_purpose_gate: bool = False) -> dict:
+                       override_purpose_gate: bool = False,
+                       athlete_statement: str | None = None,
+                       override_rationale: str | None = None) -> dict:
     """
     Saves a new or updated weekly training plan — the rolling 7-day plan,
     at most 21 days ahead. Every save runs four code-enforced checks; read
@@ -830,19 +837,25 @@ def update_weekly_plan(plan: dict | None = None,
 
     GATES AND ERROR CODES
 
+    - snapshot_required / snapshot_stale: SNAPSHOT FIRST is enforced — a
+      get_coaching_snapshot() from this session, today, under 2 hours old
+      must precede the save.
     - purpose_gate: REJECTED when any non-rest session lacks a non-empty
       'purpose' (why this session, this day, this athlete). The error lists
       the offending dates/sessions; nested 'sessions' lists are checked at
-      the leaf; rest days are exempt. override_purpose_gate=True only with a
-      logged rationale — a session you cannot explain does not belong on
-      the plan.
+      the leaf; rest days are exempt. override_purpose_gate is DEPRECATED
+      and no longer bypasses it — a session you cannot explain does not
+      belong on the plan; an athlete-choice day uses intensity 'discretion'
+      and still states its purpose.
     - injury_gate: REJECTED when a non-rest session's type intersects an
       active/improving injury's restricted_activities (taxonomy-aware:
       'long_ride' is caught by a 'cycling' restriction; free-text
       restrictions match by substring). The error lists the offending
-      dates/sessions. override_injury_gate=True only with the athlete's
-      informed consent and a logged rationale. A plan failing both gates
-      reports both: the injury_gate error carries a 'purpose_gate' section.
+      dates/sessions. override_injury_gate=True needs athlete_statement
+      (the athlete's own words) and override_rationale, logged together as
+      a 'gate_override' decision; without them the error is
+      'override_requires_confirmation'. A plan failing both gates reports
+      both: the injury_gate error carries a 'purpose_gate' section.
     - plan_dates: REJECTED when every day key is in the past ('plan is
       entirely historical — build a current week') or any day key is more
       than 21 days in the future (fat-finger guard).
@@ -908,10 +921,12 @@ def update_weekly_plan(plan: dict | None = None,
     Args:
         plan: Structured plan dict (see PLAN STRUCTURE). Preferred.
         override_injury_gate: Bypass the injury restriction check (default
-            False) — athlete consent plus a logged rationale required.
+            False) — needs athlete_statement and override_rationale.
         plan_json: DEPRECATED — JSON string form of the plan. Use `plan`.
-        override_purpose_gate: Bypass the missing-purpose rejection (default
-            False). The bypass is logged and noted in the response.
+        override_purpose_gate: DEPRECATED and ignored — the purpose gate
+            cannot be bypassed; the response notes the deprecation.
+        athlete_statement: The athlete's own words agreeing to the override.
+        override_rationale: Why the coach agrees, citing the evidence.
 
     Returns:
         Confirmation with purpose_warnings and grounding_warnings, or a
@@ -919,6 +934,26 @@ def update_weekly_plan(plan: dict | None = None,
         'validation_error', 'plan_dates', 'purpose_gate', 'injury_gate'.
     """
     try:
+        gate = require_snapshot('update_weekly_plan', date.today())
+        if gate:
+            return gate
+        purpose_override_requested = bool(override_purpose_gate)
+        if purpose_override_requested:
+            logger.warning("override_purpose_gate is deprecated and ignored")
+        override_purpose_gate = False
+        statement = (athlete_statement or '').strip()
+        why = (override_rationale or '').strip()
+        if override_injury_gate and not (statement and why):
+            return {
+                'error': 'override_requires_confirmation',
+                'message': ("override_injury_gate needs the athlete's own words "
+                            "(athlete_statement) and override_rationale — nothing "
+                            "was saved."),
+                'hint': ("Quote the athlete's agreement in athlete_statement and give "
+                         "the evidence in override_rationale; both are logged as a "
+                         "'gate_override' decision."),
+            }
+
         # Tolerate legacy positional calls that pass the JSON string as the
         # first argument (pre-typed clients).
         if isinstance(plan, str) and plan_json is None:
@@ -988,9 +1023,13 @@ def update_weekly_plan(plan: dict | None = None,
         purpose_gate_error = {
             'missing_purpose': missing_purpose,
             'hint': ("Add a non-empty 'purpose' string to each listed session "
-                     "(WHY it exists), or pass override_purpose_gate=True "
-                     "with a logged rationale."),
+                     "(WHY it exists). override_purpose_gate is deprecated and "
+                     "no longer bypasses this gate; an athlete-choice day uses "
+                     "intensity 'discretion' and still states its purpose."),
         }
+        if purpose_override_requested:
+            purpose_gate_error['override_purpose_gate'] = (
+                'deprecated — ignored, the purpose gate cannot be bypassed')
         if injury_blocked:
             error = {
                 'error': 'injury_gate',
@@ -1070,6 +1109,15 @@ def update_weekly_plan(plan: dict | None = None,
             result['purpose_gate'] = purpose_gate_note
         if injury_gate_note:
             result['injury_gate'] = injury_gate_note
+            # Consent trail: the athlete's words and the coach's reasoning
+            decision = append_decision(
+                'gate_override',
+                f"Weekly plan saved despite injury restrictions on "
+                f"{len(violations)} session(s)",
+                why, athlete_statement=statement,
+                extra={'tool': 'update_weekly_plan', 'violations': violations},
+                today=today)
+            result['decision_logged'] = decision.get('id')
         return result
     except json.JSONDecodeError as e:
         logger.exception("update_weekly_plan failed: invalid JSON")
@@ -1439,7 +1487,9 @@ def _program_injury_violations(sport: str, injuries: list) -> list[dict]:
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
                        'idempotentHint': True, 'openWorldHint': False})
 def training_program(action: str = 'get', program: dict | None = None,
-                     override_injury_gate: bool = False) -> dict:
+                     override_injury_gate: bool = False,
+                     athlete_statement: str | None = None,
+                     override_rationale: str | None = None) -> dict:
     """
     Multi-week training program store — the macro plan the rolling 7-day
     weekly plan executes. The weekly plan holds at most 21 days; anything
@@ -1497,8 +1547,11 @@ def training_program(action: str = 'get', program: dict | None = None,
         - sport must be duration-prescribed (cycling/running/strength/
           swimming — games and mobility aren't duration-progressed).
         - INJURY: a sport restricted by an active/improving injury rejects
-          the save; override_injury_gate=True only with athlete consent and
-          a logged rationale (mirrors update_weekly_plan).
+          the save; override_injury_gate=True needs athlete_statement and
+          override_rationale (logged as a 'gate_override' decision; without
+          them: 'override_requires_confirmation'). Mirrors update_weekly_plan.
+        - SNAPSHOT FIRST: action='set' needs a snapshot from this session
+          today ('snapshot_required' / 'snapshot_stale').
         - DATES (error 'program_dates'): start_date more than 90 days out, or a program entirely in
           the past, is rejected.
         - Week-over-week long_session_mins increases > 25% come back as
@@ -1512,7 +1565,9 @@ def training_program(action: str = 'get', program: dict | None = None,
         action: 'get' (default) or 'set'.
         program: The program dict (required for action='set').
         override_injury_gate: Bypass the injury restriction check (default
-            False) — only with the athlete's informed consent.
+            False) — needs athlete_statement and override_rationale.
+        athlete_statement: The athlete's own words agreeing to the override.
+        override_rationale: Why the coach agrees, citing the evidence.
 
     Returns:
         action='get': the stored program with current-week context.
@@ -1523,6 +1578,21 @@ def training_program(action: str = 'get', program: dict | None = None,
     try:
         today = date.today()
         action = str(action or 'get').strip().lower()
+        if action != 'get':
+            gate = require_snapshot('training_program', today)
+            if gate:
+                return gate
+            statement = (athlete_statement or '').strip()
+            why = (override_rationale or '').strip()
+            if override_injury_gate and not (statement and why):
+                return {
+                    'error': 'override_requires_confirmation',
+                    'message': ("override_injury_gate needs the athlete's own words "
+                                "(athlete_statement) and override_rationale — nothing "
+                                "was saved."),
+                    'hint': ("Quote the athlete's agreement in athlete_statement and "
+                             "give the evidence in override_rationale."),
+                }
 
         if action == 'get':
             doc = load_json_file(TRAINING_PROGRAM_FILE) or {}
@@ -1777,6 +1847,14 @@ def training_program(action: str = 'get', program: dict | None = None,
         record.setdefault('status', 'active')
         record.setdefault('created', today.isoformat())
         record['last_updated'] = today.isoformat()
+        if violations:  # overridden with consent — leave the trail
+            append_decision(
+                'gate_override',
+                f"Program '{program.get('name', 'unnamed')}' saved despite injury "
+                f"restrictions on {sport}",
+                why, athlete_statement=statement,
+                extra={'tool': 'training_program', 'violations': violations},
+                today=today)
         save_json_file(TRAINING_PROGRAM_FILE, {
             'schema_version': 1,
             'program': record,
