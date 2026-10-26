@@ -18,7 +18,7 @@ from ..garmin_client import (
     fetch_activity_hr_zones,
     GarminAuthRequiredError,
 )
-from ..parsers import parse_activities, build_current_time_context
+from ..parsers import parse_activities, build_current_time_context, device_utc_offset_minutes
 from ..session_state import mark_snapshot_taken
 from ..claims import (verify_claims, unverified_claims_view, claim_anomaly,
                       pending_claims)
@@ -33,6 +33,7 @@ from ..planner import (
     validate_season_config,
 )
 from ..rules import (
+    compliance_week_rows,
     normalize_injury,
     check_weekly_compliance,
     check_safety_rules,
@@ -1528,6 +1529,11 @@ def get_compliance_report(days: int = 7) -> str:
 
         # Check compliance against pillars, targets scaled to the window
         compliance = check_weekly_compliance(activities, window_days=days)
+        if days > 7:
+            # Weekly commitments week by week: a skipped week or a spike week
+            # must be visible, not averaged away.
+            compliance.update(compliance_week_rows(activities, start_date, today))
+            compliance['warnings'] = compliance.get('warnings', []) + compliance.pop('week_warnings')
 
         # Check safety rules
         safety = check_safety_rules(activities, today=today)
@@ -1687,16 +1693,23 @@ def _compute_coaching_score(
         if day_str < start_iso:
             continue
         if isinstance(day_data, dict):
-            recent_activities.extend(day_data.get('activities', []) or [])
+            recent_activities.extend({**act, 'date': day_str}
+                                     for act in (day_data.get('activities', []) or [])
+                                     if isinstance(act, dict))
     # 28 days of activities against per-week targets: scale the window or
     # four weeks of strength sessions read as 400 % compliance.
     compliance = check_weekly_compliance(recent_activities, window_days=28)
+    # Weekly commitments: a pillar is "compliant" when met in most weeks.
+    rows = compliance_week_rows(recent_activities, today - timedelta(days=28), today)
+    majority = (rows['total_weeks'] + 1) // 2
 
     achievability_score = 70
     achievability_data = {
         'compliance_rate': None,
-        'strength_compliant': compliance.get('strength', {}).get('compliant', True),
-        'mobility_compliant': compliance.get('mobility', {}).get('compliant', True),
+        'strength_compliant': rows['pillar_weeks_met']['strength'] >= majority,
+        'mobility_compliant': rows['pillar_weeks_met']['mobility'] >= majority,
+        'weeks_met': rows['weeks_met'],
+        'total_weeks': rows['total_weeks'],
     }
     pillars_total = 0
     pillars_met = 0
@@ -1973,6 +1986,12 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 force_refresh,
             )
             all_fetched_activities = parse_activities(raw_activities)
+            # The device clock decides Garmin's calendar day: expose it next
+            # to the server date so a mismatch (travel, a session after the
+            # server's midnight) is visible instead of becoming a false
+            # "Garmin doesn't show that".
+            current_time_context = build_current_time_context(
+                now, garmin_utc_offset_minutes=device_utc_offset_minutes(raw_activities))
         except GarminAuthRequiredError as e:
             auth_error = auth_error or str(e)
             activities_error = 'auth_required'

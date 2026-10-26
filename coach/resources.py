@@ -73,7 +73,12 @@ planned_vs_actual.as_of names the comparison date, and every anomaly summary
 embeds its absolute date plus a relative phrase ("2026-06-10 (yesterday):
 ..."). Use these fields — never date arithmetic from conversational memory.
 Planned sessions dated today are PENDING, never "missed"; a missed verdict
-only exists for dates before today.
+only exists for dates before today. current_time_context also carries
+garmin_date, garmin_utc_offset_minutes (from the device clock of the newest
+fetched activity), source ('device_offset' or 'server_local') and
+date_mismatch. On a mismatch the watch files activities under another
+calendar day than the server: neither challenge nor confirm claims for today
+and yesterday — record them with record_activity_claim().
 
 ## Snapshot Sections (drill-down on request)
 

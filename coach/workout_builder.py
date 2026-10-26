@@ -6,6 +6,7 @@ that can be uploaded and scheduled to Garmin Connect.
 """
 
 from .config import DATA_DIR, ATHLETE_FILE, EXERCISE_LIBRARY_FILE
+from .web_utils import sanitize_text
 from .fitness import get_athlete_hr_zones
 from .taxonomy import types_in_family, workout_family_for
 from garminconnect.workout import (
@@ -1541,17 +1542,21 @@ def load_exercise_library() -> dict:
     return _read_data_json(EXERCISE_LIBRARY_FILE)
 
 
+# Exercise notes come from researched web pages; Garmin shows ~250 chars.
+GARMIN_NOTE_MAX_CHARS = 250
+
+
 def get_exercise_note(exercise_name: str, library: dict) -> str:
     """Get form cues note for an exercise from the library."""
     # Try exact match first
     normalized = exercise_name.strip().lower()
     if normalized in library:
-        return library[normalized].get("garmin_note", "")
+        return sanitize_text(library[normalized].get("garmin_note", ""), GARMIN_NOTE_MAX_CHARS)
 
     # Try partial match (e.g., "ROMANIAN_DEADLIFT" -> "romanian deadlift")
     garmin_name = exercise_name.replace("_", " ").lower()
     if garmin_name in library:
-        return library[garmin_name].get("garmin_note", "")
+        return sanitize_text(library[garmin_name].get("garmin_note", ""), GARMIN_NOTE_MAX_CHARS)
 
     return ""
 

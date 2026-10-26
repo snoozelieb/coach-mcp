@@ -7,7 +7,7 @@ into structured formats used by the coaching tools.
 import shutil
 import sys
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Union
 
 from .config import DATA_DIR, DEFAULTS_DIR, METHODOLOGY_FILE
@@ -81,7 +81,33 @@ def parse_sleep_score(stats: dict[str, Any]) -> Union[int, str]:
     return stats.get('sleepScore', 'N/A')
 
 
-def build_current_time_context(now: datetime | None = None) -> dict:
+def device_utc_offset_minutes(raw_activities: list | None) -> int | None:
+    """Offset (minutes) between the athlete's device clock and UTC, read from
+    the newest raw Garmin activity's startTimeLocal/startTimeGMT pair.
+
+    The device clock decides which calendar day Garmin files an activity
+    under — the signal that matters for "today"/"yesterday" questions.
+    garminconnect 0.3.20 exposes no profile timezone; this needs none.
+    """
+    best: tuple[str, int] | None = None
+    for activity in raw_activities or []:
+        if not isinstance(activity, dict):
+            continue
+        local, gmt = activity.get('startTimeLocal'), activity.get('startTimeGMT')
+        if not local or not gmt:
+            continue
+        try:
+            local_dt = datetime.fromisoformat(str(local).replace(' ', 'T')[:19])
+            gmt_dt = datetime.fromisoformat(str(gmt).replace(' ', 'T')[:19])
+        except ValueError:
+            continue
+        if best is None or str(local) > best[0]:
+            best = (str(local), int(round((local_dt - gmt_dt).total_seconds() / 60)))
+    return None if best is None else best[1]
+
+
+def build_current_time_context(now: datetime | None = None, *,
+                               garmin_utc_offset_minutes: int | None = None) -> dict:
     """Build the current-time context that the coach must verify before advising.
 
     Time-of-day materially changes what advice is possible: morning fueling
@@ -92,9 +118,17 @@ def build_current_time_context(now: datetime | None = None) -> dict:
     time into coaching context. Its internal datetime.now() fallback is
     allowlisted in tests/test_clock_discipline.py because MCP resource/tool
     boundaries (coach://context/now, interactive_check_in) call it bare.
+
+    When the device's UTC offset is known (device_utc_offset_minutes from the
+    activities just fetched) the context also carries garmin_date — the
+    calendar day the athlete's watch is on — and date_mismatch, true when it
+    differs from the server's date (travel, a session after the server's
+    midnight). On a mismatch the coach neither challenges nor confirms claims
+    for today/yesterday: it records them.
     """
     now = now or datetime.now()
     hour = now.hour
+
     if 4 <= hour < 8:
         period = 'early_morning'
     elif 8 <= hour < 12:
@@ -105,7 +139,8 @@ def build_current_time_context(now: datetime | None = None) -> dict:
         period = 'evening'
     else:
         period = 'night'
-    return {
+
+    context = {
         'timestamp': now.isoformat(timespec='seconds'),
         'date': now.date().isoformat(),
         'day_of_week': now.strftime('%A'),
@@ -115,6 +150,24 @@ def build_current_time_context(now: datetime | None = None) -> dict:
         'is_weekend': now.weekday() >= 5,
         'timezone_note': 'server local time',
     }
+    if garmin_utc_offset_minutes is None:
+        context.update({
+            'garmin_date': None,
+            'garmin_utc_offset_minutes': None,
+            'source': 'server_local',
+            'date_mismatch': False,
+        })
+    else:
+        aware = now if now.tzinfo is not None else now.astimezone()
+        device_now = aware.astimezone(timezone.utc) + timedelta(minutes=garmin_utc_offset_minutes)
+        garmin_date = device_now.date().isoformat()
+        context.update({
+            'garmin_date': garmin_date,
+            'garmin_utc_offset_minutes': garmin_utc_offset_minutes,
+            'source': 'device_offset',
+            'date_mismatch': garmin_date != context['date'],
+        })
+    return context
 
 
 def epoch_ms_to_local_iso(value: Any) -> str | None:

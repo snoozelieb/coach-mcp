@@ -97,11 +97,12 @@ def sandbox_data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def gates_satisfied():
-    """SNAPSHOT FIRST is code now (coach.session_state). Tests exercise tools
-    in isolation, so mark a fresh snapshot as taken; tests of the gate itself
-    call session_state.reset() and assert the refusal."""
+def gates_satisfied(monkeypatch):
+    """SNAPSHOT FIRST and setup mode are code now (coach.session_state). Tests
+    exercise tools in isolation, so mark a fresh snapshot as taken and switch
+    the setup gate off; tests of the gates themselves reset / re-enable."""
     import coach.session_state as session_state
+    monkeypatch.setenv('COACH_SETUP_GATE', '0')
     session_state.mark_snapshot_taken(date.today())
     yield
     session_state.reset()

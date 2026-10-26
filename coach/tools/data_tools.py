@@ -13,7 +13,7 @@ from ..parsers import (parse_resting_heart_rate, parse_body_battery,
                      parse_activities, parse_personal_records,
                      parse_training_readiness)
 from ..taxonomy import types_match
-from datetime import date
+from datetime import date, timedelta
 import json
 import logging
 
@@ -35,6 +35,9 @@ def _personal_records() -> dict:
     except Exception as e:
         logger.exception("query_metrics(kind='personal_records') failed")
         return {"error": str(e)}
+
+
+MAX_RANGE_DAYS = 92  # longer windows page: the response carries next_start
 
 
 @mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
@@ -60,7 +63,9 @@ def get_activities_range(start_date: str, end_date: str = None,
 
     Returns:
         JSON array of activities with: date, name, type, duration_mins,
-        distance_km, avg_hr, max_hr, calories, and pace for runs.
+        distance_km, avg_hr, max_hr, calories, and pace for runs. Windows
+        longer than 92 days are paged: the response is then an object with
+        'activities', 'truncated': true and 'next_start' for the next call.
     """
     try:
         # Validate date formats before hitting the API
@@ -77,6 +82,15 @@ def get_activities_range(start_date: str, end_date: str = None,
         if end_date is None:
             end_date = date.today().isoformat()
 
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        truncated_end = None
+        if (end - start).days > MAX_RANGE_DAYS:
+            # One page at a time: a 365-day pull is 1,000+ activities of
+            # JSON straight into the model's context.
+            truncated_end = start + timedelta(days=MAX_RANGE_DAYS)
+            end_date = truncated_end.isoformat()
+
         activities = garmin_api_call(lambda c: c.get_activities_by_date(start_date, end_date))
         parsed = parse_activities(activities)
 
@@ -84,7 +98,16 @@ def get_activities_range(start_date: str, end_date: str = None,
             parsed = [a for a in parsed
                       if types_match(activity_type, a.get('type'))]
 
-        return json.dumps(parsed, indent=2)
+        if truncated_end is not None:
+            return json.dumps({
+                'activities': parsed,
+                'truncated': True,
+                'window': {'start': start_date, 'end': end_date, 'max_days': MAX_RANGE_DAYS},
+                'next_start': (truncated_end + timedelta(days=1)).isoformat(),
+                'note': (f'Window capped at {MAX_RANGE_DAYS} days; call again from '
+                         'next_start for the rest.'),
+            })
+        return json.dumps(parsed)
 
     except Exception as e:
         logger.exception("get_activities_range failed")

@@ -53,10 +53,15 @@ ALLOWLIST = {
     # interactive_check_in — it IS the boundary that turns wall-clock into
     # coaching context
     ('coach/parsers.py', 'build_current_time_context'),
+    ('coach/web_utils.py', 'fetch_untrusted_page'),
     # [stamp] metadata.last_updated audit stamp on every coaching_log save
     ('coach/planner.py', 'save_coaching_log'),
     ('coach/planner.py', 'update_coaching_log'),
     ('coach/planner.py', 'append_decision'),
+    # first-run seeds: write-time stamps on files the wizard creates
+    ('coach/setup_wizard.py', 'create_training_config'),
+    ('coach/setup_wizard.py', 'create_weekly_plan'),
+    ('coach/setup_wizard.py', 'create_coaching_log'),
     # [bare-call] storage boundary; scripts/daily_loop.py calls it bare —
     # resolves today once, threads it into _prune_and_archive_plan_days
     ('coach/planner.py', 'save_weekly_plan'),

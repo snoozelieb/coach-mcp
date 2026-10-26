@@ -16,7 +16,8 @@ Auth flow — no garth, no playwright, no browser:
    instead of hammering Garmin's SSO. One expired session must not trigger
    N login attempts during a snapshot.
 
-Recovery: ``python scripts/garmin_login.py`` — interactive credential login
+Recovery: ``garmin-coach-login`` (``python scripts/garmin_login.py`` from a
+checkout) — interactive credential login
 with MFA prompt; persists tokens to the same ``TOKEN_DIR`` this module reads.
 """
 import logging
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 AUTH_REQUIRED_MESSAGE = (
     "AUTH_REQUIRED: Garmin session expired or needs MFA. "
-    "Run: python scripts/garmin_login.py"
+    "Run: garmin-coach-login (or: python scripts/garmin_login.py)"
 )
 
 # After a failed credential login, fail fast for this long instead of

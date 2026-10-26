@@ -474,6 +474,49 @@ def check_weekly_compliance(
     return result
 
 
+def compliance_week_rows(activities: list[dict[str, Any]], start: date, end: date,
+                         pillars: dict[str, Any] = None) -> dict[str, Any]:
+    """Per-week compliance across [start, end] in 7-day bins from ``start``.
+
+    Pillar targets are weekly commitments: "strength 2x/week" means every
+    week, not 8 in a month. The scaled aggregate from check_weekly_compliance
+    hides a skipped week behind a strong one and can never flag a single-week
+    volume spike; these rows show each week, which is what the coach asks
+    about ("what happened in week 3?").
+    """
+    rows = []
+    bin_start = start
+    while bin_start <= end:
+        bin_end = min(bin_start + timedelta(days=6), end)
+        days = (bin_end - bin_start).days + 1
+        in_bin = [a for a in activities
+                  if bin_start.isoformat() <= str(a.get('date') or '')[:10] <= bin_end.isoformat()]
+        c = check_weekly_compliance(in_bin, pillars, window_days=days)
+        rows.append({
+            'week_start': bin_start.isoformat(),
+            'week_end': bin_end.isoformat(),
+            'days': days,
+            'strength': {k: c['strength'][k] for k in ('required', 'completed', 'compliant')},
+            'mobility': {k: c['mobility'][k] for k in ('required', 'completed', 'compliant')},
+            'long_effort': {k: c['long_effort'][k] for k in ('required', 'completed', 'compliant')},
+            'volume': {k: c['volume'][k] for k in ('target_hrs', 'actual_hrs', 'percent', 'over_volume')},
+            'overall_compliant': c['overall_compliant'],
+            'deficits': c['deficits'],
+        })
+        bin_start = bin_end + timedelta(days=1)
+    pillar_weeks_met = {p: sum(1 for r in rows if r[p]['compliant'])
+                        for p in ('strength', 'mobility', 'long_effort')}
+    return {
+        'weeks': rows,
+        'total_weeks': len(rows),
+        'weeks_met': sum(1 for r in rows if r['overall_compliant']),
+        'pillar_weeks_met': pillar_weeks_met,
+        'week_warnings': [f"Week of {r['week_start']}: volume at {r['volume']['percent']}% "
+                          "of target - potential overtraining risk"
+                          for r in rows if r['volume']['over_volume']],
+    }
+
+
 def _activity_day(activity: dict[str, Any]) -> date | None:
     """Parse an activity's date to a date object, or None when missing/invalid."""
     raw = activity.get('date')

@@ -305,6 +305,32 @@ class TestCheckWeeklyCompliance:
         assert result['volume']['over_volume'] is True
         assert any('over 14 days' in w for w in result['warnings'])
 
+    def test_week_rows_expose_a_skipped_week_the_aggregate_hides(self):
+        """Strength 2x/week over four weeks: [3, 3, 0, 2] sessions is 8/8 in
+        the scaled aggregate but week 3 was skipped — the rows must say so."""
+        from coach.rules import compliance_week_rows
+        from datetime import date, timedelta
+        end = date.today()
+        start = end - timedelta(days=27)
+        per_week = [3, 3, 0, 2]
+        activities = []
+        for week, count in enumerate(per_week):
+            for i in range(count):
+                day = start + timedelta(days=week * 7 + i)
+                activities.append({'type': 'strength_training', 'duration_mins': 45,
+                                   'date': day.isoformat()})
+        pillars = {'strength_sessions_per_week': 2, 'mobility_minutes_per_week': 0,
+                   'long_effort_per_week': 0, 'weekly_volume_target_hrs': 0}
+
+        aggregate = check_weekly_compliance(activities, pillars, window_days=28)
+        rows = compliance_week_rows(activities, start, end, pillars)
+
+        assert aggregate['strength']['compliant'] is True  # 8 >= 8: the blind spot
+        assert [r['strength']['completed'] for r in rows['weeks']] == [3, 3, 0, 2]
+        assert rows['pillar_weeks_met']['strength'] == 3
+        assert rows['total_weeks'] == 4
+        assert rows['weeks'][2]['overall_compliant'] is False
+
     def test_rejects_zero_day_window(self):
         with pytest.raises(ValueError):
             check_weekly_compliance([], {'strength_sessions_per_week': 0}, window_days=0)

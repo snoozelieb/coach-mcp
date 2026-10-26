@@ -72,6 +72,7 @@ python -m pytest -v                           # Run all tests
 python scripts/daily_loop.py                  # Morning audit (scheduled 06:30 via Task Scheduler "CoachMCP Morning Audit")
 python scripts/garmin_login.py                # Manual Garmin token recovery (native auth + MFA)
 python scripts/setup_wizard.py                # Interactive first-run profile setup
+garmin-coach-setup / garmin-coach-login       # Same two helpers as console scripts (installed copies)
 python scripts/backfill_history.py --since YYYY-MM-DD --check   # Diary-hole repair (dry run; --apply to write)
 ```
 
@@ -175,7 +176,8 @@ garminconnect 0.3.20 (exact pin) directly — no custom Cloudflare code (the lib
 handles Garmin's SSO natively). Token-first restore from `.garth/garmin_tokens.json`;
 on failure ONE non-interactive credential login (MFA is a hard stop — never blocks
 on input); tools then raise `GarminAuthRequiredError` whose message names the fix
-(`python scripts/garmin_login.py`), and a process latch fails fast for ~10 minutes.
+(`garmin-coach-login`, or `python scripts/garmin_login.py` from a checkout), and a
+process latch fails fast for ~10 minutes.
 Restart the server after re-login. `tests/test_garmin_contract.py` pins every
 garminconnect call shape so dependency breaks fail CI loudly.
 

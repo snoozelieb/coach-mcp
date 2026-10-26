@@ -57,6 +57,18 @@ The server needs two environment variables: `GARMIN_EMAIL` and
 [Security & Privacy](#security--privacy) and [Advanced](#advanced).
 From a source checkout, a `.env` file works too.
 
+To run the server or the helpers from a terminal, set the two variables in
+that shell first. PowerShell and bash quote differently:
+
+```powershell
+$env:GARMIN_EMAIL = "you@example.com"
+$env:GARMIN_PASSWORD = "your-password"
+```
+
+```bash
+export GARMIN_EMAIL=you@example.com GARMIN_PASSWORD=your-password
+```
+
 ### Claude Code
 
 ```bash
@@ -132,11 +144,17 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 
 ## First run
 
-1. **Create your profile.** From a source checkout, run the interactive wizard:
+1. **Create your profile.** Run the interactive wizard (installed copies
+   have the console script; a source checkout can run the script):
 
    ```bash
-   python scripts/setup_wizard.py
+   garmin-coach-setup                 # pip / uvx install
+   python scripts/setup_wizard.py     # source checkout
    ```
+
+   Until a profile exists the server runs in setup mode: plan, program and
+   push writes answer `setup_required` and name the data directory they
+   looked in.
 
    It creates your athlete profile, training config, and empty plan/memory
    files in the data directory. Alternatively, create the two required files
@@ -159,7 +177,8 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
    start returning `AUTH_REQUIRED`, recover with:
 
    ```bash
-   python scripts/garmin_login.py
+   garmin-coach-login                 # pip / uvx install
+   python scripts/garmin_login.py     # source checkout
    ```
 
    It does a fresh credential login, prompts for the MFA code if Garmin asks,

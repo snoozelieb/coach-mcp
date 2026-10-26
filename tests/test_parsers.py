@@ -77,6 +77,7 @@ class TestBuildCurrentTimeContext:
         expected_keys = {
             'timestamp', 'date', 'day_of_week', 'hour', 'minute',
             'time_period', 'is_weekend', 'timezone_note',
+            'garmin_date', 'garmin_utc_offset_minutes', 'source', 'date_mismatch',
         }
         assert set(result.keys()) == expected_keys
 

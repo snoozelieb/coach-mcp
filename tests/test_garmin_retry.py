@@ -244,7 +244,7 @@ class TestAuthRequiredErrorMessage:
         documented remediation, character for character."""
         assert str(GarminAuthRequiredError()) == (
             "AUTH_REQUIRED: Garmin session expired or needs MFA. "
-            "Run: python scripts/garmin_login.py"
+            "Run: garmin-coach-login (or: python scripts/garmin_login.py)"
         )
         assert str(GarminAuthRequiredError()) == AUTH_REQUIRED_MESSAGE
 

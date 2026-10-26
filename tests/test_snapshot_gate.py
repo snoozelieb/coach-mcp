@@ -85,3 +85,21 @@ def test_state_reports_age_and_degraded_flag():
     assert state['degraded'] is True
     assert state['age_minutes'] < 1
     assert os.environ.get('COACH_SNAPSHOT_GATE', '1') != '0'
+
+
+def test_setup_mode_blocks_writes_until_a_profile_exists(sandbox_data_dir, monkeypatch):
+    monkeypatch.setenv('COACH_SETUP_GATE', '1')
+    session_state.mark_snapshot_taken(TODAY)
+    result = update_weekly_plan(PLAN)
+    assert result['error'] == 'setup_required'
+    assert 'garmin-coach-setup' in result['hint']
+    assert result['data_dir'] == str(sandbox_data_dir)
+
+    (sandbox_data_dir / 'athlete.json').write_text('{"personal": {}}', encoding='utf-8')
+    assert update_weekly_plan(PLAN).get('status') == 'success'
+
+
+def test_setup_mode_comes_before_the_snapshot_gate(sandbox_data_dir, monkeypatch):
+    monkeypatch.setenv('COACH_SETUP_GATE', '1')
+    session_state.reset()
+    assert update_weekly_plan(PLAN)['error'] == 'setup_required'

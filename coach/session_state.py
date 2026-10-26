@@ -13,6 +13,7 @@ session. Under HTTP transport it is per process (sessions share it).
 Environment, read at call time:
 - COACH_SNAPSHOT_GATE=0 disables the gate.
 - COACH_SNAPSHOT_MAX_AGE_MIN overrides the maximum age (default 120).
+- COACH_SETUP_GATE=0 disables the setup-mode check (athlete.json must exist).
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import os
 import threading
 import time
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 SNAPSHOT_MAX_AGE_MINUTES = 120.0
@@ -75,8 +77,40 @@ def reset() -> None:
         _last = None
 
 
+def setup_gate_enabled() -> bool:
+    raw = os.environ.get('COACH_SETUP_GATE', '1').strip().lower()
+    return raw not in ('0', 'false', 'no', 'off')
+
+
+def setup_required(tool_name: str) -> dict[str, Any] | None:
+    """Setup mode for installed copies: without an athlete profile the coach
+    cannot plan for an athlete it does not know. Existence check only, so a
+    minimal profile created in chat (update_athlete) is enough."""
+    if not setup_gate_enabled():
+        return None
+    from . import config  # call-time: DATA_DIR can be re-pointed (tests, COACH_DATA_DIR)
+    profile = Path(config.DATA_DIR) / config.ATHLETE_FILE
+    if profile.exists():
+        return None
+    return {
+        'error': 'setup_required',
+        'message': (f"{tool_name} refused: no athlete profile at {profile} — the "
+                    "coach cannot plan for an athlete it does not know."),
+        'hint': ("Run `garmin-coach-setup` (or `python scripts/setup_wizard.py` from "
+                 "a checkout), or set COACH_DATA_DIR to the folder that holds "
+                 "athlete.json. In chat: get_onboarding_guide() then update_athlete()."),
+        'data_dir': str(config.DATA_DIR),
+    }
+
+
 def require_snapshot(tool_name: str, today: date) -> dict[str, Any] | None:
-    """None when the mandate is satisfied; otherwise the error dict to return."""
+    """None when the mandate is satisfied; otherwise the error dict to return.
+
+    Also enforces setup mode first: prescriptive writes need an athlete
+    profile before they need a snapshot."""
+    setup_error = setup_required(tool_name)
+    if setup_error:
+        return setup_error
     if not gate_enabled():
         return None
     state = snapshot_state()
