@@ -4,7 +4,19 @@ All notable changes to coach-mcp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-26
+
+A grounding release. The coach gains a fourth hard mandate — verify before
+prescribing — and the server enforces it: `snapshot.capacity` reports what the
+athlete has actually done per sport, weekly plans come back with grounding
+warnings, and multi-week programs live in a new `training_program` tool whose
+capacity anchor is verified against history before it can be saved. A class of
+silent coaching-data bugs is fixed at the root (distance steps that reached the
+watch as lap-button steps, pillar compliance that never saw an activity,
+personal records all parsed as unknown, a history retention that erased the
+training diary). The dependency stack and CI were brought current along the
+way: garminconnect 0.3.20, FastMCP 3.4.11, a lint gate, and a Python
+3.12–3.14 test matrix.
 
 ### Fixed
 - **Distance-based workout steps reached the watch as lap-button steps**:
@@ -304,6 +316,7 @@ First publishable release — the end of a five-phase modernization
 
 Pre-1.0 history (the 0.x checkout-only era) lives in the git log.
 
-[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/snoozelieb/coach-mcp/releases/tag/v1.0.0
