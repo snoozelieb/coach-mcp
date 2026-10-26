@@ -1,13 +1,11 @@
 """Tests for scripts/daily_loop.py — planned-session normalization, the
-audit_yesterday NameError regression, and LLM model selection.
+audit_yesterday NameError regression, the verified-or-unverified audit
+contract, the re-audit window, and the exit code.
 
-No network: Garmin reads and plan persistence are patched, and the
-anthropic SDK is replaced with an in-memory stub via sys.modules.
+No network: Garmin reads and plan persistence are patched.
 """
 import json
-import sys
 from datetime import date, timedelta
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import scripts.daily_loop as daily_loop
@@ -149,76 +147,180 @@ def test_generate_morning_brief_rest_day(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _generate_llm_brief — model selection + SDK fallback (no network)
+# Verified-or-unverified: a Garmin error payload is never an activity list
 # ---------------------------------------------------------------------------
 
-class _FakeMessages:
-    def __init__(self):
-        self.kwargs = None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        return SimpleNamespace(content=[SimpleNamespace(text='fake llm brief')])
+def _error_payload(start, end):
+    return json.dumps({'error': 'AUTH_REQUIRED: Garmin session expired'})
 
 
-class _FakeAnthropicClient:
-    last_instance = None
+def test_audit_yesterday_error_payload_is_unverified_not_bonus(monkeypatch):
+    """Regression: the error dict was truthy, so a Garmin outage on a planned
+    rest day was recorded as a 'bonus' workout with the error as 'actual'."""
+    today = date.today()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    plan = {'days': {yesterday: {'planned': None}}}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
+    save_mock = MagicMock()
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', save_mock)
 
-    def __init__(self, api_key=None):
-        self.api_key = api_key
-        self.messages = _FakeMessages()
-        _FakeAnthropicClient.last_instance = self
+    result = daily_loop.audit_yesterday(today)
+
+    assert result['status'] == 'unverified'
+    assert plan['days'][yesterday]['status'] == 'unverified'
+    assert 'actual' not in plan['days'][yesterday]  # never persist fiction
+    save_mock.assert_called_once()
 
 
-def _install_fake_anthropic(monkeypatch):
-    fake_module = SimpleNamespace(Anthropic=_FakeAnthropicClient)
-    monkeypatch.setitem(sys.modules, 'anthropic', fake_module)
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-key')
+def test_audit_yesterday_error_payload_on_training_day_is_unverified(monkeypatch):
+    today = date.today()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    plan = {'days': {yesterday: {'planned': {'type': 'running'}}}}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+
+    result = daily_loop.audit_yesterday(today)
+
+    assert result['status'] == 'unverified'
+    assert result['actual_count'] == 0
+    assert plan['days'][yesterday]['status'] == 'unverified'
+
+
+def test_audit_yesterday_unparseable_payload_is_unverified(monkeypatch):
+    today = date.today()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    plan = {'days': {yesterday: {'planned': {'type': 'running'}}}}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    monkeypatch.setattr(daily_loop, 'get_activities_range', lambda s, e: 'not json')
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+
+    assert daily_loop.audit_yesterday(today)['status'] == 'unverified'
+
+
+# ---------------------------------------------------------------------------
+# Re-audit window: late syncs and recovered outages heal earlier days
+# ---------------------------------------------------------------------------
+
+def test_audit_recent_heals_a_missed_day_when_garmin_shows_it(monkeypatch):
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    plan = {'days': {
+        d1: {'planned': {'type': 'strength'}},
+        d2: {'planned': {'type': 'running'}, 'status': 'missed'},
+    }}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+
+    def fake_range(start, end):
+        return json.dumps([{'type': 'running'}] if start == d2 else [{'type': 'strength'}])
+
+    monkeypatch.setattr(daily_loop, 'get_activities_range', fake_range)
+    save_mock = MagicMock()
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', save_mock)
+
+    result = daily_loop.audit_recent(today)
+
+    assert result['status'] == 'completed'           # yesterday
+    assert plan['days'][d2]['status'] == 'completed'  # healed
+    assert result['reaudited'] == [{'date': d2, 'from': 'missed', 'to': 'completed'}]
+    assert save_mock.call_count == 2  # yesterday's save + the healed day
+
+
+def test_audit_recent_re_checks_unverified_days(monkeypatch):
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d3 = (today - timedelta(days=3)).isoformat()
+    plan = {'days': {
+        d1: {'planned': None},
+        d3: {'planned': None, 'status': 'unverified'},
+    }}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    monkeypatch.setattr(daily_loop, 'get_activities_range', lambda s, e: json.dumps([]))
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+
+    result = daily_loop.audit_recent(today)
+
+    assert plan['days'][d3]['status'] == 'rest_taken'
+    assert result['reaudited'] == [{'date': d3, 'from': 'unverified', 'to': 'rest_taken'}]
+
+
+def test_audit_recent_leaves_verified_days_alone(monkeypatch):
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    plan = {'days': {
+        d1: {'planned': None},
+        d2: {'planned': {'type': 'running'}, 'status': 'completed',
+             'actual': [{'type': 'running'}]},
+    }}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    calls = []
+
+    def fake_range(start, end):
+        calls.append(start)
+        return json.dumps([])
+
+    monkeypatch.setattr(daily_loop, 'get_activities_range', fake_range)
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+
+    result = daily_loop.audit_recent(today)
+
+    assert calls == [d1]  # the completed day is not re-fetched
+    assert result['reaudited'] == []
+    assert plan['days'][d2]['status'] == 'completed'
+
+
+def test_audit_recent_stays_unverified_while_garmin_is_down(monkeypatch):
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    plan = {'days': {
+        d1: {'planned': {'type': 'running'}},
+        d2: {'planned': {'type': 'running'}, 'status': 'unverified'},
+    }}
+    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: plan)
+    monkeypatch.setattr(daily_loop, 'get_activities_range', _error_payload)
+    monkeypatch.setattr(daily_loop, 'save_weekly_plan', MagicMock())
+
+    result = daily_loop.audit_recent(today)
+
+    assert result['status'] == 'unverified'
+    assert result['reaudited'] == []
+    assert plan['days'][d2]['status'] == 'unverified'
+
+
+# ---------------------------------------------------------------------------
+# Exit code: the scheduler must see an unverified or failed run
+# ---------------------------------------------------------------------------
+
+def _stub_audit(status):
+    async def _run():
+        return {'status': status, 'morning_brief': 'brief'}
+    return _run
+
+
+def test_main_exit_code_zero_on_success(monkeypatch, capsys):
+    monkeypatch.setattr(daily_loop, 'run_morning_audit', _stub_audit('success'))
+    assert daily_loop.main() == 0
+    assert 'brief' in capsys.readouterr().out
+
+
+def test_main_exit_code_nonzero_when_unverified(monkeypatch, capsys):
+    monkeypatch.setattr(daily_loop, 'run_morning_audit', _stub_audit('unverified'))
+    assert daily_loop.main() == 1
+
+
+def test_main_exit_code_nonzero_on_error(monkeypatch, capsys):
+    monkeypatch.setattr(daily_loop, 'run_morning_audit', _stub_audit('error'))
+    assert daily_loop.main() == 1
+
+
+def test_brief_names_an_unverified_yesterday(monkeypatch):
     monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: None)
-
-
-async def test_llm_brief_default_model(monkeypatch):
-    _install_fake_anthropic(monkeypatch)
-    monkeypatch.delenv('COACH_LLM_MODEL', raising=False)
-
-    brief = await daily_loop._generate_llm_brief({}, {}, {})
-
-    assert brief == 'fake llm brief'
-    used_model = _FakeAnthropicClient.last_instance.messages.kwargs['model']
-    assert used_model == daily_loop.DEFAULT_LLM_MODEL == 'claude-sonnet-4-6'
-
-
-async def test_llm_brief_env_model_override(monkeypatch):
-    _install_fake_anthropic(monkeypatch)
-    monkeypatch.setenv('COACH_LLM_MODEL', 'claude-test-override')
-
-    brief = await daily_loop._generate_llm_brief({}, {}, {})
-
-    assert brief == 'fake llm brief'
-    used_model = _FakeAnthropicClient.last_instance.messages.kwargs['model']
-    assert used_model == 'claude-test-override'
-
-
-async def test_llm_brief_falls_back_when_sdk_missing(monkeypatch, caplog):
-    # sys.modules[name] = None makes `import anthropic` raise ImportError
-    monkeypatch.setitem(sys.modules, 'anthropic', None)
-    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: None)
-
-    brief = await daily_loop._generate_llm_brief({}, {}, {})
-
-    assert brief.startswith('## Morning Brief')  # template fallback
-    assert any('anthropic' in r.message for r in caplog.records)
-
-
-async def test_llm_brief_falls_back_without_api_key(monkeypatch):
-    fake_module = SimpleNamespace(Anthropic=_FakeAnthropicClient)
-    monkeypatch.setitem(sys.modules, 'anthropic', fake_module)
-    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
-    monkeypatch.setattr(daily_loop, 'get_current_plan', lambda: None)
-
-    brief = await daily_loop._generate_llm_brief({}, {}, {})
-
-    assert brief.startswith('## Morning Brief')  # template fallback
+    brief = daily_loop.generate_morning_brief({}, {}, {'status': 'unverified'})
+    assert 'not verified' in brief
 
 
 # ---------------------------------------------------------------------------

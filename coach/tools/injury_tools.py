@@ -603,7 +603,7 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+@mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': False, 'destructiveHint': False,
                        'idempotentHint': True, 'openWorldHint': False})
 def update_injury_status(
     injury_date: str,

@@ -3,14 +3,20 @@ Daily Loop - Morning audit automation script.
 
 This script orchestrates the morning training review:
 1. INGEST - Pull fresh data from Garmin
-2. AUDIT - Compare actual vs planned activities
-3. BRIEF - Generate morning brief with recovery status and today's plan
+2. AUDIT - Compare actual vs planned activities for yesterday, then re-check
+   the last few days still marked 'missed' or 'unverified' so a late Garmin
+   sync (or a Garmin outage) heals instead of staying a false miss
+3. BRIEF - Print a template morning brief (recovery, yesterday, today)
 
-Modes:
-  python scripts/daily_loop.py          # Template-based brief (no LLM)
-  python scripts/daily_loop.py --llm    # LLM-powered brief via the Anthropic API
+Usage:
+  python scripts/daily_loop.py
 
-Run via Task Scheduler ("CoachMCP Morning Audit") at 06:30 daily.
+Run via Task Scheduler ("CoachMCP Morning Audit") at 06:30 daily. The exit
+code is non-zero when yesterday could not be verified (Garmin unreachable,
+login required) or the run failed, so the scheduler's history shows it.
+
+The audit never writes fiction: when Garmin cannot be reached the day is
+marked 'unverified' and no 'actual' activities are persisted.
 """
 import asyncio
 import json
@@ -28,13 +34,18 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging. The FileHandler is best-effort: if a scheduler wrapper
-# redirects output into daily_loop.log itself (cmd's >> holds the file with no
-# write sharing on Windows), opening it here raises PermissionError — log to
-# console only in that case rather than crashing before the run starts.
+from coach.config import DATA_DIR
+
+# Configure logging. The log lives in the data directory, with the rest of
+# the personal data. The FileHandler is best-effort: if a scheduler wrapper
+# redirects output into the same file (cmd's >> holds the file with no write
+# sharing on Windows), opening it raises PermissionError — log to the console
+# only in that case rather than crashing before the run starts. Health
+# metrics and compliance payloads are logged at DEBUG, so the INFO log
+# carries step names and audit statuses only.
 _handlers: list[logging.Handler] = [logging.StreamHandler()]
 try:
-    _handlers.insert(0, logging.FileHandler(str(Path(__file__).resolve().parent.parent / 'daily_loop.log')))
+    _handlers.insert(0, logging.FileHandler(str(Path(DATA_DIR) / 'daily_loop.log')))
 except OSError:
     pass
 logging.basicConfig(
@@ -44,9 +55,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Model for --llm brief generation. Override via the COACH_LLM_MODEL env var.
-DEFAULT_LLM_MODEL = 'claude-sonnet-4-6'
-
 # Import tool functions directly from their modules
 from coach.tools.coaching_tools import get_compliance_report, get_coaching_snapshot
 from coach.tools.data_tools import get_activities_range
@@ -55,6 +63,12 @@ from coach.planner import (
     get_current_plan,
     save_weekly_plan,
 )
+
+# Days counted back from yesterday whose audit is re-checked on every run while
+# it is still 'missed' or 'unverified'. A session that synced late, or a day
+# audited while Garmin was down, heals instead of staying a false miss.
+REAUDIT_WINDOW_DAYS = 3
+REAUDIT_STATUSES = ('missed', 'unverified')
 
 
 class _NullContext:
@@ -97,15 +111,12 @@ def _normalize_planned(raw: Any) -> list[dict[str, Any]]:
     return []
 
 
-async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
+async def run_morning_audit() -> dict[str, Any]:
     """
     Execute the morning audit loop.
 
-    Args:
-        use_llm: If True, generate the brief via the Anthropic API
-            (falls back to the template brief on any failure).
-
-    Returns a summary of the audit results.
+    Returns a summary of the audit results. `status` is 'success',
+    'unverified' (yesterday could not be checked against Garmin) or 'error'.
     """
     logger.info("=" * 50)
     logger.info("Starting morning audit")
@@ -127,22 +138,25 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
             'status': 'complete',
             'daily_metrics': daily_metrics,
         }
-        logger.info(f"Daily metrics: {daily_metrics}")
+        logger.debug(f"Daily metrics: {daily_metrics}")
 
-        # Step 2: AUDIT - Compare actual vs planned
+        # Step 2: AUDIT - Compare actual vs planned (yesterday + re-check window)
         logger.info("Step 2: AUDIT - Comparing actual vs planned")
-        audit_result = audit_yesterday(today)
+        audit_result = audit_recent(today)
         results['steps']['audit'] = audit_result
-        logger.info(f"Audit result: {audit_result}")
+        logger.info("Audit: %s — %s", audit_result.get('status'), audit_result.get('message'))
+        logger.debug(f"Audit result: {audit_result}")
+        if audit_result.get('status') == 'unverified':
+            results['status'] = 'unverified'
 
         # Step 3: Get compliance report
         logger.info("Step 3: Checking compliance")
         compliance_json = get_compliance_report(days=7)
         compliance = json.loads(compliance_json)
         results['steps']['compliance'] = compliance
-        logger.info(f"Compliance: {json.dumps(compliance, indent=2)}")
+        logger.debug(f"Compliance: {json.dumps(compliance, indent=2)}")
 
-        # Step 4: Build context for LLM (canonical snapshot).
+        # Step 4: Build context (canonical snapshot).
         # The default snapshot is the compact core payload — request the
         # recovery + plan sections explicitly so the brief keeps readiness
         # detail and today's full plan (core alone degrades recovery to {}).
@@ -155,18 +169,14 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
         context.setdefault('upcoming_events', compliance.get('upcoming_events', []))
         results['steps']['context'] = {'status': 'built', 'keys': list(context.keys())}
 
-        # Step 5: Generate morning brief
+        # Step 5: Generate morning brief (template; no LLM in this script)
         logger.info("Step 5: Generating morning brief")
-        if use_llm:
-            logger.info("Using LLM-powered brief generation")
-            brief = await _generate_llm_brief(context, compliance, audit_result)
-        else:
-            brief = generate_morning_brief(context, compliance, audit_result)
+        brief = generate_morning_brief(context, compliance, audit_result)
         results['steps']['brief'] = brief
         results['morning_brief'] = brief
 
         logger.info("=" * 50)
-        logger.info("Morning audit complete")
+        logger.info("Morning audit complete (%s)", results['status'])
         logger.info("=" * 50)
 
     except Exception as e:
@@ -177,106 +187,51 @@ async def run_morning_audit(use_llm: bool = False) -> dict[str, Any]:
     return results
 
 
-async def _generate_llm_brief(
-    context: dict[str, Any],
-    compliance: dict[str, Any],
-    audit: dict[str, Any],
-) -> str:
-    """Generate a morning brief using the Anthropic API directly.
+def _fetch_actual(day_str: str) -> list[dict[str, Any]] | None:
+    """Activities Garmin recorded on `day_str`, or None when they cannot be
+    verified.
 
-    This runs outside an MCP session, so we use the Anthropic SDK
-    rather than MCP sampling (which requires a connected client).
+    get_activities_range returns a JSON error object — not a list — when
+    Garmin is unreachable or a login is required. Treating that dict as a
+    truthy activity list once recorded an outage as a 'bonus' workout on a
+    rest day; None here means "verify later", never "nothing happened".
     """
-    import os
     try:
-        import anthropic
-    except ImportError:
-        logger.warning(
-            "--llm requested but the anthropic SDK is not installed. "
-            "Install it with: pip install \"anthropic>=0.109.1,<1\" "
-            "(listed in requirements.txt). Falling back to template brief."
-        )
-        return generate_morning_brief(context, compliance, audit)
-
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        logger.warning("ANTHROPIC_API_KEY not set — falling back to template brief")
-        return generate_morning_brief(context, compliance, audit)
-
-    today = date.today()
-    day_name = today.strftime('%A')
-
-    # Build a compact data payload for the LLM
-    data = {
-        'date': today.isoformat(),
-        'day': day_name,
-        'recovery': context.get('recovery', {}),
-        'today_plan': None,
-        'yesterday_audit': {
-            'status': audit.get('status'),
-            'message': audit.get('message'),
-        },
-        'compliance_deficits': compliance.get('compliance', {}).get('deficits', []),
-        'upcoming_events': context.get('upcoming_events', [])[:2],
-        'safety_warnings': compliance.get('safety', {}).get('warnings', []),
-    }
-
-    # Get today's plan
-    plan = get_current_plan()
-    today_str = today.isoformat()
-    if plan and 'days' in plan and today_str in plan['days']:
-        today_sessions = _normalize_planned(plan['days'][today_str].get('planned'))
-        data['today_plan'] = today_sessions or None
-
-    system_prompt = (
-        "You are an expert adaptive training coach generating a concise morning brief. "
-        "Be direct: 'You need rest' not 'Maybe consider taking it easy.' "
-        "Output markdown. Keep it under 200 words. "
-        "Sections: Yesterday, Today's Session, Recovery Check, Key Focus."
-    )
-
-    client = anthropic.Anthropic(api_key=api_key)
-    try:
-        response = client.messages.create(
-            model=os.environ.get('COACH_LLM_MODEL', DEFAULT_LLM_MODEL),
-            max_tokens=500,
-            system=system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"Generate morning brief from this data:\n```json\n{json.dumps(data, indent=2)}\n```"
-            }],
-        )
-        return response.content[0].text
-    except Exception as e:
-        logger.warning(f"LLM brief generation failed: {e} — falling back to template")
-        return generate_morning_brief(context, compliance, audit)
+        payload = json.loads(get_activities_range(day_str, day_str))
+    except (TypeError, ValueError) as e:
+        logger.warning("Could not parse Garmin activities for %s: %s", day_str, e)
+        return None
+    if isinstance(payload, dict):
+        logger.warning("Garmin activities unavailable for %s: %s",
+                       day_str, payload.get('error', payload))
+        return None
+    if not isinstance(payload, list):
+        logger.warning("Unexpected activities payload for %s: %s",
+                       day_str, type(payload).__name__)
+        return None
+    return [a for a in payload if isinstance(a, dict)]
 
 
-def audit_yesterday(today: date) -> dict[str, Any]:
+def _audit_day(plan: dict[str, Any], day_str: str) -> dict[str, Any]:
+    """Audit one plan day against Garmin and update the plan day in place.
+
+    Does not save — callers persist the plan once. Returns the audit record.
     """
-    Audit yesterday's activities against the plan.
-
-    Marks planned sessions as completed, missed, or modified.
-    """
-    yesterday = today - timedelta(days=1)
-    yesterday_str = yesterday.isoformat()
-
-    # Get the current plan
-    plan = get_current_plan()
-    if not plan or 'days' not in plan:
-        return {'status': 'no_plan', 'message': 'No weekly plan found'}
-
-    # Check if yesterday is in the plan
-    if yesterday_str not in plan['days']:
-        return {'status': 'not_in_plan', 'date': yesterday_str}
-
-    yesterday_plan = plan['days'][yesterday_str]
-    planned_sessions = _normalize_planned(yesterday_plan.get('planned'))
+    day_plan = plan['days'][day_str]
+    planned_sessions = _normalize_planned(day_plan.get('planned'))
     non_rest = [s for s in planned_sessions if 'rest' not in str(s.get('type', '')).lower()]
 
-    # Get yesterday's actual activities
-    activities_json = get_activities_range(yesterday_str, yesterday_str)
-    actual_activities = json.loads(activities_json)
+    actual_activities = _fetch_actual(day_str)
+    if actual_activities is None:
+        # Garmin could not be checked: mark for re-audit, persist no 'actual'.
+        day_plan['status'] = 'unverified'
+        return {
+            'status': 'unverified',
+            'message': f"Garmin unavailable — {day_str} not verified",
+            'date': day_str,
+            'planned': planned_sessions,
+            'actual_count': 0,
+        }
 
     # Determine status
     if not non_rest:
@@ -289,7 +244,7 @@ def audit_yesterday(today: date) -> dict[str, Any]:
             message = "Rest day taken as planned"
     else:
         planned_types = [s.get('type', 'session') for s in non_rest]
-        actual_types = [a.get('type', '').lower() for a in actual_activities]
+        actual_types = [str(a.get('type', '')).lower() for a in actual_activities]
 
         if not actual_activities:
             status = 'missed'
@@ -311,20 +266,73 @@ def audit_yesterday(today: date) -> dict[str, Any]:
                 status = 'substituted'
                 message = f"Planned {' + '.join(planned_types)}, did {', '.join(actual_types)}"
 
-    # Update the plan with actual result
-    yesterday_plan['actual'] = actual_activities
-    yesterday_plan['status'] = status
-
-    # Save updated plan
-    save_weekly_plan(plan)
+    # Update the plan day with the verified result
+    day_plan['actual'] = actual_activities
+    day_plan['status'] = status
 
     return {
         'status': status,
         'message': message,
-        'date': yesterday_str,
+        'date': day_str,
         'planned': planned_sessions,
         'actual_count': len(actual_activities),
     }
+
+
+def audit_yesterday(today: date) -> dict[str, Any]:
+    """
+    Audit yesterday's activities against the plan.
+
+    Marks the planned sessions as completed, missed, modified — or
+    'unverified' when Garmin could not be checked.
+    """
+    yesterday = today - timedelta(days=1)
+    yesterday_str = yesterday.isoformat()
+
+    # Get the current plan
+    plan = get_current_plan()
+    if not plan or 'days' not in plan:
+        return {'status': 'no_plan', 'message': 'No weekly plan found'}
+
+    # Check if yesterday is in the plan
+    if yesterday_str not in plan['days']:
+        return {'status': 'not_in_plan', 'date': yesterday_str}
+
+    result = _audit_day(plan, yesterday_str)
+    save_weekly_plan(plan)
+    return result
+
+
+def audit_recent(today: date, window_days: int = REAUDIT_WINDOW_DAYS) -> dict[str, Any]:
+    """Audit yesterday, then re-check earlier days still 'missed'/'unverified'.
+
+    Returns yesterday's audit record (the brief's input) with a `reaudited`
+    list of the earlier days whose status changed — a session that synced
+    late, or a day first audited while Garmin was down, now shows as it was.
+    """
+    result = audit_yesterday(today)
+    if result.get('status') == 'no_plan':
+        return result
+
+    plan = get_current_plan()
+    if not plan or 'days' not in plan:
+        return result
+
+    changed = []
+    for back in range(2, window_days + 1):
+        day_str = (today - timedelta(days=back)).isoformat()
+        day_plan = plan['days'].get(day_str)
+        if not isinstance(day_plan, dict) or day_plan.get('status') not in REAUDIT_STATUSES:
+            continue
+        before = day_plan.get('status')
+        record = _audit_day(plan, day_str)
+        if record['status'] != before:
+            changed.append({'date': day_str, 'from': before, 'to': record['status']})
+    if changed:
+        save_weekly_plan(plan)
+        logger.info("Re-audit updated earlier days: %s", changed)
+    result['reaudited'] = changed
+    return result
 
 
 def generate_morning_brief(
@@ -333,9 +341,7 @@ def generate_morning_brief(
     audit: dict[str, Any]
 ) -> str:
     """
-    Generate a concise morning brief without LLM.
-
-    This is a fallback - in full mode, the LLM generates this.
+    Generate a concise morning brief from the audit context (template).
     """
     today = date.today()
     day_name = today.strftime('%A')
@@ -356,12 +362,11 @@ def generate_morning_brief(
     lines.append("")
 
     # Yesterday's audit
-    if audit.get('status') == 'completed':
+    if audit.get('status') in ('completed', 'missed', 'substituted', 'partial'):
         lines.append(f"**Yesterday:** {audit.get('message')}")
-    elif audit.get('status') == 'missed':
-        lines.append(f"**Yesterday:** {audit.get('message')}")
-    elif audit.get('status') == 'substituted':
-        lines.append(f"**Yesterday:** {audit.get('message')}")
+    elif audit.get('status') == 'unverified':
+        lines.append("**Yesterday:** not verified — Garmin was unavailable; "
+                     "the next run re-checks it")
     lines.append("")
 
     # Compliance status
@@ -415,7 +420,12 @@ def generate_morning_brief(
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    use_llm = '--llm' in sys.argv
-    results = asyncio.run(run_morning_audit(use_llm=use_llm))
+def main() -> int:
+    """Run the audit; exit non-zero unless yesterday was verified and the run succeeded."""
+    results = asyncio.run(run_morning_audit())
     print("\n" + results.get('morning_brief', 'No brief generated'))
+    return 0 if results.get('status') == 'success' else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

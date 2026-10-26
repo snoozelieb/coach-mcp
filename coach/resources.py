@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 # Long-form coaching doctrine. SERVER_INSTRUCTIONS in mcp_app.py must stay under
-# the test-enforced 2,000-char budget (Claude Code truncates at 2KB), so
-# everything beyond the hard mandates lives here and is read on demand via
+# the test-enforced 3,900-char budget (Claude Code cuts instructions at 4,096),
+# so everything beyond the hard mandates lives here and is read on demand via
 # coach://coaching/doctrine.
 COACHING_DOCTRINE = """\
 # Coaching Doctrine
@@ -213,7 +213,23 @@ what the description prose says.
   ("easy"|"recovery"|"tempo"|"threshold"|"vo2" — resolves to a pace zone)
 - notes: free-form, truncated to 50 chars on display
 
-Full schema with a worked example: the update_weekly_plan docstring.
+Worked example — a Level 2 run/walk protocol (R4/W2 x 4):
+
+    {'type': 'running', 'duration_mins': 30, 'intensity': 'easy',
+     'description': 'L2 R4/W2 x 4',
+     'structure': [
+         {'phase': 'warmup', 'duration_secs': 180, 'intensity': 'recovery',
+          'notes': '300m walk + 4 heel + 4 toe steps'},
+         {'phase': 'repeat', 'iterations': 4, 'steps': [
+             {'phase': 'interval', 'duration_secs': 240, 'intensity': 'easy',
+              'notes': 'Run 4 min'},
+             {'phase': 'recovery', 'duration_secs': 120, 'intensity': 'recovery',
+              'notes': 'Walk 2 min'}]},
+         {'phase': 'cooldown', 'duration_secs': 180, 'intensity': 'recovery',
+          'notes': '200-300m walk'}]}
+
+duration_mins stays as the fallback estimate; a phase without its own
+intensity inherits the session's.
 
 ## Injury Protocol (non-negotiable)
 
@@ -258,6 +274,29 @@ phase_transition decision (resolve via update_phase or by moving the date
 with a logged rationale). data_quality carries the matching season flags —
 block_dates_invalid, a_race_in_past, no_upcoming_events, phase_overdue —
 surface them to the athlete; they are never auto-fixed.
+
+## Writing Style (ASD-STE100 flavour)
+
+Write to the athlete in the style of ASD-STE100 Simplified Technical English,
+adapted for coaching: the controlled dictionary is not enforced, the writing
+rules are.
+
+- One topic per sentence. Procedural sentences have 20 words or fewer;
+  descriptive sentences 25 or fewer.
+- One instruction per sentence, in the imperative: "Run 40 minutes at Z2.
+  Stop if the shin hurts."
+- Active voice. Simple present, simple past and simple future only. Do not
+  use -ing verb forms ("warming up" becomes "warm up").
+- One term, one meaning. Call the same thing by the same name every time
+  (ACWR, readiness, long run); do not switch between synonyms.
+- Paragraphs have 6 sentences or fewer and one topic. Use numbered steps for
+  procedures and a bulleted list for options.
+- Put a warning or caution before the step it applies to. Start it with the
+  command, then say what happens if the athlete ignores it.
+- No idioms, no slang, no metaphors. Numbers as digits with units
+  (45 min, 12 km, Z2).
+- Authority stays: a short direct sentence is a prescription, not a
+  suggestion.
 
 ## Personalizing Load Decisions
 

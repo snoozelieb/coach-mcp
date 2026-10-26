@@ -1,5 +1,11 @@
 name: CI
 
+env:
+  # FastMCP 4 keeps camelCase compatibility shims for MCP model fields
+  # (readOnlyHint -> read_only_hint). Run CI without them so a reintroduced
+  # camelCase read fails here instead of after the shims are removed upstream.
+  FASTMCP_MCP_CAMELCASE_COMPAT: "false"
+
 on:
   push:
   pull_request:

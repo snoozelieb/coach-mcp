@@ -4,6 +4,59 @@ All notable changes to coach-mcp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-26
+
+A future-proofing release: FastMCP 4 on MCP SDK 2, Claude Code's October context
+budgets, a slimmer core snapshot, an ASD-STE100 writing style, and a morning
+audit that never writes fiction.
+
+### Changed
+- **FastMCP 3.4 → 4.1** (`fastmcp>=4.1,<5`). The server now runs on MCP SDK 2
+  (the 2026-07-28 "stateless" protocol era; older clients are still served)
+  and httpx2. No tool code changed. The suite runs with
+  `FASTMCP_MCP_CAMELCASE_COMPAT=false` and reads annotation fields in
+  snake_case. A downgrade to 3.4 is a plain re-pin.
+- **Claude Code context budgets.** Claude Code 2.1.296+ sends the model the
+  first 4,096 characters of server instructions and of upfront-loaded tool
+  descriptions (2,048 before), and tool search indexes only the first 4,096
+  characters of a description. The instruction budget is now 3,900 chars
+  (test-enforced); `update_weekly_plan`'s description leads with its gates
+  and error codes, with the structured-run tutorial moved to the doctrine
+  resource; `get_coaching_snapshot`, `update_injury_status`, `query_metrics`
+  and `push_plan_to_garmin` carry `_meta["anthropic/alwaysLoad"]` so the
+  mandates' tools load without a search step (`tests/test_tool_meta.py`).
+- **Core snapshot slimmed.** Injuries in the core payload carry the gate
+  fields (type, status, severity, restrictions, safe activities, dates) plus
+  the latest note; complete records remain under `sections=['full']`. On a
+  live athlete file the untrimmed block was 49 % of the core payload.
+- **Writing style.** The server instructions and the doctrine resource ask
+  the coach to write in an ASD-STE100 (Simplified Technical English) flavour:
+  one topic and one instruction per sentence, 20/25-word sentence limits,
+  active voice, simple tenses, no -ing verb forms, one term per meaning, and
+  warnings before the step they apply to.
+- **Morning audit (`scripts/daily_loop.py`).** The `--llm` brief and the
+  `anthropic` dependency are gone: the server never used the SDK, and the
+  brief defaulted to a two-generation-old model and would have failed
+  silently on current ones. The audit now writes `unverified`, persists no
+  activities and exits non-zero when Garmin cannot be checked, instead of
+  recording an outage as a bonus workout on a rest day. It re-checks the last
+  three days still marked `missed`/`unverified`, so a late sync heals a false
+  miss. Health metrics are logged at DEBUG only and the log moved into the
+  data directory.
+- **Code Mode.** `COACH_CODE_MODE=1` probes for the Monty sandbox before
+  advertising the execute tool (every call failed at runtime when
+  `pydantic_monty` was missing). The sandbox is an optional extra:
+  `pip install "garmin-coach-mcp[code-mode]"`.
+- FastMCP's startup banner, which queried PyPI for a newer release on every
+  start, is disabled; SECURITY.md and the README describe the network
+  behaviour accurately. The README's `.mcp.json` example uses
+  `${GARMIN_PASSWORD}` expansion instead of a plaintext password.
+
+### Fixed
+- `scripts/daily_loop.py` parsed a Garmin error payload as an activity list
+  (see above).
+- `coach/server.py` documented the wrong default HTTP port.
+
 ## [1.2.0] - 2026-10-26
 
 A grounding release. The coach gains a fourth hard mandate — verify before
@@ -316,7 +369,8 @@ First publishable release — the end of a five-phase modernization
 
 Pre-1.0 history (the 0.x checkout-only era) lives in the git log.
 
-[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/snoozelieb/coach-mcp/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/snoozelieb/coach-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/snoozelieb/coach-mcp/releases/tag/v1.0.0

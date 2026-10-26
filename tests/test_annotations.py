@@ -148,30 +148,30 @@ class TestAnnotationPresence:
 class TestReadOnly:
     async def test_read_only_tools_marked_read_only(self, tools_by_name):
         wrong = [n for n in READ_ONLY_TOOLS
-                 if not tools_by_name[n].annotations.readOnlyHint]
+                 if not tools_by_name[n].annotations.read_only_hint]
         assert not wrong, f'Expected readOnlyHint=True: {sorted(wrong)}'
 
     async def test_writing_tools_not_marked_read_only(self, tools_by_name):
         writers = set(tools_by_name) - READ_ONLY_TOOLS
-        wrong = [n for n in writers if tools_by_name[n].annotations.readOnlyHint]
+        wrong = [n for n in writers if tools_by_name[n].annotations.read_only_hint]
         assert not wrong, f'Tools that write must not claim readOnlyHint: {sorted(wrong)}'
 
     async def test_no_read_only_tool_marked_destructive(self, tools_by_name):
         wrong = [n for n in READ_ONLY_TOOLS
-                 if tools_by_name[n].annotations.destructiveHint]
+                 if tools_by_name[n].annotations.destructive_hint]
         assert not wrong, f'Read-only tools marked destructive: {sorted(wrong)}'
 
 
 class TestDestructive:
     async def test_destructive_tools_marked(self, tools_by_name):
         for name in DESTRUCTIVE_TOOLS:
-            assert tools_by_name[name].annotations.destructiveHint is True, (
+            assert tools_by_name[name].annotations.destructive_hint is True, (
                 f'{name} must carry destructiveHint=True'
             )
 
     async def test_only_expected_tools_destructive(self, tools_by_name):
         marked = {n for n, t in tools_by_name.items()
-                  if t.annotations.destructiveHint}
+                  if t.annotations.destructive_hint}
         assert marked == DESTRUCTIVE_TOOLS, (
             f'Unexpected destructive set: {sorted(marked)}'
         )
@@ -180,12 +180,12 @@ class TestDestructive:
 class TestIdempotency:
     async def test_idempotent_writers_marked(self, tools_by_name):
         wrong = [n for n in IDEMPOTENT_WRITE_TOOLS
-                 if tools_by_name[n].annotations.idempotentHint is not True]
+                 if tools_by_name[n].annotations.idempotent_hint is not True]
         assert not wrong, f'Expected idempotentHint=True: {sorted(wrong)}'
 
     async def test_non_idempotent_writers_not_marked(self, tools_by_name):
         wrong = [n for n in NON_IDEMPOTENT_WRITE_TOOLS
-                 if tools_by_name[n].annotations.idempotentHint]
+                 if tools_by_name[n].annotations.idempotent_hint]
         assert not wrong, (
             f'Append-per-call tools must not claim idempotentHint: {sorted(wrong)}'
         )
@@ -194,7 +194,7 @@ class TestIdempotency:
 class TestOpenWorld:
     async def test_open_world_set_exact(self, tools_by_name):
         marked = {n for n, t in tools_by_name.items()
-                  if t.annotations.openWorldHint}
+                  if t.annotations.open_world_hint}
         assert marked == OPEN_WORLD_TOOLS, (
             f'openWorldHint drift. extra={sorted(marked - OPEN_WORLD_TOOLS)} '
             f'missing={sorted(OPEN_WORLD_TOOLS - marked)}'
@@ -203,7 +203,7 @@ class TestOpenWorld:
     async def test_local_tools_marked_closed_world(self, tools_by_name):
         local = set(tools_by_name) - OPEN_WORLD_TOOLS
         wrong = [n for n in local
-                 if tools_by_name[n].annotations.openWorldHint is not False]
+                 if tools_by_name[n].annotations.open_world_hint is not False]
         assert not wrong, (
             f'Local-only tools must set openWorldHint=False explicitly: {sorted(wrong)}'
         )

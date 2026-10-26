@@ -827,167 +827,99 @@ def update_weekly_plan(plan: dict | None = None,
                        plan_json: str | None = None,
                        override_purpose_gate: bool = False) -> dict:
     """
-    Saves a new or updated weekly training plan.
+    Saves a new or updated weekly training plan — the rolling 7-day plan,
+    at most 21 days ahead. Every save runs four code-enforced checks; read
+    them before building the plan.
 
-    Pass the plan as a structured dict via `plan` (preferred — validated
-    against the typed schema, with errors naming the offending day/field).
-    `plan_json` (a JSON string) is a DEPRECATED alias kept for older clients.
-    Exactly one of the two must be provided.
+    GATES AND ERROR CODES
 
-    PLAN STRUCTURE (for plan)
-
-        {
-            'days': {
-                'YYYY-MM-DD': {
-                    'planned': {
-                        'type': 'running',
-                        'duration_mins': 45,
-                        'intensity': 'easy',
-                        'purpose': 'Aerobic base — Z2 consistency',
-                        'description': 'Easy recovery run'
-                    },
-                    'notes': 'Focus on form'
-                },
-                ...
-            },
-            'rationale': 'Why this plan was generated'
-        }
-
-        Session fields: 'type' is REQUIRED (string). 'purpose' is REQUIRED
-        for every non-rest session (see PURPOSE GATE below) — it explains
-        WHY the session matters.
-
-        'intensity' is a free string. The special value 'discretion' marks
-        an athlete-discretion day: the coach grants the athlete the choice
-        of effort instead of the plan lying about a prescribed intensity.
-        Bound the choice with 'constraints', a list of strings:
-
-            {'type': 'cycling', 'duration_mins': 60,
-             'intensity': 'discretion',
-             'constraints': ['Z2 only', 'no running'],
-             'purpose': 'Unstructured fun — athlete picks the effort'}
-
-        'planned' may also be a LIST of session dicts when the day has two
-        or three distinct workouts (e.g. run + short strength bolt-on, long
-        ride + upper-body block, gym day split into legs + UB). Each session
-        in the list is pushed to Garmin as its own workout on that date and
-        is counted independently in compliance and adherence reports:
-
-            'planned': [
-                {'type': 'running', 'duration_mins': 46, 'intensity': 'easy',
-                 'description': 'Level 3 R8/W2 x 4 — protocol run'},
-                {'type': 'strength', 'duration_mins': 15, 'intensity': 'moderate',
-                 'description': 'Short set — calf raises, SL DL, hip retraction',
-                 'exercises': [...]}
-            ]
-
-        Prefer the list form over cramming multiple workouts into one
-        description string — the list form gets proper per-session tracking.
-
-    STRUCTURED RUNNING SESSIONS
-
-        For running sessions with intervals, repeats, run/walk protocols,
-        threshold reps, fartlek, hill repeats, or distance-based segments —
-        author a `structure` field. Without it, the run pushes as one
-        timed block regardless of what the description prose says.
-
-            {
-                'type': 'running',
-                'duration_mins': 30,          # fallback estimate
-                'intensity': 'easy',          # default for phases without their own
-                'description': 'L2 R4/W2 x 4',
-                'structure': [
-                    {'phase': 'warmup', 'duration_secs': 180, 'intensity': 'recovery',
-                     'notes': '300m walk + 4 heel + 4 toe steps'},
-                    {'phase': 'repeat', 'iterations': 4, 'steps': [
-                        {'phase': 'interval', 'duration_secs': 240, 'intensity': 'easy',
-                         'notes': 'Run 4 min'},
-                        {'phase': 'recovery', 'duration_secs': 120, 'intensity': 'recovery',
-                         'notes': 'Walk 2 min'}
-                    ]},
-                    {'phase': 'cooldown', 'duration_secs': 180, 'intensity': 'recovery',
-                     'notes': '200-300m walk'}
-                ]
-            }
-
-        Phase schema:
-            phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
-            End condition (one of, priority order):
-                distance_m: 300                 -> end at distance
-                duration_secs: 240              -> end at time (or duration_mins)
-                "open" as any duration value    -> lap-button advance
-            Target (one of, priority order):
-                pace: [slow_mps, fast_mps]      -> explicit pace band, metres/sec
-                hr_target: [low, high]          -> explicit HR band, bpm
-                cadence: [low, high]            -> steps per minute
-                intensity: "easy"|"recovery"|"tempo"|"threshold"|"vo2"
-                                                -> resolves to pace zone (HR fallback)
-            notes: free-form, truncated to 50 chars on display
-        Repeat phase:
-            iterations: N
-            steps: [list of nested phases — may include further repeats]
-
-    PURPOSE GATE
-
-        The save is REJECTED when any non-rest session lacks a non-empty
-        'purpose' string (error code 'purpose_gate', listing the offending
-        dates/sessions). Nested 'sessions' lists are checked at the leaf
-        level; rest days are exempt. Only set override_purpose_gate=True
-        with a logged rationale — a session you can't explain is a session
-        that shouldn't be on the plan.
-
-    INJURY GATE
-
-        Plans are rejected when any non-rest session's type intersects an
-        active/improving injury's restricted_activities (taxonomy-aware:
-        'long_ride' is caught by a 'cycling' restriction; free-text
-        restrictions match by substring). The error lists the offending
-        dates/sessions. Only set override_injury_gate=True with the
-        athlete's informed consent and a logged rationale.
-
-        A plan failing BOTH gates reports both: the injury_gate error
-        carries a 'purpose_gate' section with the missing-purpose sessions.
-
-    DATE VALIDATION
-
-        Plans whose day keys are ALL in the past are rejected ('plan is
-        entirely historical — build a current week'), as is any plan with a
-        day key more than 21 days in the future (fat-finger guard).
-
-    GROUNDING WARNINGS (VERIFY BEFORE PRESCRIBING)
-
-        After a successful save, the response's `grounding_warnings` list
-        compares the plan's longest session per sport against the athlete's
-        DEMONSTRATED capacity (snapshot.capacity, derived from completed
-        sessions). Warn-only — the save succeeds — but every entry must be
-        addressed with the athlete before pushing:
-        - capacity_regression: longest planned session < 60% of the
+    - purpose_gate: REJECTED when any non-rest session lacks a non-empty
+      'purpose' (why this session, this day, this athlete). The error lists
+      the offending dates/sessions; nested 'sessions' lists are checked at
+      the leaf; rest days are exempt. override_purpose_gate=True only with a
+      logged rationale — a session you cannot explain does not belong on
+      the plan.
+    - injury_gate: REJECTED when a non-rest session's type intersects an
+      active/improving injury's restricted_activities (taxonomy-aware:
+      'long_ride' is caught by a 'cycling' restriction; free-text
+      restrictions match by substring). The error lists the offending
+      dates/sessions. override_injury_gate=True only with the athlete's
+      informed consent and a logged rationale. A plan failing both gates
+      reports both: the injury_gate error carries a 'purpose_gate' section.
+    - plan_dates: REJECTED when every day key is in the past ('plan is
+      entirely historical — build a current week') or any day key is more
+      than 21 days in the future (fat-finger guard).
+    - grounding_warnings (VERIFY BEFORE PRESCRIBING): the save succeeds, but
+      the response lists the plan's longest session per sport against the
+      athlete's DEMONSTRATED capacity (snapshot.capacity, from completed
+      sessions). Address every entry with the athlete before pushing:
+        capacity_regression — longest planned session < 60% of the
           demonstrated recent max. Legitimate for taper/rehab/bone-load
           weeks — say so in the plan rationale; otherwise the plan is
           anchored to a template, not this athlete.
-        - session_spike: longest planned session > 130% of the demonstrated
-          recent max — injury-risk jump; progress ~10-15% per week.
-        - no_demonstrated_history: a 30+ min session in a sport with no
+        session_spike — longest planned session > 130% of the demonstrated
+          recent max; injury-risk jump, progress ~10-15% per week.
+        no_demonstrated_history — a 30+ min session in a sport with no
           completed session in the capacity window (return-to-sport check).
+    - validation_error: the dict failed the typed schema; the error names
+      the offending day/field.
+
+    PLAN STRUCTURE (plan)
+
+        {'days': {'YYYY-MM-DD': {'planned': {...} or [{...}, ...],
+                                 'notes': 'Focus on form'}, ...},
+         'rationale': 'Why this plan, for this athlete'}
+
+        Session fields: 'type' (REQUIRED), 'purpose' (REQUIRED for every
+        non-rest session), 'duration_mins', 'intensity', 'description',
+        optional 'structure' (running intervals, below) and 'exercises'
+        (strength).
+
+        'intensity' is a free string. The value 'discretion' marks an
+        athlete-discretion day: the coach grants the athlete the choice of
+        effort instead of the plan lying about a prescribed intensity.
+        Bound the choice with 'constraints': ['Z2 only', 'no running'].
+
+        'planned' may be a LIST of session dicts when the day has two or
+        three distinct workouts (run + short strength bolt-on, long ride +
+        upper body). Each session is pushed to Garmin as its own workout and
+        counted independently in compliance and adherence. Prefer the list
+        form over cramming several workouts into one description string.
+
+    STRUCTURED RUNNING SESSIONS
+
+        Intervals, run/walk protocols, threshold reps, fartlek, hill repeats
+        or distance segments need a 'structure' list of phases; without it
+        the run pushes as ONE timed block whatever the description says.
+        phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' |
+        'repeat' (iterations + nested steps, which may nest further).
+        End condition (priority order): distance_m; duration_secs or
+        duration_mins; "open" as any duration value for lap-button advance.
+        Target (priority order): pace [slow_mps, fast_mps]; hr_target [low,
+        high]; cadence [low, high]; intensity "easy"|"recovery"|"tempo"|
+        "threshold"|"vo2" (resolves to a pace zone, HR fallback). notes:
+        free-form, truncated to 50 chars on display. The worked example is
+        in coach://coaching/doctrine (Structured Running Sessions).
 
     LIFECYCLE
 
-        The plan is saved as-supplied; internal fields like `pushed_workout_ids`
-        are preserved server-side and do not need to be carried in the JSON.
-        week_start/week_end are derived from the day keys when missing, and day
-        entries older than 9 days are pruned to data/plan_history.json.
+        The plan is saved as supplied; server-side fields like
+        pushed_workout_ids are preserved. week_start/week_end derive from
+        the day keys when missing; day entries older than 9 days are pruned
+        to data/plan_history.json.
 
     Args:
-        plan: Structured plan dict (see PLAN STRUCTURE above). Preferred.
-        override_injury_gate: Bypass the injury restriction check (default False)
+        plan: Structured plan dict (see PLAN STRUCTURE). Preferred.
+        override_injury_gate: Bypass the injury restriction check (default
+            False) — athlete consent plus a logged rationale required.
         plan_json: DEPRECATED — JSON string form of the plan. Use `plan`.
         override_purpose_gate: Bypass the missing-purpose rejection (default
             False). The bypass is logged and noted in the response.
 
     Returns:
-        Confirmation, or a structured error naming the offending
-        day/field/sessions ('validation_error', 'plan_dates', 'purpose_gate',
-        'injury_gate').
+        Confirmation with purpose_warnings and grounding_warnings, or a
+        structured error naming the offending day/field/sessions:
+        'validation_error', 'plan_dates', 'purpose_gate', 'injury_gate'.
     """
     try:
         # Tolerate legacy positional calls that pass the JSON string as the
@@ -1150,7 +1082,7 @@ def update_weekly_plan(plan: dict | None = None,
         return {'error': str(e)}
 
 
-@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': True,
+@mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': False, 'destructiveHint': True,
                        'idempotentHint': False, 'openWorldHint': True})
 def push_plan_to_garmin(override_injury_gate: bool = False) -> dict:
     """
@@ -1569,7 +1501,7 @@ def training_program(action: str = 'get', program: dict | None = None,
         - INJURY: a sport restricted by an active/improving injury rejects
           the save; override_injury_gate=True only with athlete consent and
           a logged rationale (mirrors update_weekly_plan).
-        - DATES: start_date more than 90 days out, or a program entirely in
+        - DATES (error 'program_dates'): start_date more than 90 days out, or a program entirely in
           the past, is rejected.
         - Week-over-week long_session_mins increases > 25% come back as
           warnings (progression_rate) — address them, don't ignore them.

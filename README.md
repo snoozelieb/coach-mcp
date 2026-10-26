@@ -52,8 +52,7 @@ python server.py
 ## Connect your MCP client
 
 The server needs two environment variables: `GARMIN_EMAIL` and
-`GARMIN_PASSWORD`. Optional: `COACH_DATA_DIR` (where your coaching data lives)
-and `ANTHROPIC_API_KEY` (only for the standalone `daily_loop.py --llm` script);
+`GARMIN_PASSWORD`. Optional: `COACH_DATA_DIR` (where your coaching data lives);
 `COACH_TOKEN_DIR`, `COACH_TRANSPORT` and `COACH_CODE_MODE` are covered under
 [Security & Privacy](#security--privacy) and [Advanced](#advanced).
 From a source checkout, a `.env` file works too.
@@ -67,7 +66,8 @@ claude mcp add coach-mcp \
   -- uvx garmin-coach-mcp
 ```
 
-Or in `.mcp.json`:
+Or in `.mcp.json` (Claude Code expands `${VAR}` from your shell environment,
+so a committed file holds no secret):
 
 ```json
 {
@@ -77,7 +77,7 @@ Or in `.mcp.json`:
       "args": ["garmin-coach-mcp"],
       "env": {
         "GARMIN_EMAIL": "you@example.com",
-        "GARMIN_PASSWORD": "your_garmin_password",
+        "GARMIN_PASSWORD": "${GARMIN_PASSWORD}",
         "COACH_DATA_DIR": "/path/to/your/coach-data"
       }
     }
@@ -235,8 +235,8 @@ Everything stays on your machine:
 - **What leaves your machine**: requests to Garmin's own API (your
   credentials/tokens, sent only to Garmin); whatever your MCP client sends to
   its LLM as part of the conversation; optional public web-page fetches when
-  the coach researches a race, injury, or exercise; and, only if you run
-  `daily_loop.py --llm`, one request to the Anthropic API.
+  the coach researches a race, injury, or exercise. Nothing else: the
+  FastMCP startup banner that would check PyPI for updates is disabled.
 - **Single athlete per data directory** by design. For multiple athletes, run
   separate server instances with separate `COACH_DATA_DIR`s.
 
@@ -261,10 +261,9 @@ pip install fastmcp[code-mode]
 COACH_CODE_MODE=1 garmin-coach-mcp
 
 # Standalone morning audit
-python scripts/daily_loop.py          # template-based brief
-python scripts/daily_loop.py --llm    # LLM brief (needs ANTHROPIC_API_KEY)
+python scripts/daily_loop.py          # ingest + audit yesterday + template brief (exit 1 if unverified)
 
-# Tests (1,422 tests; clean checkouts use committed sanitized fixtures)
+# Tests (1,436 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```

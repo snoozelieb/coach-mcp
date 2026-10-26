@@ -19,6 +19,7 @@ Covers:
 8.  Token budget: core payload stays small with realistic fixture data
 """
 import json
+import pathlib
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -876,3 +877,44 @@ class TestHelpers:
             {},
         ]
         assert _count_decisions_due_review(decisions, TODAY) == 2
+
+
+# ---------------------------------------------------------------------------
+# Injury slimming (core payload budget on a live-shaped athlete file)
+# ---------------------------------------------------------------------------
+
+class TestInjurySlimming:
+    async def test_core_injuries_are_slim_and_budget_holds(self, data_env, mock_ctx, monkeypatch):
+        """On a real athlete file five injuries with long notes were 49 % of
+        the core payload. Core keeps the gate fields plus the latest note;
+        sections=['full'] still carries the complete records."""
+        _seed_realistic_env(data_env)
+        _patch_garmin(monkeypatch, _default_client())
+        athlete_path = pathlib.Path(data_env) / 'athlete.json'
+        athlete = json.loads(athlete_path.read_text(encoding='utf-8'))
+        verbose = []
+        for i in range(5):
+            injury = dict(ACTIVE_RUN_INJURY)
+            injury['type'] = f'injury_{i}'
+            injury['notes'] = ('Long clinical narrative sentence. ' * 100)[:2500]
+            injury['progress_notes'] = [
+                {'date': TODAY.isoformat(), 'note': 'Walked 20 min pain-free. ' * 10},
+            ]
+            verbose.append(injury)
+        athlete['injury_history'] = verbose
+        _write(data_env, 'athlete.json', athlete)
+
+        core = json.loads(await get_coaching_snapshot(mock_ctx))
+
+        assert 'error' not in core
+        assert len(core['injuries']) == 5
+        for injury in core['injuries']:
+            assert 'notes' not in injury and 'progress_notes' not in injury
+            assert injury['status'] == 'active'
+            assert injury['restricted_activities'] == ['running', 'jumping']
+            assert len(injury['latest_note']) <= 200
+        assert len(json.dumps(core)) < 12000, (
+            f"core payload is {len(json.dumps(core))} chars with live-shaped injuries")
+
+        full = json.loads(await get_coaching_snapshot(mock_ctx, sections=['full']))
+        assert full['injuries'][0]['notes'].startswith('Long clinical')

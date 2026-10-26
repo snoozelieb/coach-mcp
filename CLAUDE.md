@@ -4,8 +4,8 @@ Development context for Claude Code (claude.ai/code) sessions in this repository
 
 > **Coaching doctrine lives in the server, not in this file.** Every MCP client —
 > Claude Code included — receives the coaching identity at connection time via
-> `SERVER_INSTRUCTIONS` (`coach/mcp_app.py`; test-enforced under 2,000 chars because
-> Claude Code truncates MCP instructions at 2KB) and the long-form
+> `SERVER_INSTRUCTIONS` (`coach/mcp_app.py`; test-enforced under 3,900 chars because
+> Claude Code sends the model only the first 4,096) and the long-form
 > `coach://coaching/doctrine` resource (uncapped, fetched on demand; completeness
 > pinned by `tests/test_server_instructions.py`). When coaching from this repo,
 > follow those surfaces — the four hard mandates (snapshot first, injury hard gate,
@@ -77,10 +77,16 @@ python scripts/backfill_history.py --since YYYY-MM-DD --check   # Diary-hole rep
 
 ## MCP Framework
 
-Standalone **FastMCP v3.4.x** (`from fastmcp import FastMCP`, pinned `fastmcp>=3.4,<4`),
-not the bundled v1 in the `mcp` SDK. Upgrading an env from fastmcp <3.3 requires
-`pip uninstall fastmcp fastmcp-slim` then a fresh install — the 3.3 distribution
-split breaks in-place upgrades.
+Standalone **FastMCP v4.1.x** (`from fastmcp import FastMCP`, pinned `fastmcp>=4.1,<5`),
+not the server bundled in the `mcp` SDK. FastMCP 4 runs on MCP SDK 2 (the
+2026-07-28 "stateless" era; it still serves older clients) and httpx2. Tests run
+with `FASTMCP_MCP_CAMELCASE_COMPAT=false`, so read annotation fields in
+snake_case (`tool.annotations.read_only_hint`). A downgrade to 3.4 is a plain
+re-pin. Four core tools carry `_meta["anthropic/alwaysLoad"]` so Claude Code
+loads them upfront (`tests/test_tool_meta.py`); their descriptions must stay
+under the 4,096-char upfront cap, and gate contracts sit in the first 4,096
+chars of every gated tool's description because tool search indexes only that
+window.
 
 - **50 tools** across 11 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
@@ -151,9 +157,12 @@ must never be committed.
 ## Environment
 
 Requires `GARMIN_EMAIL` and `GARMIN_PASSWORD` (`.env` in a checkout, or the MCP
-client's `env` block). `ANTHROPIC_API_KEY` only for `scripts/daily_loop.py --llm`.
-Optional: `COACH_DATA_DIR`, `COACH_TOKEN_DIR`, `COACH_TRANSPORT`, `COACH_CODE_MODE`,
-`COACH_LLM_MODEL` (daily_loop --llm model), `FASTMCP_HOST`/`FASTMCP_PORT`.
+client's `env` block).
+Optional: `COACH_DATA_DIR`, `COACH_TOKEN_DIR`, `COACH_TRANSPORT`, `COACH_CODE_MODE`
+(needs the `code-mode` extra), `FASTMCP_HOST`/`FASTMCP_PORT`. The morning audit
+(`scripts/daily_loop.py`) has no LLM path: it ingests, audits yesterday against
+the plan (writing `unverified`, never fiction, when Garmin is unreachable),
+re-checks the last 3 days, and exits non-zero on failure.
 
 Data dir resolution (installed copies must never write into site-packages):
 `COACH_DATA_DIR` env var → `data/` next to a source checkout → per-user data dir
@@ -172,7 +181,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,422 tests across 39 files (CI: GitHub Actions on push/PR + weekly cron —
+1,436 tests across 41 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 

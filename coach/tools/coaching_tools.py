@@ -1137,6 +1137,51 @@ def _build_sleep_gate(sleep_data: dict | None) -> dict:
     }
 
 
+# Core-snapshot injury fields. The injury gate needs status and restrictions;
+# the narrative (diagnoses, progress logs, long notes) stays in the athlete
+# file and the ['full'] payload. On a real athlete file the untrimmed block
+# was 49 % of the core payload (12,267 of 24,975 chars) — every "snapshot
+# first" call paid for it.
+_INJURY_CORE_KEYS = ('type', 'name', 'body_region', 'status', 'severity', 'date',
+                     'restricted_activities', 'safe_activities', 'last_updated')
+_INJURY_NOTE_KEYS = ('progress_notes', 'progress', 'notes', 'diagnosis')
+_INJURY_NOTE_MAX_CHARS = 200
+
+
+def _latest_injury_note(injury: dict) -> str | None:
+    """The newest free-text note on an injury record, truncated."""
+    for key in _INJURY_NOTE_KEYS:
+        value = injury.get(key)
+        if isinstance(value, list) and value:
+            last = value[-1]
+            if isinstance(last, dict):
+                last = last.get('note') or last.get('text') or last.get('summary') or ''
+            text = str(last).strip()
+        elif isinstance(value, str):
+            text = value.strip()
+        else:
+            continue
+        if text:
+            return text[:_INJURY_NOTE_MAX_CHARS]
+    return None
+
+
+def _slim_injuries(injuries):
+    """Gate-relevant fields plus the latest note; full records via ['full']."""
+    if not isinstance(injuries, list):
+        return injuries
+    slim = []
+    for injury in injuries:
+        if not isinstance(injury, dict):
+            continue
+        entry = {k: injury[k] for k in _INJURY_CORE_KEYS if injury.get(k) is not None}
+        note = _latest_injury_note(injury)
+        if note:
+            entry['latest_note'] = note
+        slim.append(entry)
+    return slim
+
+
 def _assemble_snapshot_payload(full: dict, include: set) -> dict:
     """Filter the internal full snapshot down to core + requested sections.
 
@@ -1176,6 +1221,11 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
     if isinstance(memory, dict) and 'memory' not in include:
         memory = {k: v for k, v in memory.items() if k != 'adaptation_patterns'}
 
+    # Injuries: gate fields + latest note in core; complete records on ['full']
+    injuries = full.get('injuries')
+    if not set(SNAPSHOT_NAMED_SECTIONS) <= include:
+        injuries = _slim_injuries(injuries)
+
     out = {
         'current_time_context': full.get('current_time_context'),
         'snapshot_date': full.get('snapshot_date'),
@@ -1195,7 +1245,7 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
         # Demonstrated per-sport capacity — CORE by design: the grounding
         # data for VERIFY BEFORE PRESCRIBING must be impossible to miss.
         'capacity': full.get('capacity'),
-        'injuries': full.get('injuries'),
+        'injuries': injuries,
         'coaching_memory': memory,
         'sleep_gate': full.get('sleep_gate'),
         # Always present — {} means every quality check passed
@@ -1709,7 +1759,7 @@ def get_coaching_score() -> str:
         return json.dumps({'error': str(e)})
 
 
-@mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+@mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': False, 'destructiveHint': False,
                        'idempotentHint': True, 'openWorldHint': True})
 async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                                 force_refresh: bool = False) -> str:

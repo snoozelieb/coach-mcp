@@ -1,7 +1,9 @@
 """Tests for SERVER_INSTRUCTIONS size and the coaching doctrine resource.
 
-Claude Code truncates MCP server instructions at ~2KB. The hard mandates must
-fit under that limit; long-form doctrine lives in coach://coaching/doctrine.
+Claude Code sends the model only the first 4,096 characters of MCP server
+instructions (2,048 before Claude Code 2.1.296) and drops the rest silently.
+The hard mandates must fit with headroom; long-form doctrine lives in
+coach://coaching/doctrine.
 """
 import coach.resources  # noqa: F401 — triggers resource registration on mcp
 
@@ -15,13 +17,23 @@ DOCTRINE_URI = "coach://coaching/doctrine"
 # SERVER_INSTRUCTIONS size budget
 # ---------------------------------------------------------------------------
 
+INSTRUCTIONS_BUDGET = 3900  # Claude Code cuts at 4,096; keep headroom
+
+
 class TestServerInstructions:
-    def test_under_2kb_truncation_limit(self):
-        """Claude Code drops everything past ~2KB — instructions must fit."""
-        assert len(SERVER_INSTRUCTIONS) < 2000, (
+    def test_under_claude_code_truncation_limit(self):
+        """Claude Code drops everything past 4,096 chars — instructions must fit."""
+        assert len(SERVER_INSTRUCTIONS) < INSTRUCTIONS_BUDGET, (
             f"SERVER_INSTRUCTIONS is {len(SERVER_INSTRUCTIONS)} chars; "
-            "Claude Code truncates at 2KB and silently drops the tail"
+            "Claude Code truncates at 4,096 and silently drops the tail"
         )
+
+    def test_writing_style_present(self):
+        """The ASD-STE100 writing-style rules ship in the instructions and the
+        doctrine (the doctrine carries the full rule set)."""
+        assert "ASD-STE100" in SERVER_INSTRUCTIONS
+        assert "One instruction per sentence" in SERVER_INSTRUCTIONS
+        assert "ASD-STE100" in COACHING_DOCTRINE
 
     def test_hard_mandates_present(self):
         """The four hard mandates must survive in the compressed text."""

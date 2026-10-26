@@ -346,22 +346,22 @@ class TestRegistry:
 
     async def test_races_annotations(self, tools_by_name):
         ann = tools_by_name['races'].annotations
-        assert ann.readOnlyHint is False      # add/update write config
-        assert ann.destructiveHint is False   # deletion lives on remove_race
-        assert ann.idempotentHint is False    # action='add' appends per call
-        assert ann.openWorldHint is True      # action='research' hits the web
+        assert ann.read_only_hint is False      # add/update write config
+        assert ann.destructive_hint is False   # deletion lives on remove_race
+        assert ann.idempotent_hint is False    # action='add' appends per call
+        assert ann.open_world_hint is True      # action='research' hits the web
 
     async def test_query_metrics_annotations(self, tools_by_name):
         ann = tools_by_name['query_metrics'].annotations
-        assert ann.readOnlyHint is True
-        assert ann.openWorldHint is True      # most kinds hit Garmin
-        assert not ann.destructiveHint
+        assert ann.read_only_hint is True
+        assert ann.open_world_hint is True      # most kinds hit Garmin
+        assert not ann.destructive_hint
 
     async def test_remove_race_stays_standalone_destructive(self, tools_by_name):
         ann = tools_by_name['remove_race'].annotations
-        assert ann.destructiveHint is True
-        assert ann.readOnlyHint is False
-        assert ann.openWorldHint is False
+        assert ann.destructive_hint is True
+        assert ann.read_only_hint is False
+        assert ann.open_world_hint is False
 
     async def test_dispatcher_docstrings_cover_every_action_and_kind(
             self, tools_by_name):

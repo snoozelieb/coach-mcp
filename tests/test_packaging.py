@@ -209,13 +209,15 @@ class TestEntryPoints:
         seen = {}
         monkeypatch.setattr(srv, 'check_setup', lambda: True)
         monkeypatch.setattr(
-            srv.mcp, 'run', lambda transport: seen.setdefault('t', transport))
+            srv.mcp, 'run',
+            lambda transport, show_banner=True: seen.update(t=transport, banner=show_banner))
         monkeypatch.setenv('COACH_TRANSPORT', ' HTTP ')
         monkeypatch.delenv('COACH_CODE_MODE', raising=False)
 
         srv.main()
 
         assert seen['t'] == 'http'
+        assert seen['banner'] is False  # the PyPI update-check banner stays off
 
 
 # ---------------------------------------------------------------------------

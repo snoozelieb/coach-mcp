@@ -605,7 +605,7 @@ def _sport_history(sport: str | None, days: int, today: date) -> dict:
         return {'error': str(e)}
 
 
-@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': True})
+@mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': True, 'openWorldHint': True})
 def query_metrics(kind: Literal['fitness', 'intensity', 'daily', 'readiness',
                                 'personal_records', 'sport_history'],
                   days: int = 30,

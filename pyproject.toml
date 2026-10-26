@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "garmin-coach-mcp"
-version = "1.2.0"
+version = "1.3.0"
 description = "Adaptive AI training coach MCP server backed by Garmin Connect"
 readme = "README.md"
 license = "MIT"
@@ -36,11 +36,10 @@ classifiers = [
 ]
 dependencies = [
     "garminconnect==0.3.20",
-    "fastmcp>=3.4,<4",
+    "fastmcp>=4.1,<5",
     "pydantic>=2.13,<3",
     "python-dotenv>=1.0,<2",
     "requests>=2.31,<3",
-    "anthropic>=0.109.1,<1",
 ]
 
 [project.urls]
@@ -55,8 +54,8 @@ coach-mcp = "coach.server:main"
 
 [dependency-groups]
 dev = [
-    "pytest==9.0.3",
-    "pytest-asyncio==1.3.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -84,3 +83,7 @@ ignore = [
 "scripts/*.py" = ["E402"]                 # sys.path setup precedes imports
 "coach/tools/coaching_tools.py" = ["E402"]  # late imports break an import cycle
 "coach/server.py" = ["F401"]              # tool/resource modules are imported for registration
+
+[project.optional-dependencies]
+# COACH_CODE_MODE=1 needs the Monty sandbox: pip install "garmin-coach-mcp[code-mode]"
+code-mode = ["fastmcp[code-mode]>=4.1,<5"]

@@ -5,10 +5,13 @@ server.py imports all tool modules to trigger registration, then runs mcp.
 """
 from fastmcp import FastMCP
 
-# Claude Code truncates MCP server instructions at 2KB. Keep this under the
-# 2,000-char budget (test-enforced: tests/test_server_instructions.py), hard
-# mandates first — anything past the limit is silently dropped. Long-form
-# doctrine lives in the coach://coaching/doctrine resource.
+# Claude Code sends the model only the first 4,096 characters of MCP server
+# instructions (and of any tool description loaded upfront); the tail is
+# silently dropped. Budget: under 3,900 chars, test-enforced in
+# tests/test_server_instructions.py, hard mandates first. Claude Code also uses
+# these instructions to drive its tool search, so the tools a session needs
+# first are named here. Long-form doctrine lives in the coach://coaching/doctrine
+# resource.
 SERVER_INSTRUCTIONS = """\
 You are an expert adaptive training coach. Prescribe with authority based on \
 evidence — science, not opinion. Be direct: "You need rest", not "maybe take \
@@ -44,10 +47,21 @@ that ignores demonstrated capacity is coach fiction.
 BE CURIOUS ABOUT ANOMALIES. The snapshot flags planned-vs-actual anomalies. \
 Ask what happened before concluding — never silently resolve one.
 
+WRITING STYLE — ASD-STE100 flavour (Simplified Technical English, adapted \
+for coaching; the full rule set is in the doctrine resource):
+- One topic per sentence. Procedural sentences have 20 words or fewer, \
+descriptive sentences 25 or fewer. One instruction per sentence, in the \
+imperative: "Run 40 minutes at Z2."
+- Active voice and simple tenses. No -ing verb forms, no idioms, no slang.
+- One term, one meaning: use the same word for the same thing every time.
+- Paragraphs of 6 sentences or fewer. Numbered steps for procedures.
+- Put a warning before the step it applies to, and say what happens if the \
+athlete ignores it.
+
 Full doctrine — canonical flow, load hierarchy, capacity grounding, \
 multi-week programs (training_program), structured-run schema, injury \
-protocol — lives in the coach://coaching/doctrine resource and the \
-update_weekly_plan docstring. Read it before planning sessions.
+protocol, writing style — lives in the coach://coaching/doctrine resource \
+and the update_weekly_plan docstring. Read it before planning sessions.
 """
 
 mcp = FastMCP("AI Training Coach", instructions=SERVER_INSTRUCTIONS)

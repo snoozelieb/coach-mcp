@@ -2,8 +2,7 @@
 # Exact pins where stability matters; bounded ranges elsewhere. Keep in
 # sync with [project].dependencies in pyproject.toml.
 garminconnect==0.3.20    # auth stack rebuilt on 0.3.5 (Phase 1); re-verified live on 0.3.17 and 0.3.20 — do not bump casually
-fastmcp>=3.4,<4          # 3.4.x pinned for tool annotations + typed output schemas
+fastmcp>=4.1,<5          # 4.x = MCP SDK 2 (2026-07-28 era) on httpx2; a downgrade to 3.4 is a plain re-pin
 pydantic>=2.13,<3        # schema layer tested floor; v3 would break the models
 python-dotenv>=1.0,<2
 requests>=2.31,<3
-anthropic>=0.109.1,<1    # daily_loop --llm tested floor

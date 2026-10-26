@@ -23,11 +23,8 @@ package is `methodology.json` (generic safety rules and race templates).
 3. **Public web pages** — when the coach researches a race, injury, sport,
    or exercise, the server fetches public pages; the request reveals only
    the search target (e.g. a race name).
-4. **Anthropic API** — only if you run the optional
-   `scripts/daily_loop.py --llm`, which sends your morning audit context to
-   Anthropic using your `ANTHROPIC_API_KEY`.
 
-Nothing else. No analytics, no crash reporting, no update checks.
+Nothing else. No analytics, no crash reporting. FastMCP would check PyPI for a newer version at startup; the server disables that banner check.
 
 ## Scope notes
 
