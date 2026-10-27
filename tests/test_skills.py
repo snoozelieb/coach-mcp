@@ -1,0 +1,82 @@
+"""The sport authoring skills and the workout-author agent are reviewable
+markdown, but their JSON examples must obey the session contract — a skill
+that teaches a stale key is worse than none. Every fenced ```json session in
+the skills validates against coach/authoring.py with NO catalogue (so every
+off-catalogue exercise example must state its category, as a clean install
+would need).
+"""
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from coach.authoring import validate_session
+
+ROOT = Path(__file__).resolve().parent.parent
+SKILLS_DIR = ROOT / '.claude' / 'skills'
+SPORT_SKILLS = ('running-session-author', 'cycling-session-author',
+                'strength-session-author', 'mobility-session-author')
+AGENT_FILE = ROOT / '.claude' / 'agents' / 'workout-author.md'
+
+# Claude Code lists a skill's description from startup (1,536-char cap per
+# skill); the Agent Skills spec caps names at 64 and descriptions at 1,024.
+NAME_MAX = 64
+DESCRIPTION_MAX = 1024
+
+
+def _frontmatter(text: str) -> dict:
+    match = re.match(r'^---\n(.*?)\n---\n', text, re.S)
+    assert match, 'missing YAML frontmatter'
+    fields = {}
+    for line in match.group(1).splitlines():
+        key, _, value = line.partition(':')
+        fields[key.strip()] = value.strip().strip('"')
+    return fields
+
+
+def _json_blocks(text: str) -> list:
+    return [json.loads(block) for block in re.findall(r'```json\n(.*?)\n```', text, re.S)]
+
+
+@pytest.mark.parametrize('skill', SPORT_SKILLS)
+class TestSportSkills:
+    def test_frontmatter_names_the_skill_and_fits_the_budgets(self, skill):
+        text = (SKILLS_DIR / skill / 'SKILL.md').read_text(encoding='utf-8')
+        meta = _frontmatter(text)
+        assert meta['name'] == skill
+        assert len(meta['name']) <= NAME_MAX
+        assert 0 < len(meta['description']) <= DESCRIPTION_MAX
+        # A skill named like the MCP server silently drops the server (claude-code #85827)
+        assert meta['name'] not in ('coach', 'coach-mcp', 'garmin-coach-mcp')
+
+    def test_every_json_example_satisfies_the_contract(self, skill):
+        text = (SKILLS_DIR / skill / 'SKILL.md').read_text(encoding='utf-8')
+        sessions = [b for b in _json_blocks(text) if isinstance(b, dict) and 'type' in b]
+        assert sessions, 'a sport skill carries at least one worked example'
+        for session in sessions:
+            report = validate_session(session, catalogue=None)
+            assert report.ok, (skill, session.get('name'), report.errors)
+            assert session.get('purpose'), 'every example states its purpose (the purpose gate)'
+
+    def test_skill_teaches_the_preview_loop(self, skill):
+        text = (SKILLS_DIR / skill / 'SKILL.md').read_text(encoding='utf-8')
+        assert 'preview_workout' in text
+        assert 'update_weekly_plan' in text
+
+
+class TestWorkoutAuthorAgent:
+    def test_agent_definition_is_tracked_and_well_formed(self):
+        assert AGENT_FILE.exists()
+        meta = _frontmatter(AGENT_FILE.read_text(encoding='utf-8'))
+        assert meta['name'] == 'workout-author'
+        assert 'preview_workout' in meta['description']
+
+    def test_agent_never_saves_or_pushes_on_its_own(self):
+        text = AGENT_FILE.read_text(encoding='utf-8')
+        assert 'never call update_weekly_plan or push_plan_to_garmin' in text
+
+    def test_gitignore_tracks_only_this_agent(self):
+        ignore = (ROOT / '.gitignore').read_text(encoding='utf-8')
+        assert '!.claude/agents/workout-author.md' in ignore
+        assert '.claude/agents/*' in ignore  # the user's other agents stay local

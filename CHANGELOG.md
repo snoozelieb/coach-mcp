@@ -6,6 +6,71 @@ All notable changes to coach-mcp are documented here. The format follows
 
 ## [Unreleased]
 
+What the plan says is what the watch shows. A review of the athlete's own
+pushed workouts (gym sets especially) found the renderer dropping the
+physio's cues, inventing sets, reps and weights the plan never stated, and
+collapsing cycling repeats. The renderer now draws the session exactly as
+written, a strict session contract rejects what it cannot draw with errors
+that teach, and the push preview shows the step tree before anything lands.
+
+### Fixed
+- **Strength sessions render what was written.** Exercise `notes` reach the
+  step description (the coach's cue wins over the researched library cue);
+  `duration_secs` renders a timed hold instead of 10 reps; `rest_secs`
+  renders a timed rest step (lap button when omitted, none when 0); a weight
+  is sent only when `weight_kg` is stated — the category-baseline lookup that
+  put 42.5 kg on a one-arm row is gone; names with spaces are normalised to
+  Garmin keys; a session without exercises is one timed block, not a 45-minute
+  "warm-up" step.
+- **Structured rides.** Repeat blocks, `duration_secs` and fractional minutes
+  (0.5 min is 30 s, not 0 s), `distance_m`, lap-button steps and an intensity
+  word on an indoor phase (power zone) all render; `power_pct` takes a
+  `[low, high]` band of the athlete's FTP (`personal.ftp`, never the top of a
+  zone) and errors without one.
+- **Intensity vocabulary.** One table for every sport; `vo2` (documented all
+  along) maps to the VO2 zone instead of easy; `z1`–`z6`, `endurance`, `hard`,
+  `vo2max` are aliases; an unknown word is an error inside a phase and a
+  warning at session level (the step is untargeted, never silently easy).
+- The session `name` is the Garmin workout name when given (audit notes in
+  `description` no longer become the title); structured sessions without
+  `duration_mins` are no longer skipped.
+
+### Added
+- **Session contract** (`coach/authoring.py`): strict pydantic models for
+  `structure` phases and repeat blocks (shared by runs and rides) and for
+  strength `exercises` and circuits, with teaching errors — an unknown key
+  names the allowed keys, a phase needs exactly one end condition and at most
+  one numeric target, an exercise needs `sets` and `reps` or `duration_secs`.
+  New keys: `pace_sec_per_km`, `each_side`, `reps: "open"`, circuits
+  `{rounds, exercises, rest_secs}`, session-level `warmup_mins`.
+- `update_weekly_plan` rejects contract violations (`authoring_error`, nothing
+  saved) and returns `authoring_warnings` (off-catalogue exercise names the
+  watch will strip, cues over 50 characters, session intensities outside the
+  vocabulary).
+- `push_plan_to_garmin` preview carries each session's rendered step tree
+  (`steps`) and warnings, lists `unrenderable` sessions with their errors
+  (never uploaded; reported under `errors` on confirm), and uploads exactly
+  the payload that was previewed.
+- `preview_workout(session)` (52nd tool): render one session without saving;
+  `preview_workout()` returns the contract and JSON schemas. Also published as
+  the `coach://authoring/contract` resource and the `author_session` prompt.
+- Four sport authoring skills (`.claude/skills/*-session-author`) carrying the
+  composition judgment in reviewable markdown, with worked examples validated
+  against the contract by `tests/test_skills.py`, and the `workout-author`
+  Claude Code agent that loops on `preview_workout` until the rendering matches
+  the brief.
+
+### Changed
+- Strength warm-ups are explicit: `warmup_mins` renders a WARM_UP block; the
+  implicit 5-minute CARDIO warm-up and the `skip_warmup` flag are gone
+  (`skip_warmup` now only warns).
+- Muscle-group words as categories (`GLUTE`, `CALF`, ...) are rejected with
+  Garmin-category suggestions instead of being mapped silently; a missing or
+  unknown category is an error instead of a nameless CARDIO step.
+- `update_weekly_plan`'s description fits Claude Code's 4,096-character
+  upfront cap (test-enforced), so a coach-only session sees the whole
+  contract summary.
+
 ## [1.4.0] - 2026-10-26
 
 A safety release: the lost-update class is closed, the four mandates have

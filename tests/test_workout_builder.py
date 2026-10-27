@@ -47,8 +47,9 @@ from coach.workout_builder import (
     SWIMMING_SPORT,
     PADEL_SPORT,
     DEFAULT_HR_ZONES,
-    GARMIN_CATEGORY_MAP,
+    CATALOGUE_CATEGORY_TO_WORKOUT,
     VALID_WORKOUT_CATEGORIES,
+    WorkoutAuthoringError,
 )
 
 
@@ -167,8 +168,7 @@ class TestBuildWorkoutDispatch:
         assert isinstance(result, RunningWorkout)
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_returns_dict_for_strength(self, mock_baseline, mock_library):
+    def test_returns_dict_for_strength(self, mock_library):
         session = {"type": "strength", "duration_mins": 45}
         result = build_workout(session, "2025-01-01")
         assert isinstance(result, dict)
@@ -669,9 +669,10 @@ class TestBuildStructuredRunningWorkout:
 # ─── build_strength_workout ─────────────────────────────────────────
 
 class TestBuildStrengthWorkout:
+    """The renderer draws exactly what `exercises` says (coach/authoring.py)."""
+
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_simple_timed_workout_no_exercises(self, mock_baseline, mock_library):
+    def test_simple_timed_workout_no_exercises(self, mock_library):
         session = {"type": "strength", "duration_mins": 45}
         result = build_strength_workout(session, "2025-01-01")
 
@@ -679,14 +680,14 @@ class TestBuildStrengthWorkout:
         assert result["estimatedDurationInSecs"] == 45 * 60
         steps = result["workoutSegments"][0]["workoutSteps"]
         assert len(steps) == 1
-        assert steps[0]["stepType"] == STEP_WARMUP
+        assert steps[0]["stepType"] == STEP_INTERVAL  # one timed block, not a 45-min "warm-up"
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_workout_with_exercises_has_warmup(self, mock_baseline, mock_library):
+    def test_warmup_mins_renders_warmup_block_and_lap_rest(self, mock_library):
         session = {
             "type": "strength",
             "duration_mins": 45,
+            "warmup_mins": 5,
             "exercises": [
                 {"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
             ],
@@ -694,30 +695,44 @@ class TestBuildStrengthWorkout:
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
 
-        # First step: warmup
         assert steps[0]["stepType"] == STEP_WARMUP
-        assert steps[0]["endConditionValue"] == 300.0  # 5 min warmup
-
-    @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_workout_has_rest_after_warmup(self, mock_baseline, mock_library):
-        session = {
-            "type": "strength",
-            "duration_mins": 45,
-            "exercises": [
-                {"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
-            ],
-        }
-        result = build_strength_workout(session, "2025-01-01")
-        steps = result["workoutSegments"][0]["workoutSteps"]
-
-        # Second step: rest (lap button after warmup)
+        assert steps[0]["endConditionValue"] == 300.0
+        assert steps[0]["category"] == "WARM_UP"
         assert steps[1]["stepType"] == STEP_REST
         assert steps[1]["endCondition"] == END_LAP_BUTTON
+        assert steps[2]["type"] == "RepeatGroupDTO"
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_exercise_creates_repeat_group(self, mock_baseline, mock_library):
+    def test_no_warmup_is_inserted_unless_stated(self, mock_library):
+        """The old builder inserted a 5-min CARDIO warm-up the plan never wrote."""
+        session = {
+            "type": "strength",
+            "duration_mins": 45,
+            "exercises": [
+                {"name": "BARBELL_BACK_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
+            ],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        steps = result["workoutSegments"][0]["workoutSteps"]
+        assert steps[0]["type"] == "RepeatGroupDTO"
+        assert steps[0]["stepOrder"] == 1
+        step_types = [s.get("stepType") for s in steps if s.get("type") == "ExecutableStepDTO"]
+        assert STEP_WARMUP not in step_types
+        assert STEP_REST not in step_types
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_skip_warmup_is_retired_with_a_warning(self, mock_library):
+        from coach.workout_builder import build_workout_report
+        session = {
+            "type": "strength", "duration_mins": 45, "skip_warmup": True,
+            "exercises": [{"name": "BARBELL_BACK_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10}],
+        }
+        report = build_workout_report(session, "2025-01-01")
+        assert report["ok"]
+        assert any(w["field"] == "skip_warmup" for w in report["warnings"])
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_exercise_creates_repeat_group(self, mock_library):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -728,17 +743,16 @@ class TestBuildStrengthWorkout:
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
 
-        # Steps: warmup, rest, repeat_group
-        assert len(steps) == 3
-        repeat_group = steps[2]
+        assert len(steps) == 1
+        repeat_group = steps[0]
         assert repeat_group["type"] == "RepeatGroupDTO"
         assert repeat_group["numberOfIterations"] == 4
+        assert repeat_group["endConditionValue"] == 4.0
 
     @patch("coach.workout_builder.load_exercise_db",
            return_value={"BENCH_PRESS": {"category": "BENCH_PRESS", "custom": False}})
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_repeat_group_contains_exercise_and_rest(self, mock_baseline, mock_library, mock_db):
+    def test_repeat_group_contains_exercise_and_lap_rest(self, mock_library, mock_db):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -747,23 +761,45 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        repeat_group = result["workoutSegments"][0]["workoutSteps"][2]
+        repeat_group = result["workoutSegments"][0]["workoutSteps"][0]
         inner_steps = repeat_group["workoutSteps"]
 
         assert len(inner_steps) == 2
-        # Exercise step
         assert inner_steps[0]["stepType"] == STEP_INTERVAL
         assert inner_steps[0]["endCondition"] == END_REPS
         assert inner_steps[0]["endConditionValue"] == 12.0
         assert inner_steps[0]["exerciseName"] == "BENCH_PRESS"
         assert inner_steps[0]["category"] == "BENCH_PRESS"
-        # Rest step
+        # No rest_secs stated -> lap-button rest
         assert inner_steps[1]["stepType"] == STEP_REST
         assert inner_steps[1]["endCondition"] == END_LAP_BUTTON
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_multiple_exercises_create_multiple_groups(self, mock_baseline, mock_library):
+    def test_rest_secs_renders_a_timed_rest_step(self, mock_library):
+        session = {
+            "type": "strength", "duration_mins": 45,
+            "exercises": [{"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10,
+                           "rest_secs": 90}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        rest = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][1]
+        assert rest["stepType"] == STEP_REST
+        assert rest["endCondition"] == END_TIME
+        assert rest["endConditionValue"] == 90.0
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_rest_secs_zero_means_no_rest_step(self, mock_library):
+        session = {
+            "type": "strength", "duration_mins": 45,
+            "exercises": [{"name": "BARBELL_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10,
+                           "rest_secs": 0}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        inner = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"]
+        assert len(inner) == 1
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_multiple_exercises_create_multiple_groups(self, mock_library):
         session = {
             "type": "strength",
             "duration_mins": 60,
@@ -776,13 +812,11 @@ class TestBuildStrengthWorkout:
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
 
-        # warmup + rest + 3 repeat groups
-        assert len(steps) == 5
+        assert len(steps) == 3
         assert result["exercise_count"] == 3
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_explicit_weight_included(self, mock_baseline, mock_library):
+    def test_explicit_weight_included(self, mock_library):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -791,29 +825,26 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        repeat_group = result["workoutSegments"][0]["workoutSteps"][2]
-        exercise_step = repeat_group["workoutSteps"][0]
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
 
         assert exercise_step["weightValue"] == 60.0
         assert exercise_step["weightUnit"]["unitKey"] == "kilogram"
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={
-        "bench_press": {"current": {"weight_kg": 40}}
-    })
-    def test_baseline_weight_used_when_no_explicit_weight(self, mock_baseline, mock_library):
+    def test_no_weight_is_invented(self, mock_library):
+        """Regression: a 42.5 kg category baseline landed on a one-arm row the
+        plan had written without a weight. Only an explicit weight_kg is sent."""
         session = {
             "type": "strength",
             "duration_mins": 45,
             "exercises": [
-                {"name": "BENCH_PRESS", "category": "BENCH_PRESS", "sets": 3, "reps": 10},
+                {"name": "ONE_ARM_BENT_OVER_ROW", "category": "ROW", "sets": 3, "reps": 10},
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        repeat_group = result["workoutSegments"][0]["workoutSteps"][2]
-        exercise_step = repeat_group["workoutSteps"][0]
-
-        assert exercise_step["weightValue"] == 40.0
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert "weightValue" not in exercise_step
+        assert "weightUnit" not in exercise_step
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "BARBELL_SQUAT": {"category": "SQUAT", "custom": False}
@@ -821,8 +852,7 @@ class TestBuildStrengthWorkout:
     @patch("coach.workout_builder.load_exercise_library", return_value={
         "barbell squat": {"garmin_note": "Drive through heels, chest up"}
     })
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_exercise_library_note_included(self, mock_baseline, mock_library, mock_db):
+    def test_exercise_library_note_fills_in_when_plan_has_no_notes(self, mock_library, mock_db):
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -831,36 +861,151 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        repeat_group = result["workoutSegments"][0]["workoutSteps"][2]
-        exercise_step = repeat_group["workoutSteps"][0]
+        exercise_step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
 
         # exerciseName is set (BARBELL_SQUAT), so description is form cues only
         assert exercise_step["description"] == "Drive through heels, chest up"
         assert exercise_step["exerciseName"] == "BARBELL_SQUAT"
 
-    @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_garmin_category_mapping(self, mock_baseline, mock_library):
+    @patch("coach.workout_builder.load_exercise_db", return_value={
+        "SIDE_LUNGE_JUMP_OFF": {"category": "LUNGE", "custom": False}
+    })
+    @patch("coach.workout_builder.load_exercise_library", return_value={
+        "side lunge jump off": {"garmin_note": "Explode up"}
+    })
+    def test_plan_notes_reach_the_watch_and_win_over_the_library(self, mock_library, mock_db):
+        """Regression: the physio's 'No jump' cue was dropped and the watch
+        got an exercise whose Garmin key says JUMP."""
+        session = {
+            "type": "strength", "duration_mins": 30,
+            "exercises": [{"name": "SIDE_LUNGE_JUMP_OFF", "sets": 2, "reps": 8,
+                           "notes": "PUSH OFF LEFT, finish through toe. No jump"}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert step["exerciseName"] == "SIDE_LUNGE_JUMP_OFF"
+        assert step["category"] == "LUNGE"
+        assert step["description"] == "PUSH OFF LEFT, finish through toe. No jump"
 
-        """Non-standard categories should be mapped to valid Garmin categories."""
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_duration_secs_renders_a_timed_hold(self, mock_library):
+        """Regression: a 45 s plank became 3 x 10 reps."""
+        session = {
+            "type": "strength", "duration_mins": 20,
+            "exercises": [{"name": "PLANK", "category": "PLANK", "sets": 3, "duration_secs": 45}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert step["endCondition"] == END_TIME
+        assert step["endConditionValue"] == 45.0
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_open_reps_end_with_the_lap_button(self, mock_library):
+        session = {
+            "type": "strength", "duration_mins": 20,
+            "exercises": [{"name": "PULL_UP", "category": "PULL_UP", "sets": 3, "reps": "open",
+                           "notes": "to failure"}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert step["endCondition"] == END_LAP_BUTTON
+        assert "endConditionValue" not in step
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={
+        "DEAD_BUG": {"category": "HIP_STABILITY", "custom": False}
+    })
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_each_side_is_said_on_the_cue(self, mock_library, mock_db):
+        session = {
+            "type": "strength", "duration_mins": 20,
+            "exercises": [{"name": "DEAD_BUG", "sets": 3, "reps": 8, "each_side": True, "notes": "slow"}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert step["description"] == "each side: slow"
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={
+        "PUSH_UP": {"category": "PUSH_UP", "custom": False},
+        "DEAD_BUG": {"category": "HIP_STABILITY", "custom": False},
+    })
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_circuit_renders_one_repeat_group_of_rounds(self, mock_library, mock_db):
+        session = {
+            "type": "strength", "duration_mins": 20,
+            "exercises": [{"rounds": 3, "rest_secs": 60, "name": "Core finisher", "exercises": [
+                {"name": "PUSH_UP", "reps": 10},
+                {"name": "DEAD_BUG", "reps": 8, "each_side": True},
+            ]}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        steps = result["workoutSegments"][0]["workoutSteps"]
+        assert len(steps) == 1
+        group = steps[0]
+        assert group["numberOfIterations"] == 3
+        assert group["description"] == "Core finisher"
+        inner = group["workoutSteps"]
+        assert [s["stepType"] for s in inner] == [STEP_INTERVAL, STEP_INTERVAL, STEP_REST]
+        assert inner[0]["exerciseName"] == "PUSH_UP"
+        assert inner[1]["exerciseName"] == "DEAD_BUG"
+        assert inner[2]["endConditionValue"] == 60.0
+        assert result["exercise_count"] == 2
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_name_with_spaces_is_normalised_to_a_garmin_key(self, mock_library):
+        """Regression: 'Bulgarian split squat' became a nameless CARDIO step."""
+        session = {
+            "type": "strength", "duration_mins": 30,
+            "exercises": [{"name": "Bulgarian split squat", "category": "SQUAT", "sets": 3, "reps": 8}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+        assert step["category"] == "SQUAT"
+        assert step["exerciseName"] == "BULGARIAN_SPLIT_SQUAT"  # no catalogue: trust the pair
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_muscle_group_category_is_rejected_with_a_suggestion(self, mock_library):
+        """GLUTE used to be silently mapped to SQUAT; the coach decides now."""
         session = {
             "type": "strength",
             "duration_mins": 45,
             "exercises": [
                 {"name": "HIP_THRUST", "category": "GLUTE", "sets": 3, "reps": 12},
-                {"name": "CALF_RAISE", "category": "CALF", "sets": 3, "reps": 15},
             ],
         }
-        result = build_strength_workout(session, "2025-01-01")
-        steps = result["workoutSegments"][0]["workoutSteps"]
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        message = excinfo.value.problems[0]["message"]
+        assert "GLUTE" in message and "HIP_RAISE" in message and "SQUAT" in message
 
-        # GLUTE -> SQUAT
-        ex1 = steps[2]["workoutSteps"][0]
-        assert ex1["category"] == "SQUAT"
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_missing_sets_or_reps_is_an_error_not_a_default(self, mock_library):
+        """Regression: {'name': 'COPENHAGEN_PLANK'} silently became 3 x 10."""
+        session = {"type": "strength", "duration_mins": 45,
+                   "exercises": [{"name": "COPENHAGEN_PLANK", "category": "PLANK"}]}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        messages = [p["message"] for p in excinfo.value.problems]
+        assert any("sets is required" in m for m in messages)
 
-        # CALF -> CALF_RAISE (native FIT SDK category)
-        ex2 = steps[3]["workoutSteps"][0]
-        assert ex2["category"] == "CALF_RAISE"
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_sets_without_reps_or_time_is_an_error(self, mock_library):
+        session = {"type": "strength", "duration_mins": 45,
+                   "exercises": [{"name": "COPENHAGEN_PLANK", "category": "PLANK", "sets": 3}]}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        message = excinfo.value.problems[0]["message"]
+        assert "reps" in message and "duration_secs" in message
+
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_unknown_key_is_an_error_naming_the_allowed_keys(self, mock_library):
+        """Regression: 'weight' (for weight_kg) was silently ignored."""
+        session = {"type": "strength", "duration_mins": 45,
+                   "exercises": [{"name": "GOBLET_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10,
+                                  "weight": 20}]}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        message = excinfo.value.problems[0]["message"]
+        assert "unknown key 'weight'" in message and "weight_kg" in message
 
     @patch("coach.workout_builder.load_exercise_db",
            return_value={
@@ -868,36 +1013,32 @@ class TestBuildStrengthWorkout:
                "LYING_LEG_CURL": {"category": "HAMSTRING_CURL", "custom": False},
            })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_native_category_preserves_exercise_name(self, mock_baseline, mock_library, mock_db):
-        """Native DB category is used, preserving exerciseName for non-custom exercises."""
+    def test_catalogue_category_is_mapped_through_garmin_s_rejected_set(self, mock_library, mock_db):
+        """A stated valid category keeps the name; a catalogue category the
+        workout API rejects (HAMSTRING_CURL) is sent as LEG_CURL without the name."""
         session = {
             "type": "strength",
             "duration_mins": 45,
             "exercises": [
                 {"name": "FACE_PULL", "category": "SUSPENSION", "sets": 3, "reps": 15},
-                {"name": "LYING_LEG_CURL", "category": "HAMSTRING_CURL", "sets": 3, "reps": 12},
+                {"name": "LYING_LEG_CURL", "sets": 3, "reps": 12},
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
 
-        # SUSPENSION is a valid FIT SDK category — used directly, exerciseName kept
-        face_pull = steps[2]["workoutSteps"][0]
+        face_pull = steps[0]["workoutSteps"][0]
         assert face_pull["category"] == "SUSPENSION"
         assert face_pull["exerciseName"] == "FACE_PULL"
 
-        # HAMSTRING_CURL not valid → remapped to LEG_CURL; DB category no longer
-        # matches the step category → name cleared
-        leg_curl = steps[3]["workoutSteps"][0]
+        leg_curl = steps[1]["workoutSteps"][0]
         assert leg_curl["category"] == "LEG_CURL"
         assert leg_curl["exerciseName"] == ""
         assert "Lying Leg Curl" in leg_curl["description"]
 
     @patch("coach.workout_builder.load_exercise_db", return_value={})
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_missing_exercise_db_preserves_names(self, mock_baseline, mock_library, mock_db):
+    def test_missing_exercise_db_preserves_names(self, mock_library, mock_db):
         """Clean install (no data/exercises.json cache): trust the caller's
         (name, category) pair instead of blanking every exercise name.
         Regression for the first-ever CI run failure on clean checkout."""
@@ -912,15 +1053,23 @@ class TestBuildStrengthWorkout:
         result = build_strength_workout(session, "2025-01-01")
         steps = result["workoutSegments"][0]["workoutSteps"]
 
-        assert steps[2]["workoutSteps"][0]["exerciseName"] == "BENCH_PRESS"
-        assert steps[3]["workoutSteps"][0]["exerciseName"] == "FACE_PULL"
+        assert steps[0]["workoutSteps"][0]["exerciseName"] == "BENCH_PRESS"
+        assert steps[1]["workoutSteps"][0]["exerciseName"] == "FACE_PULL"
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={})
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_missing_exercise_db_requires_a_category(self, mock_library, mock_db):
+        session = {"type": "strength", "duration_mins": 45,
+                   "exercises": [{"name": "BENCH_PRESS", "sets": 3, "reps": 12}]}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        assert "category" in excinfo.value.problems[0]["message"]
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "BARBELL_SQUAT": {"category": "SQUAT", "custom": False}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_valid_category_keeps_exercise_name(self, mock_baseline, mock_library, mock_db):
+    def test_valid_category_keeps_exercise_name(self, mock_library, mock_db):
         """Valid categories keep exerciseName intact when exercise is in DB."""
         session = {
             "type": "strength",
@@ -930,15 +1079,14 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        ex = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
         assert ex["category"] == "SQUAT"
         assert ex["exerciseName"] == "BARBELL_SQUAT"
 
     @patch("coach.workout_builder.load_exercise_db",
            return_value={"SQUAT": {"category": "SQUAT", "custom": False}})
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_unknown_exercise_clears_name(self, mock_baseline, mock_library, mock_db):
+    def test_unknown_exercise_clears_name(self, mock_library, mock_db):
         """Exercise missing from a PRESENT DB has exerciseName cleared and shown in
         description (an empty/absent DB now means trust-the-caller instead)."""
         session = {
@@ -949,15 +1097,14 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        ex = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
         assert ex["category"] == "SQUAT"
         assert ex["exerciseName"] == ""
         assert "Made Up Exercise" in ex["description"]
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_unknown_category_falls_back_to_cardio(self, mock_baseline, mock_library):
-        """Completely unknown category (not in map or valid set) falls back to CARDIO."""
+    def test_unknown_category_is_an_error_not_cardio(self, mock_library):
+        """Regression: an unknown category fell through to a nameless CARDIO step."""
         session = {
             "type": "strength",
             "duration_mins": 45,
@@ -965,17 +1112,15 @@ class TestBuildStrengthWorkout:
                 {"name": "WEIRD_EXERCISE", "category": "MADE_UP_CATEGORY", "sets": 2, "reps": 10},
             ],
         }
-        result = build_strength_workout(session, "2025-01-01")
-        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
-        assert ex["category"] == "CARDIO"
-        assert ex["exerciseName"] == ""
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_strength_workout(session, "2025-01-01")
+        assert "MADE_UP_CATEGORY" in excinfo.value.problems[0]["message"]
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "DUMBBELL_ROW": {"category": "ROW", "custom": True}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_custom_exercise_clears_name(self, mock_baseline, mock_library, mock_db):
+    def test_custom_exercise_clears_name(self, mock_library, mock_db):
         """Custom exercises have exerciseName cleared even with matching native category."""
         session = {
             "type": "strength",
@@ -985,33 +1130,17 @@ class TestBuildStrengthWorkout:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        ex = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
         assert ex["category"] == "ROW"
         assert ex["exerciseName"] == ""
         assert "Dumbbell Row" in ex["description"]
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_skip_warmup_no_warmup_steps(self, mock_baseline, mock_library):
-        """skip_warmup=True should produce no warmup or rest steps before exercises."""
-        session = {
-            "type": "strength",
-            "duration_mins": 45,
-            "skip_warmup": True,
-            "exercises": [
-                {"name": "BARBELL_BACK_SQUAT", "category": "SQUAT", "sets": 3, "reps": 10},
-            ],
-        }
+    def test_workout_name_prefers_the_session_name(self, mock_library):
+        session = {"type": "strength", "duration_mins": 30, "name": "Legs A",
+                   "description": "Lower body strength - completed."}
         result = build_strength_workout(session, "2025-01-01")
-        steps = result["workoutSegments"][0]["workoutSteps"]
-        # First step should be the exercise RepeatGroupDTO, not a warmup
-        assert steps[0]["type"] == "RepeatGroupDTO"
-        # First RepeatGroup should have stepOrder=1 (no phantom gap from warmup)
-        assert steps[0]["stepOrder"] == 1
-        # No warmup or rest steps anywhere
-        step_types = [s.get("stepType") for s in steps if s.get("type") == "ExecutableStepDTO"]
-        assert STEP_WARMUP not in step_types
-        assert STEP_REST not in step_types
+        assert result["workoutName"] == "Legs A"
 
 
 # ─── build_yoga_workout ─────────────────────────────────────────────
@@ -1384,9 +1513,9 @@ class TestBuildStructuredIndoorWorkout:
         assert step.targetValueOne == int(250 * 0.85)
         assert step.targetValueTwo == int(250 * 0.95)
 
-    def test_cadence_focused_phase_uses_cadence_target(self):
+    def test_cadence_target(self):
         structure = [
-            {"phase": "single_leg_drills", "duration_mins": 10, "cadence": [80, 90], "power_watts": [100, 130]},
+            {"phase": "interval", "duration_mins": 10, "cadence": [80, 90], "notes": "single-leg drills"},
         ]
         session = {"type": "wattbike", "duration_mins": 10, "structure": structure}
         result = build_structured_cycling_workout(
@@ -1394,10 +1523,75 @@ class TestBuildStructuredIndoorWorkout:
         )
 
         step = result.workoutSegments[0].workoutSteps[0]
-        # Cadence-focused phases prioritize cadence over power
         assert step.targetType == TARGET_CADENCE
         assert step.targetValueOne == 80
         assert step.targetValueTwo == 90
+
+    def test_two_targets_on_one_phase_is_an_error(self):
+        structure = [
+            {"phase": "interval", "duration_mins": 10, "cadence": [80, 90], "power_watts": [100, 130]},
+        ]
+        session = {"type": "wattbike", "duration_mins": 10, "structure": structure}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_structured_cycling_workout(session, "Technique (Indoor)", 10 * 60, structure)
+        assert "ONE target" in excinfo.value.problems[0]["message"]
+
+    @patch("coach.workout_builder.get_athlete_power_zones", return_value={
+        "z2_endurance": [120, 162], "z4_threshold": [196, 226]})
+    @patch("coach.workout_builder.get_athlete_ftp", return_value=216.0)
+    def test_repeat_block_seconds_and_fractional_minutes(self, mock_ftp, mock_zones):
+        """Regression: a repeat collapsed to one untargeted 5-minute step, 30 s
+        became 5 minutes and 0.5 min became 0 s."""
+        structure = [
+            {"phase": "warmup", "duration_mins": 10, "intensity": "easy"},
+            {"phase": "repeat", "iterations": 4, "steps": [
+                {"phase": "interval", "duration_mins": 4, "power_pct": [100, 105]},
+                {"phase": "recovery", "duration_mins": 0.5, "power_watts": [100, 120]},
+            ]},
+            {"phase": "interval", "duration_secs": 30, "cadence": [100, 110]},
+        ]
+        session = {"type": "wattbike", "duration_mins": 30, "structure": structure}
+        result = build_structured_cycling_workout(session, "4x4 (Indoor)", 0, structure)
+        warmup, repeat, spin = result.workoutSegments[0].workoutSteps
+
+        assert warmup.targetType == TARGET_POWER
+        assert (warmup.targetValueOne, warmup.targetValueTwo) == (120, 162)
+        assert isinstance(repeat, RepeatGroup)
+        assert repeat.numberOfIterations == 4
+        work, rest = repeat.workoutSteps
+        assert work.endConditionValue == 240
+        assert (work.targetValueOne, work.targetValueTwo) == (216, 226)
+        assert rest.endConditionValue == 30
+        assert spin.endConditionValue == 30
+        assert spin.targetType == TARGET_CADENCE
+        assert result.estimatedDurationInSecs == 600 + 4 * 270 + 30
+
+    @patch("coach.workout_builder.get_athlete_ftp", return_value=None)
+    def test_power_pct_without_ftp_is_an_error(self, mock_ftp):
+        structure = [{"phase": "interval", "duration_mins": 20, "power_pct": 90}]
+        session = {"type": "wattbike", "duration_mins": 20, "structure": structure}
+        with pytest.raises(WorkoutAuthoringError) as excinfo:
+            build_structured_cycling_workout(session, "Threshold (Indoor)", 20 * 60, structure)
+        assert "FTP" in excinfo.value.problems[0]["message"]
+
+    @patch("coach.workout_builder.get_athlete_power_zones", return_value={"z2_endurance": [120, 162]})
+    def test_indoor_phase_intensity_resolves_to_power(self, mock_zones):
+        """Regression: an indoor phase with only `intensity` had no target."""
+        structure = [{"phase": "interval", "duration_mins": 45, "intensity": "easy"}]
+        session = {"type": "indoor_cycling", "duration_mins": 45, "structure": structure}
+        result = build_structured_cycling_workout(session, "Easy (Indoor)", 0, structure, indoor=True)
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_POWER
+        assert (step.targetValueOne, step.targetValueTwo) == (120, 162)
+
+    @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(140, 155))
+    def test_phase_without_target_inherits_session_intensity(self, mock_hr):
+        structure = [{"phase": "interval", "duration_mins": 20}]
+        session = {"type": "cycling", "duration_mins": 20, "intensity": "tempo", "structure": structure}
+        result = build_structured_cycling_workout(session, "Tempo (Outdoor)", 0, structure, indoor=False)
+        step = result.workoutSegments[0].workoutSteps[0]
+        assert step.targetType == TARGET_HR
+        assert (step.targetValueOne, step.targetValueTwo) == (140, 155)
 
     def test_fallback_to_cadence_when_no_power(self):
         structure = [
@@ -1476,16 +1670,27 @@ class TestGetHrTargetForIntensity:
         assert result == (DEFAULT_HR_ZONES["z4_threshold"][0], DEFAULT_HR_ZONES["z4_threshold"][1])
 
     @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
-    def test_unknown_intensity_defaults_to_z2(self, mock_zones):
-        result = get_hr_target_for_intensity("unknown_intensity")
-        assert result == (DEFAULT_HR_ZONES["z2_aerobic"][0], DEFAULT_HR_ZONES["z2_aerobic"][1])
+    def test_unknown_intensity_has_no_target(self, mock_zones):
+        """Regression: 'moderate', 'z4' and 'vo2' all landed in the easy zone."""
+        assert get_hr_target_for_intensity("unknown_intensity") is None
+        assert get_hr_target_for_intensity("moderate") is None
+
+    @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
+    def test_vo2_and_zone_aliases_resolve(self, mock_zones):
+        z5 = (DEFAULT_HR_ZONES["z5_max"][0], DEFAULT_HR_ZONES["z5_max"][1])
+        z4 = (DEFAULT_HR_ZONES["z4_threshold"][0], DEFAULT_HR_ZONES["z4_threshold"][1])
+        assert get_hr_target_for_intensity("vo2") == z5
+        assert get_hr_target_for_intensity("VO2max") == z5
+        assert get_hr_target_for_intensity("z4") == z4
+        assert get_hr_target_for_intensity("hard") == z4
 
 
-# ─── GARMIN_CATEGORY_MAP ────────────────────────────────────────────
+# ─── Catalogue category -> workout category ─────────────────────────
 
 class TestGarminCategoryMap:
     def test_all_exercise_db_categories_mapped(self):
-        """Every non-valid exercise DB category should be in the map."""
+        """Every catalogue category the workout API rejects is in the map,
+        pointing at a valid category or at '' (no workout category)."""
         import json
         from pathlib import Path
         db_path = Path(__file__).parent.parent / "data" / "exercises.json"
@@ -1497,17 +1702,16 @@ class TestGarminCategoryMap:
         for cat in db_categories:
             if cat in VALID_WORKOUT_CATEGORIES:
                 continue
-            assert cat in GARMIN_CATEGORY_MAP, f"{cat} missing from GARMIN_CATEGORY_MAP"
-            assert GARMIN_CATEGORY_MAP[cat] in VALID_WORKOUT_CATEGORIES, (
-                f"{cat} maps to {GARMIN_CATEGORY_MAP[cat]} which is not a valid workout category"
+            assert cat in CATALOGUE_CATEGORY_TO_WORKOUT, f"{cat} missing from CATALOGUE_CATEGORY_TO_WORKOUT"
+            assert CATALOGUE_CATEGORY_TO_WORKOUT[cat] in VALID_WORKOUT_CATEGORIES | {""}, (
+                f"{cat} maps to {CATALOGUE_CATEGORY_TO_WORKOUT[cat]} which is not a valid workout category"
             )
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "ONE_ARM_BENCH_ROW": {"category": "ROW", "custom": True}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    @patch("coach.workout_builder.load_strength_baseline", return_value={})
-    def test_missing_plan_category_uses_db_lookup(self, mock_baseline, mock_library, mock_db):
+    def test_missing_plan_category_uses_db_lookup(self, mock_library, mock_db):
         """Exercise without category in plan should look up from exercise DB."""
         session = {
             "type": "strength",
@@ -1517,7 +1721,7 @@ class TestGarminCategoryMap:
             ],
         }
         result = build_strength_workout(session, "2025-01-01")
-        ex = result["workoutSegments"][0]["workoutSteps"][2]["workoutSteps"][0]
+        ex = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
         assert ex["category"] == "ROW"
         # Custom exercise — name cleared, shown in description instead
         assert ex["exerciseName"] == ""

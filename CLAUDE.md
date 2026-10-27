@@ -89,11 +89,12 @@ under the 4,096-char upfront cap, and gate contracts sit in the first 4,096
 chars of every gated tool's description because tool search indexes only that
 window.
 
-- **51 tools** across 11 modules in `coach/tools/`; every tool declares
+- **52 tools** across 11 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
   is the contract (unclassified tools fail the suite by design).
-- **6 prompts** (`coach/prompts.py`), **6 resources** (`coach/resources.py`,
-  including `coach://coaching/doctrine` and `coach://context/now`).
+- **7 prompts** (`coach/prompts.py`), **7 resources** (`coach/resources.py`,
+  including `coach://coaching/doctrine`, `coach://context/now` and the
+  generated `coach://authoring/contract`).
 - Planning tools return structured dicts; `update_weekly_plan` takes a typed `plan`
   dict validated by pydantic (`coach/schemas.py`; `plan_json` is a deprecated alias).
 - Transports: stdio (default), `http`/`streamable-http`; `sse` accepted for legacy
@@ -116,12 +117,15 @@ coach/
 ├── parsers.py             # Pure parsing of Garmin responses; setup gate
 ├── planner.py             # Context building, plan lifecycle (prune + archive)
 ├── rules.py               # classify_activity, safety rules
-├── workout_builder.py     # Plan sessions → Garmin workouts
+├── authoring.py           # Session contract: strict phase/exercise models, vocabulary,
+│                          #   teaching errors, generated contract document
+├── workout_builder.py     # Renders plan sessions as Garmin workouts (what the plan says,
+│                          #   nothing defaulted) + the preview step tree
 ├── mcp_app.py             # Shared FastMCP instance + SERVER_INSTRUCTIONS
 ├── prompts.py, resources.py
 ├── web_utils.py           # HTML fetch/strip for the research tools
 ├── defaults/              # methodology.json shipped with the package
-└── tools/                 # 50 MCP tools: data, fitness, athlete, planning,
+└── tools/                 # 52 MCP tools: data, fitness, athlete, planning,
                            # coaching (snapshot), strength, injury, research,
                            # decision, race, interactive
 scripts/                   # daily_loop, garmin_login, capture_fixtures,
@@ -183,7 +187,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,546 tests across 48 files (CI: GitHub Actions on push/PR + weekly cron —
+1,653 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
@@ -214,7 +218,30 @@ parser → tool → annotations inventory → clock allowlist → tests → e2e 
 `.claude/skills/`: `mcp-builder` (MCP server design guide), `new-tool` (add an
 MCP tool the repo way), `release` (version bump → tag → PyPI/registry),
 `capture-fixtures` (owner-run fixture refresh), `acwr-recompute` (supervised
-ACWR history migration).
+ACWR history migration), and the four sport authoring skills
+`running-session-author`, `cycling-session-author`, `strength-session-author`,
+`mobility-session-author` (how a session of that sport is composed and written
+in the session contract; their JSON examples are validated by
+`tests/test_skills.py`). `.claude/agents/workout-author.md` is the Claude Code
+agent that authors one session against `preview_workout` until the step tree
+matches the brief; it never saves or pushes. The same skills are meant to be
+uploaded to claude.ai as custom skills (they then sync into Claude Code and
+cover Claude Desktop).
+
+## Session authoring
+
+Coaching judgment about how a session is composed lives in the sport skills
+(markdown); code holds the invariants. `coach/authoring.py` is the ONE
+vocabulary for `structure` (runs, rides) and `exercises` (strength): strict
+models with teaching errors (unknown keys name the allowed keys; nothing is
+defaulted — no 3x10, no category weights, no 5-minute phases).
+`update_weekly_plan` rejects contract violations (`authoring_error`),
+`push_plan_to_garmin`'s preview carries the rendered step tree per session and
+lists `unrenderable` sessions (never uploaded), and `preview_workout(session)`
+renders one session for the authoring loop (`preview_workout()` returns the
+contract). Garmin facts that are data, not judgment (the 35 workout categories,
+the catalogue categories the API rejects, the one-category-per-name cache
+corrections) stay in `coach/authoring.py`.
 
 ## Known Issues / TODO
 

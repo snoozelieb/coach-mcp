@@ -65,6 +65,9 @@ wheels/
 # settings.local.json, agent-memory — stays personal/local)
 .claude/*
 !.claude/skills/
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/workout-author.md
 
 # OS
 .DS_Store

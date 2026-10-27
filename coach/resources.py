@@ -222,21 +222,35 @@ Each session in the list is pushed to Garmin as its own workout and counted
 independently in compliance and adherence. Do NOT cram multiple workouts into
 one description string — that loses per-session tracking.
 
-## Structured Running Sessions (schema summary)
+## Session Contract (structure and exercises)
 
-For running sessions with intervals (run/walk protocols, threshold reps,
-fartlek, hill repeats, distance-based segments), author a `structure` field —
-a list of phases. Without it, the run pushes as ONE timed block regardless of
-what the description prose says.
+The renderer draws exactly what a session says and defaults nothing: what
+the plan states is what the watch shows. Read coach://authoring/contract
+(or call preview_workout() with no session) for the full vocabulary and
+JSON schema, and preview_workout(session) to see the step tree before
+saving. A contract violation rejects the save (error 'authoring_error')
+with the field and the allowed keys.
 
-- phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
-  (repeat carries `iterations` + nested `steps`, which may nest further)
-- End condition (one of, priority order): distance_m; duration_secs or
-  duration_mins; "open" as any duration value for lap-button advance
-- Target (one of, priority order): pace [slow_mps, fast_mps];
-  hr_target [low, high]; cadence [low, high]; or intensity
-  ("easy"|"recovery"|"tempo"|"threshold"|"vo2" — resolves to a pace zone)
-- notes: free-form, truncated to 50 chars on display
+- Runs and rides with reps (intervals, run/walk ladders, tempo blocks,
+  Wattbike sets) carry a `structure` list of phases; without it the session
+  pushes as warm-up / main / cool-down (plain outdoor rides: one block).
+- phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest'; a repeat
+  block is {'phase': 'repeat', 'iterations': N, 'steps': [...]} and nests.
+- End condition, exactly one: duration_secs, duration_mins (fractions
+  allowed) or distance_m — a number, or "open" for a lap-button step.
+- Target, at most one numeric: hr_target [low, high]; pace_sec_per_km
+  [slow, fast] (runs); power_watts [low, high] or power_pct (rides,
+  [low, high] % of FTP); cadence [low, high]; or the intensity word
+  recovery | easy | tempo | sweet_spot | threshold | vo2 | max_effort
+  (z1-z6 accepted), which resolves to pace (runs, when threshold pace is
+  set), power (indoor rides) or HR. A phase without a target inherits the
+  session intensity.
+- notes: the cue shown on the step (about 50 characters).
+- Strength sessions carry `exercises`: name (Garmin key), category (needed
+  when the name is off-catalogue), sets, reps or duration_secs, each_side,
+  weight_kg (explicit only), rest_secs (timed rest; lap button when
+  omitted), notes (the cue); circuits are {'rounds': N, 'exercises':
+  [...], 'rest_secs': S}. A session-level warmup_mins adds a warm-up block.
 
 Worked example — a Level 2 run/walk protocol (R4/W2 x 4):
 
@@ -252,9 +266,6 @@ Worked example — a Level 2 run/walk protocol (R4/W2 x 4):
               'notes': 'Walk 2 min'}]},
          {'phase': 'cooldown', 'duration_secs': 180, 'intensity': 'recovery',
           'notes': '200-300m walk'}]}
-
-duration_mins stays as the fallback estimate; a phase without its own
-intensity inherits the session's.
 
 ## Injury Protocol (non-negotiable)
 
@@ -448,9 +459,21 @@ def coaching_decisions_resource() -> str:
 @mcp.resource(
     "coach://coaching/doctrine",
     name="coaching_doctrine",
-    description="Full coaching doctrine: canonical flow, load hierarchy, capacity grounding (verify before prescribing), multi-week programs, week_grid/plan_adherence usage, multi-session days, structured-run schema, injury protocol, approval workflow — read before planning sessions",
+    description="Full coaching doctrine: canonical flow, load hierarchy, capacity grounding (verify before prescribing), multi-week programs, week_grid/plan_adherence usage, multi-session days, session contract, injury protocol, approval workflow — read before planning sessions",
     mime_type="text/markdown",
 )
 def coaching_doctrine_resource() -> str:
     """Long-form coaching doctrine (kept out of size-limited SERVER_INSTRUCTIONS)."""
     return COACHING_DOCTRINE
+
+
+@mcp.resource(
+    "coach://authoring/contract",
+    name="session_authoring_contract",
+    description="The session authoring contract: intensity vocabulary, the phase keys for runs and rides, the exercise and circuit keys for strength, display limits, and the JSON schemas — generated from the validator so it cannot drift",
+    mime_type="text/markdown",
+)
+def session_contract_resource() -> str:
+    """What a plan session may say and how the watch shows it (coach/authoring.py)."""
+    from .authoring import contract_document
+    return contract_document()

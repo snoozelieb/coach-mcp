@@ -289,6 +289,29 @@ def _format_plan_validation_errors(exc: ValidationError) -> list[dict]:
     return problems
 
 
+def _authoring_problems(plan_days: dict) -> tuple[list[dict], list[dict]]:
+    """(errors, warnings) from the session contract, over every leaf session.
+
+    Each entry: {date, session (type/name), field, message}. Containers that
+    only hold a nested 'sessions' list are not sessions themselves.
+    """
+    from ..authoring import validate_session
+    from ..workout_builder import load_exercise_db
+    catalogue = load_exercise_db()
+    errors, warnings = [], []
+    for day_str, day_data in sorted((plan_days or {}).items()):
+        for session in _iter_plan_sessions(day_data):
+            if isinstance(session.get('sessions'), list):
+                continue
+            report = validate_session(session, catalogue)
+            label = session.get('name') or session.get('description') or session.get('type')
+            for problem in report.errors:
+                errors.append({'date': day_str, 'session': label, **problem})
+            for problem in report.warnings:
+                warnings.append({'date': day_str, 'session': label, **problem})
+    return errors, warnings
+
+
 def _missing_purpose_sessions(plan_days: dict) -> list[dict]:
     """Non-rest sessions whose 'purpose' is missing or blank.
 
@@ -836,106 +859,89 @@ def update_weekly_plan(plan: dict | None = None,
                        override_rationale: str | None = None) -> dict:
     """
     Saves a new or updated weekly training plan — the rolling 7-day plan,
-    at most 21 days ahead. Every save runs four code-enforced checks; read
+    at most 21 days ahead. Every save runs five code-enforced checks; read
     them before building the plan.
 
     GATES AND ERROR CODES
 
-    - snapshot_required / snapshot_stale: SNAPSHOT FIRST is enforced — a
+    - snapshot_required / snapshot_stale: SNAPSHOT FIRST — a
       get_coaching_snapshot() from this session, today, under 2 hours old
       must precede the save.
     - purpose_gate: REJECTED when any non-rest session lacks a non-empty
-      'purpose' (why this session, this day, this athlete). The error lists
-      the offending dates/sessions; nested 'sessions' lists are checked at
-      the leaf; rest days are exempt. override_purpose_gate is DEPRECATED
-      and no longer bypasses it — a session you cannot explain does not
-      belong on the plan; an athlete-choice day uses intensity 'discretion'
-      and still states its purpose.
+      'purpose' (why this session, this day, this athlete). Nested
+      'sessions' lists are checked at the leaf; rest days are exempt.
+      override_purpose_gate is DEPRECATED and ignored — a session you cannot
+      explain does not belong on the plan; an athlete-choice day uses
+      intensity 'discretion' and still states its purpose.
     - injury_gate: REJECTED when a non-rest session's type intersects an
       active/improving injury's restricted_activities (taxonomy-aware:
-      'long_ride' is caught by a 'cycling' restriction; free-text
-      restrictions match by substring). The error lists the offending
-      dates/sessions. override_injury_gate=True needs athlete_statement
-      (the athlete's own words) and override_rationale, logged together as
-      a 'gate_override' decision; without them the error is
-      'override_requires_confirmation'. A plan failing both gates reports
-      both: the injury_gate error carries a 'purpose_gate' section.
-    - plan_dates: REJECTED when every day key is in the past ('plan is
-      entirely historical — build a current week') or any day key is more
-      than 21 days in the future (fat-finger guard).
-    - grounding_warnings (VERIFY BEFORE PRESCRIBING): the save succeeds, but
-      the response lists the plan's longest session per sport against the
-      athlete's DEMONSTRATED capacity (snapshot.capacity, from completed
-      sessions). Address every entry with the athlete before pushing:
-        capacity_regression — longest planned session < 60% of the
-          demonstrated recent max. Legitimate for taper/rehab/bone-load
-          weeks — say so in the plan rationale; otherwise the plan is
-          anchored to a template, not this athlete.
-        session_spike — longest planned session > 130% of the demonstrated
-          recent max; injury-risk jump, progress ~10-15% per week.
-        no_demonstrated_history — a 30+ min session in a sport with no
-          completed session in the capacity window (return-to-sport check).
-    - validation_error: the dict failed the typed schema; the error names
-      the offending day/field.
+      'long_ride' is caught by 'cycling'; free text matches by substring).
+      override_injury_gate=True needs athlete_statement (the athlete's own
+      words) and override_rationale, logged as a 'gate_override' decision;
+      without them: 'override_requires_confirmation'. A plan failing both
+      gates reports both (injury_gate carries a 'purpose_gate' section).
+    - plan_dates: REJECTED when every day key is in the past ('build a
+      current week') or any day key is more than 21 days out.
+    - authoring_error: REJECTED when a session's 'structure' (runs, rides)
+      or 'exercises' (strength) breaks the session contract — an unknown
+      key, a phase without an end condition, an exercise without sets or
+      reps/duration_secs, an intensity outside the vocabulary. The error
+      names the field and the allowed keys; nothing is defaulted.
+    - grounding_warnings (VERIFY BEFORE PRESCRIBING; save succeeds): the
+      plan's longest session per sport against DEMONSTRATED capacity
+      (snapshot.capacity): capacity_regression (< 60 % of the recent max —
+      say why in the rationale), session_spike (> 130 %),
+      no_demonstrated_history (30+ min in a sport with no completed
+      session in the window). Address each before pushing.
+    - authoring_warnings (save succeeds): what the watch will not show as
+      written — an off-catalogue exercise name, a cue over 50 chars, a
+      session intensity outside the zone vocabulary.
+    - validation_error: the dict failed the typed schema (day keys must be
+      YYYY-MM-DD; every session needs a string 'type').
 
     PLAN STRUCTURE (plan)
 
         {'days': {'YYYY-MM-DD': {'planned': {...} or [{...}, ...],
-                                 'notes': 'Focus on form'}, ...},
+                                 'notes': '...'}, ...},
          'rationale': 'Why this plan, for this athlete'}
 
-        Session fields: 'type' (REQUIRED), 'purpose' (REQUIRED for every
-        non-rest session), 'duration_mins', 'intensity', 'description',
-        optional 'structure' (running intervals, below) and 'exercises'
-        (strength).
+        Session: 'type' (REQUIRED), 'purpose' (REQUIRED unless rest),
+        'duration_mins', 'intensity', 'name' (Garmin workout name, 40
+        chars), 'description', 'structure' (runs, rides), 'exercises' and
+        'warmup_mins' (strength). 'intensity' is free text; 'discretion'
+        marks an athlete-choice day, bounded by 'constraints': ['Z2 only'].
+        'planned' may be a LIST when a day has two or three workouts; each
+        is pushed and counted on its own.
 
-        'intensity' is a free string. The value 'discretion' marks an
-        athlete-discretion day: the coach grants the athlete the choice of
-        effort instead of the plan lying about a prescribed intensity.
-        Bound the choice with 'constraints': ['Z2 only', 'no running'].
+    SESSION CONTRACT (what the watch shows; preview_workout renders it)
 
-        'planned' may be a LIST of session dicts when the day has two or
-        three distinct workouts (run + short strength bolt-on, long ride +
-        upper body). Each session is pushed to Garmin as its own workout and
-        counted independently in compliance and adherence. Prefer the list
-        form over cramming several workouts into one description string.
+        The renderer draws exactly what the session says and defaults
+        nothing. 'structure': phases {phase: warmup|interval|recovery|
+        cooldown|rest; ONE of duration_secs|duration_mins|distance_m, or
+        "open" for a lap-button step; ONE target: intensity recovery|easy|
+        tempo|sweet_spot|threshold|vo2|max_effort, hr_target [lo,hi],
+        pace_sec_per_km [slow,fast], power_watts [lo,hi], power_pct,
+        cadence [lo,hi]; notes} and repeat blocks {phase: 'repeat',
+        iterations, steps}. 'exercises': {name (Garmin key), category,
+        sets, reps or duration_secs, each_side, weight_kg, rest_secs,
+        notes} or circuits {rounds, exercises, rest_secs}. Without
+        structure a session is one block (runs/indoor rides: warm-up, main,
+        cool-down). preview_workout() returns the full contract.
 
-    STRUCTURED RUNNING SESSIONS
-
-        Intervals, run/walk protocols, threshold reps, fartlek, hill repeats
-        or distance segments need a 'structure' list of phases; without it
-        the run pushes as ONE timed block whatever the description says.
-        phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' |
-        'repeat' (iterations + nested steps, which may nest further).
-        End condition (priority order): distance_m; duration_secs or
-        duration_mins; "open" as any duration value for lap-button advance.
-        Target (priority order): pace [slow_mps, fast_mps]; hr_target [low,
-        high]; cadence [low, high]; intensity "easy"|"recovery"|"tempo"|
-        "threshold"|"vo2" (resolves to a pace zone, HR fallback). notes:
-        free-form, truncated to 50 chars on display. The worked example is
-        in coach://coaching/doctrine (Structured Running Sessions).
-
-    LIFECYCLE
-
-        The plan is saved as supplied; server-side fields like
-        pushed_workout_ids are preserved. week_start/week_end derive from
-        the day keys when missing; day entries older than 9 days are pruned
-        to data/plan_history.json.
+    LIFECYCLE: saved as supplied; pushed_workout_ids is preserved;
+    week_start/week_end derive from the day keys; days older than 9 days
+    are pruned to plan_history.json.
 
     Args:
-        plan: Structured plan dict (see PLAN STRUCTURE). Preferred.
-        override_injury_gate: Bypass the injury restriction check (default
-            False) — needs athlete_statement and override_rationale.
-        plan_json: DEPRECATED — JSON string form of the plan. Use `plan`.
-        override_purpose_gate: DEPRECATED and ignored — the purpose gate
-            cannot be bypassed; the response notes the deprecation.
-        athlete_statement: The athlete's own words agreeing to the override.
-        override_rationale: Why the coach agrees, citing the evidence.
+        plan: the plan dict (preferred). plan_json: DEPRECATED JSON string.
+        override_injury_gate + athlete_statement + override_rationale:
+        informed consent for a restricted session. override_purpose_gate:
+        DEPRECATED, ignored.
 
     Returns:
-        Confirmation with purpose_warnings and grounding_warnings, or a
-        structured error naming the offending day/field/sessions:
-        'validation_error', 'plan_dates', 'purpose_gate', 'injury_gate'.
+        {'status', 'purpose_warnings', 'grounding_warnings',
+        'authoring_warnings'} or a structured error ('validation_error',
+        'plan_dates', 'purpose_gate', 'injury_gate', 'authoring_error').
     """
     try:
         gate = require_snapshot('update_weekly_plan', date.today())
@@ -1060,6 +1066,20 @@ def update_weekly_plan(plan: dict | None = None,
                 **purpose_gate_error,
             }
 
+        # Session contract: what the watch will show must be what the plan
+        # says. Unknown keys, missing end conditions, exercises without
+        # sets/reps — rejected with the allowed keys, never defaulted.
+        authoring_errors, authoring_warnings = _authoring_problems(gated_days)
+        if authoring_errors:
+            return {
+                'error': 'authoring_error',
+                'message': (f"{len({(p['date'], p['session']) for p in authoring_errors})} "
+                            "session(s) do not satisfy the session contract — nothing was saved"),
+                'problems': authoring_errors,
+                'hint': ("Fix the named fields. preview_workout(session) shows the rendering "
+                         "and preview_workout() returns the full contract."),
+            }
+
         purpose_gate_note = None
         if missing_purpose:  # only reachable with override_purpose_gate=True
             logger.warning(
@@ -1094,7 +1114,14 @@ def update_weekly_plan(plan: dict | None = None,
             'last_updated': today.isoformat(),
             'purpose_warnings': purpose_warnings,
             'grounding_warnings': grounding_warnings,
+            'authoring_warnings': authoring_warnings,
         }
+        if authoring_warnings:
+            result['message'] += (
+                f" — {len(authoring_warnings)} authoring warning(s): the watch will not "
+                "show these sessions exactly as written; see authoring_warnings "
+                "(preview_workout shows the rendering)."
+            )
         if purpose_warnings:
             result['message'] = (
                 f"Weekly plan saved with purpose gate OVERRIDDEN — "
@@ -1234,10 +1261,16 @@ def _expand_push_sessions(day_data: dict) -> list[dict]:
     return expanded
 
 
-def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict]]:
-    """(to_push, skipped): to_push entries carry the session for build_workout."""
-    from ..workout_builder import get_workout_type_name
-    to_push, skipped = [], []
+def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """(to_push, skipped, unrenderable).
+
+    Every session is rendered here, so the preview shows the step tree the
+    watch will get and the confirm step uploads exactly that. to_push
+    entries carry the built workout; unrenderable entries carry the
+    contract errors (they are never uploaded).
+    """
+    from ..workout_builder import build_workout_report, get_workout_type_name
+    to_push, skipped, unrenderable = [], [], []
     for date_str, day_data in sorted((plan.get('days') or {}).items()):
         if not isinstance(day_data, dict) or not day_data.get('planned'):
             skipped.append({'date': date_str, 'reason': 'rest day'})
@@ -1252,15 +1285,30 @@ def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict]]:
                 skipped.append({'date': date_str, 'type': session.get('type'),
                                 'reason': 'unknown workout type'})
                 continue
+            label = session.get('name') or session.get('description') or session.get('type')
+            report = build_workout_report(session, date_str)
+            if not report['ok']:
+                unrenderable.append({'date': date_str, 'type': session.get('type'),
+                                     'name': label, 'errors': report['errors'],
+                                     'warnings': report['warnings']})
+                continue
+            if report['workout'] is None:
+                skipped.append({'date': date_str, 'type': session.get('type'),
+                                'reason': 'could not convert to workout'})
+                continue
             to_push.append({
                 'date': date_str,
                 'type': session.get('type'),
                 'workout_type': workout_type,
-                'name': session.get('description') or session.get('name') or session.get('type'),
+                'name': report['name'] or label,
                 'duration_mins': session.get('duration_mins'),
+                'estimated_mins': report['estimated_mins'],
+                'steps': report['steps'],
+                'warnings': report['warnings'],
                 'session': session,
+                'workout': report['workout'],
             })
-    return to_push, skipped
+    return to_push, skipped, unrenderable
 
 
 @mcp.tool(meta={"anthropic/alwaysLoad": True, "anthropic/requiresUserInteraction": True},
@@ -1275,11 +1323,14 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
     then a confirm with the single-use token the preview returned.
 
     STEP 1 — PREVIEW (no confirm_token): nothing is written. Returns the
-    sessions that will be pushed per date (type, workout type, name), the
-    previously pushed workouts that will be DELETED first (duplicate
-    prevention, checked against the Garmin library), grounding_warnings,
-    injury violations, and a confirm_token valid for 10 minutes. Show the
-    athlete what will land on the watch; this tool carries
+    sessions that will be pushed per date, each with the rendered step tree
+    ('steps': what the watch will show, line by line) and authoring
+    warnings, the sessions that cannot be rendered ('unrenderable', with
+    the contract errors — fix them with update_weekly_plan, they are never
+    uploaded), the previously pushed workouts that will be DELETED first
+    (duplicate prevention, checked against the Garmin library),
+    grounding_warnings, injury violations, and a confirm_token valid for 10
+    minutes. Show the athlete the steps; this tool carries
     anthropic/requiresUserInteraction — the athlete says yes before step 2.
 
     STEP 2 — CONFIRM (confirm_token from step 1): deletes the listed
@@ -1310,13 +1361,13 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
         override_rationale: Why the coach agrees, citing the evidence
 
     Returns:
-        Preview: {'status': 'preview', 'sessions', 'skipped',
-        'workouts_to_delete', 'grounding_warnings', 'injury_violations',
-        'confirm_token', 'expires_in_minutes', 'next'}.
+        Preview: {'status': 'preview', 'sessions' (each with 'steps' and
+        'warnings'), 'unrenderable', 'skipped', 'workouts_to_delete',
+        'grounding_warnings', 'injury_violations', 'confirm_token',
+        'expires_in_minutes', 'next'}.
         Confirm: {'status': 'success', 'duplicates_deleted', 'pushed',
         'skipped', 'errors', 'summary'}, or a structured error.
     """
-    from ..workout_builder import build_workout
     try:
         today = date.today()
         gate = require_snapshot('push_plan_to_garmin', today)
@@ -1354,7 +1405,7 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
 
         previous_ids = list(plan.get('pushed_workout_ids', []) or [])
         digest = _push_digest(plan, previous_ids, override_injury_gate)
-        to_push, skipped = _build_push_manifest(plan)
+        to_push, skipped, unrenderable = _build_push_manifest(plan)
 
         # ---------------- STEP 1: preview (read-only) ----------------
         if confirm_token is None:
@@ -1373,18 +1424,24 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
                 to_delete = []
             preview = {
                 'status': 'preview',
-                'sessions': [{k: v for k, v in entry.items() if k != 'session'}
+                'sessions': [{k: v for k, v in entry.items() if k not in ('session', 'workout')}
                              for entry in to_push],
+                'unrenderable': unrenderable,
                 'skipped': skipped,
                 'workouts_to_delete': to_delete,
                 'grounding_warnings': _grounding_warnings(plan.get('days', {}), today),
                 'injury_violations': violations,
                 'confirm_token': _issue_push_token(digest),
                 'expires_in_minutes': PUSH_TOKEN_TTL_SECS // 60,
-                'next': ('Show the athlete the sessions and the deletions. When they '
+                'next': ('Show the athlete each session\'s steps and the deletions. When they '
                          'agree, call push_plan_to_garmin(confirm_token=...) with the '
                          'same override arguments. Nothing has been written yet.'),
             }
+            if unrenderable:
+                preview['next'] = (
+                    f"{len(unrenderable)} session(s) cannot be rendered and will NOT be "
+                    "pushed (see unrenderable): fix them with update_weekly_plan first, "
+                    "then preview again. " + preview['next'])
             if library_note:
                 preview['library_check'] = library_note
             return preview
@@ -1428,7 +1485,9 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
             'duplicates_deleted': len(actually_deleted),
             'pushed': [],
             'skipped': list(skipped),
-            'errors': [],
+            'errors': [{'date': u['date'], 'type': u['type'], 'name': u['name'],
+                        'error': 'authoring_error — not pushed', 'problems': u['errors']}
+                       for u in unrenderable],
         }
         if delete_failures:
             results['delete_failures'] = delete_failures
@@ -1437,12 +1496,8 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
 
         uploaded_ids: list = []
         for entry in to_push:
-            date_str, session, workout_type = entry['date'], entry['session'], entry['workout_type']
-            workout = build_workout(session, date_str)
-            if not workout:
-                results['skipped'].append({'date': date_str, 'type': session.get('type'),
-                                           'reason': 'could not convert to workout'})
-                continue
+            date_str, workout_type = entry['date'], entry['workout_type']
+            workout = entry['workout']  # rendered by the manifest: the previewed steps are what ships
             try:
                 if workout_type == 'cycling':
                     upload_result = garmin_api_call(lambda c, w=workout: c.upload_cycling_workout(w))
@@ -1510,10 +1565,61 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
                                   f"({', '.join(types_pushed)}): {dates[0]} to {dates[-1]}")
         else:
             results['summary'] = "No workouts pushed (all sessions were rest days)"
+        if unrenderable:
+            results['summary'] += (f"; {len(unrenderable)} session(s) NOT pushed — contract "
+                                   "errors listed under errors")
         return results
 
     except Exception as e:
         logger.exception("push_plan_to_garmin failed")
+        return {'error': str(e)}
+
+
+@mcp.tool(annotations={'readOnlyHint': True, 'openWorldHint': False})
+def preview_workout(session: dict | None = None, include_payload: bool = False) -> dict:
+    """
+    Render ONE plan session the way push_plan_to_garmin will, without
+    saving or pushing anything: the step tree the watch will show, the
+    contract errors (nothing is defaulted — a missing end condition, an
+    exercise without sets, an unknown key are errors that name the allowed
+    keys) and the warnings (an off-catalogue exercise name the watch will
+    strip, a cue over 50 characters, an intensity outside the zone
+    vocabulary). Iterate here until the rendering matches the brief, then
+    save with update_weekly_plan.
+
+    Call with no session to get the session contract: the intensity
+    vocabulary, the phase and exercise keys and their JSON schemas.
+
+    Args:
+        session: one session dict exactly as it would appear under a plan
+            day's 'planned' (type, duration_mins, intensity, description,
+            structure / exercises, ...). Omit for the contract.
+        include_payload: also return the Garmin workout payload (large).
+
+    Returns:
+        {'ok', 'errors', 'warnings', 'workout_type', 'name', 'sport',
+        'estimated_mins', 'steps'} — or {'contract': markdown} when no
+        session was given.
+    """
+    from ..authoring import contract_document
+    from ..workout_builder import build_workout_report
+    try:
+        if session is None or session == {}:
+            return {'contract': contract_document(),
+                    'hint': 'Pass a session dict to see how it renders.'}
+        if not isinstance(session, dict):
+            return {'error': 'session must be an object (one planned session)'}
+        report = build_workout_report(session, 'preview')
+        result = {k: v for k, v in report.items() if k != 'workout'}
+        if include_payload and report['workout'] is not None:
+            workout = report['workout']
+            result['garmin_payload'] = workout.to_dict() if hasattr(workout, 'to_dict') else workout
+        if not report['ok']:
+            result['hint'] = ('Fix the fields named in errors; preview_workout() with no '
+                              'session returns the contract and allowed keys.')
+        return result
+    except Exception as e:
+        logger.exception("preview_workout failed")
         return {'error': str(e)}
 
 

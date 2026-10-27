@@ -282,3 +282,75 @@ def race_program_prompt(race_name: str = "", notes: str = "") -> PromptResult:
         ],
         description="Capacity-anchored race program builder",
     )
+
+
+@mcp.prompt(
+    name="author_session",
+    description="Author ONE Garmin-ready plan session from a brief: the sport "
+    "procedure (runs, rides, strength/rehab, mobility), the session contract, "
+    "and the preview loop — preview_workout until the rendering matches the "
+    "brief, then update_weekly_plan.",
+)
+def author_session_prompt(sport: str = "", brief: str = "") -> PromptResult:
+    """The authoring procedure the sport skills carry, for clients without skills."""
+    sport_word = (sport or "").strip().lower()
+    sport_notes = {
+        "running": (
+            "RUNS: a plain easy/long run is duration_mins + intensity (the renderer "
+            "draws warm-up, main, cool-down). Anything with reps — intervals, "
+            "run/walk ladders, tempo blocks, hills, strides — is a 'structure' list: "
+            "warmup, repeat {iterations, steps}, cooldown; each phase ONE end "
+            "condition (duration_secs/duration_mins/distance_m or \"open\") and ONE "
+            "target (intensity word, hr_target, pace_sec_per_km). Pace targets need "
+            "threshold pace on the profile (set_threshold_pace); without it an "
+            "intensity word resolves to HR. Return-to-run work is a ladder of short "
+            "run/walk repeats, progressed ~10 % a week, every step cued in notes."),
+        "cycling": (
+            "RIDES: an outdoor endurance ride is ONE block from duration_mins + "
+            "intensity (HR). Structured work (tempo climbs, sweet spot, threshold, "
+            "VO2, cadence drills) is a 'structure' list; indoors (type wattbike / "
+            "indoor_cycling) targets are power: power_pct [lo, hi] of FTP (set_ftp), "
+            "power_watts, or an intensity word that resolves to the power zone; "
+            "outdoors hr_target or an intensity word. Repeats nest; 30 s efforts "
+            "are duration_secs; a self-paced warm-up is duration_mins \"open\". FTP "
+            "tests are type ftp_test (the protocol is built in)."),
+        "strength": (
+            "STRENGTH / REHAB: every movement is an 'exercises' entry: name (Garmin "
+            "key from list_exercises; spaces are normalised), sets, reps or "
+            "duration_secs (holds), each_side, rest_secs (timed rest; lap button "
+            "when omitted), weight_kg (explicit only — look at get_strength_baseline "
+            "and write the number; nothing is guessed), notes (the physio's cue, "
+            "first 50 characters show). Off-catalogue names need a category; the "
+            "watch then shows the category plus the readable name. Supersets and "
+            "Tabata are circuits {rounds, exercises, rest_secs}. State warmup_mins "
+            "when a warm-up block is wanted."),
+        "mobility": (
+            "MOBILITY: yoga, stretching and mobility are ONE timed block (type yoga / "
+            "stretching, duration_mins, notes listing the flow). Rehab tracked as "
+            "pilates (type rehab) takes exercises with reps, duration_secs or "
+            "neither (lap button) and notes."),
+    }
+    sport_text = sport_notes.get(sport_word) or "\n".join(sport_notes.values())
+    return PromptResult(
+        messages=[
+            Message(
+                f"Author one plan session{' (' + sport_word + ')' if sport_word else ''}."
+                f"{' Brief: ' + brief if brief else ''}\n\n"
+                f"## Procedure\n"
+                f"1. get_coaching_snapshot() first — current_time_context, injuries "
+                f"(hard gate), capacity for this sport (VERIFY BEFORE PRESCRIBING: "
+                f"query_metrics(kind='sport_history') for the session list).\n"
+                f"2. Compose the session as a dict: type, purpose, duration_mins, "
+                f"intensity, name (40 chars), description, and structure / exercises "
+                f"per the contract. Say what you want; nothing is defaulted.\n"
+                f"3. preview_workout(session) — read the 'steps' tree (what the watch "
+                f"shows), fix every error (the message names the allowed keys) and "
+                f"weigh every warning. preview_workout() alone returns the contract.\n"
+                f"4. Repeat 2-3 until the rendering matches the brief, then save with "
+                f"update_weekly_plan(plan=...) and push with push_plan_to_garmin() "
+                f"(preview, show the athlete the steps, confirm).\n\n"
+                f"## Sport notes\n{sport_text}"
+            )
+        ],
+        description="Session authoring: contract + preview loop",
+    )

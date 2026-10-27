@@ -96,7 +96,7 @@ def _full_plan():
                 'purpose': 'Run-walk protocol — tendon reload'}},
             D2: {'planned': {
                 'type': 'strength', 'duration_mins': 45,
-                'description': 'Lower body strength',
+                'description': 'Lower body strength', 'warmup_mins': 5,
                 'exercises': STRENGTH_EXERCISES,
                 'purpose': 'Posterior chain for climbing power'}},
             D3: {'planned': {
@@ -307,7 +307,7 @@ class TestPushHappyPath:
         assert strength_entry['exercise_count'] == 2
 
         steps = workout['workoutSegments'][0]['workoutSteps']
-        # Built-in warmup block + lap-button rest, then one repeat per exercise
+        # The plan's warmup_mins block + lap-button rest, then one repeat per exercise
         assert steps[0]['stepType']['stepTypeKey'] == 'warmup'
         assert steps[0]['endConditionValue'] == 300.0
         assert steps[1]['stepType']['stepTypeKey'] == 'rest'
@@ -320,11 +320,14 @@ class TestPushHappyPath:
             assert repeat['numberOfIterations'] == spec['sets']
             exercise_step, rest_step = repeat['workoutSteps']
             assert exercise_step['category'] == spec['category']
+            assert exercise_step['exerciseName'] == spec['name']  # no catalogue: the pair is trusted
             assert exercise_step['endCondition']['conditionTypeKey'] == 'reps'
             assert exercise_step['endConditionValue'] == float(spec['reps'])
             assert exercise_step['weightValue'] == float(spec['weight_kg'])
             assert exercise_step['weightUnit']['unitKey'] == 'kilogram'
-            assert rest_step['endCondition']['conditionTypeKey'] == 'lap.button'
+            # rest_secs stated -> a timed rest step, not a lap button
+            assert rest_step['endCondition']['conditionTypeKey'] == 'time'
+            assert rest_step['endConditionValue'] == float(spec['rest_secs'])
 
     def test_yoga_payload_timed_block(self, push_env):
         _, client = push_env
@@ -454,11 +457,60 @@ class TestPreviewAndToken:
         assert preview['confirm_token']
         assert [(s['date'], s['workout_type']) for s in preview['sessions']] == [
             (D0, 'cycling'), (D1, 'running'), (D2, 'strength'), (D3, 'yoga')]
+        assert preview['unrenderable'] == []
         assert preview['workouts_to_delete'] == []
         assert {s['date'] for s in preview['skipped']} >= {D4, D5}
         assert client.uploaded == [] and client.scheduled == []
         assert 'pushed_workout_ids' not in _read_plan(data_env) or \
             not _read_plan(data_env)['pushed_workout_ids']
+
+    def test_preview_renders_the_step_tree_the_watch_will_show(self, push_env):
+        preview = push_plan_to_garmin()
+        by_type = {s['workout_type']: s for s in preview['sessions']}
+
+        ride = by_type['cycling']
+        lo, hi = HR_ZONES['z2_aerobic']
+        assert ride['steps'] == [f'1. Interval 1:30:00 @ HR {lo}-{hi} bpm — "HR {lo}-{hi} bpm"']
+        assert ride['estimated_mins'] == 90
+
+        run = by_type['running']
+        assert run['steps'][0].startswith('1. Warm-up 3:00 @ pace')
+        assert run['steps'][1] == '2. 4 x'
+        assert run['steps'][2].startswith('   2.1. Interval 4:00 @ pace')
+        assert run['steps'][2].endswith('"Run 4 min"')
+        assert run['steps'][3].startswith('   2.2. Recovery 2:00 @ pace')
+        assert run['steps'][4].startswith('3. Cool-down 3:00')
+
+        gym = by_type['strength']
+        assert gym['steps'][:5] == [
+            '1. [Warm Up] 5:00', '2. Rest lap button',
+            '3. 3 x', '   3.1. GOBLET_SQUAT 10 reps @ 24 kg', '   3.2. Rest 1:00']
+        assert gym['warnings'] == []
+
+    def test_contract_errors_are_previewed_and_never_pushed(self, push_env):
+        """A session that breaks the contract on disk (e.g. written before the
+        contract existed) is listed as unrenderable; the rest still ships."""
+        data_env, client = push_env
+        planner.merge_plan_days({D2: {'planned': {
+            'type': 'strength', 'duration_mins': 30, 'purpose': 'legacy shape',
+            'exercises': [{'name': 'COPENHAGEN_PLANK', 'category': 'PLANK'}]}}})
+
+        preview = push_plan_to_garmin()
+
+        assert [u['date'] for u in preview['unrenderable']] == [D2]
+        problem = preview['unrenderable'][0]['errors'][0]
+        assert problem['field'] == 'exercises[0]' and 'sets is required' in problem['message']
+        assert 'NOT be pushed' in preview['next']
+        assert [s['date'] for s in preview['sessions']] == [D0, D1, D3]
+
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+
+        assert result['status'] == 'success'
+        assert [p['date'] for p in result['pushed']] == [D0, D1, D3]
+        assert len(client.uploaded) == 3
+        error = result['errors'][0]
+        assert error['date'] == D2 and error['error'].startswith('authoring_error')
+        assert 'NOT pushed' in result['summary']
 
     def test_token_is_single_use(self, push_env):
         _, client = push_env

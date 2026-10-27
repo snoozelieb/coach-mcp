@@ -49,7 +49,7 @@ imperative: "Run 40 minutes at Z2."
 athlete ignores it.
 
 Full doctrine — canonical flow, load hierarchy, capacity grounding, \
-multi-week programs (training_program), structured-run schema, injury \
+multi-week programs (training_program), session contract, injury \
 protocol, writing style — lives in the coach://coaching/doctrine resource \
 and the update_weekly_plan docstring. Read it before planning sessions.
 """

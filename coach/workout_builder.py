@@ -1,14 +1,40 @@
 """
-Workout Builder - Converts plan sessions to Garmin workout format.
+Workout Builder - renders plan sessions as Garmin workouts.
 
-Uses the garminconnect.workout module to create structured workouts
-that can be uploaded and scheduled to Garmin Connect.
+The renderer is deliberately thin: it draws exactly what the session says
+(the authoring contract in ``coach/authoring.py``) and never defaults a
+value the plan did not state. A session that does not satisfy the contract
+raises ``WorkoutAuthoringError`` carrying the teaching errors; nothing is
+silently degraded. ``build_workout_report`` wraps the same rendering with
+a human-readable step tree and the warnings, for the push preview and the
+``preview_workout`` tool.
+
+Uses the garminconnect.workout models for running and cycling and plain
+dicts for the sports garminconnect uploads generically.
 """
 
 from .config import DATA_DIR, ATHLETE_FILE, EXERCISE_LIBRARY_FILE
 from .web_utils import sanitize_text
 from .fitness import get_athlete_hr_zones
 from .taxonomy import types_in_family, workout_family_for
+from .authoring import (
+    INTENSITY_ZONES,
+    STEP_NOTE_MAX_CHARS,
+    WORKOUT_NAME_MAX_CHARS,
+    VALID_WORKOUT_CATEGORIES,
+    CATALOGUE_CATEGORY_TO_WORKOUT,
+    AuthoringReport,
+    Circuit,
+    Exercise,
+    CircuitExercise,
+    Phase,
+    RepeatBlock,
+    normalise_intensity,
+    resolve_exercise_category,
+    validate_exercises,
+    validate_session,
+    validate_structure,
+)
 from garminconnect.workout import (
     CyclingWorkout,
     RunningWorkout,
@@ -19,6 +45,11 @@ from garminconnect.workout import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    'WorkoutAuthoringError', 'build_workout', 'build_workout_report', 'describe_workout',
+    'VALID_WORKOUT_CATEGORIES', 'CATALOGUE_CATEGORY_TO_WORKOUT',
+]
 
 # Sport type definitions
 RUNNING_SPORT = {
@@ -77,6 +108,14 @@ STEP_RECOVERY = {"stepTypeId": 4, "stepTypeKey": "recovery", "displayOrder": 4}
 STEP_REST = {"stepTypeId": 5, "stepTypeKey": "rest", "displayOrder": 5}
 STEP_REPEAT = {"stepTypeId": 6, "stepTypeKey": "repeat", "displayOrder": 6}
 
+PHASE_STEP_TYPES = {
+    "warmup": STEP_WARMUP,
+    "cooldown": STEP_COOLDOWN,
+    "recovery": STEP_RECOVERY,
+    "rest": STEP_REST,
+    "interval": STEP_INTERVAL,
+}
+
 # End condition definitions (Garmin Connect workout-API ids: 1 lap.button,
 # 2 time, 3 distance, 7 iterations, 10 reps). Distance was once sent as 1 —
 # the lap-button id — the same bug garminconnect fixed upstream in 0.3.6.
@@ -84,8 +123,10 @@ END_TIME = {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2,
 END_DISTANCE = {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3, "displayable": True}
 END_REPS = {"conditionTypeId": 10, "conditionTypeKey": "reps", "displayOrder": 10, "displayable": True}
 END_LAP_BUTTON = {"conditionTypeId": 1, "conditionTypeKey": "lap.button", "displayOrder": 1, "displayable": True}
+END_ITERATIONS = {"conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": False}
 
-# Default rest duration for strength (seconds) - used for time estimation only
+# Rest duration used ONLY to estimate a strength session's length when the
+# plan states no rest_secs (the rest step itself is a lap button then).
 DEFAULT_REST_SECS = 45
 
 # Target type definitions
@@ -94,6 +135,8 @@ TARGET_POWER = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "power.zone", 
 TARGET_CADENCE = {"workoutTargetTypeId": 3, "workoutTargetTypeKey": "cadence.zone", "displayOrder": 3}
 TARGET_HR = {"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 4}
 TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
+
+WEIGHT_UNIT_KG = {"unitId": 8, "unitKey": "kilogram", "factor": 1000.0}
 
 # Session types that map to cycling — derived from the canonical taxonomy
 # (coach/taxonomy.py) so Garmin types like "mountain_biking" and
@@ -120,79 +163,28 @@ PILATES_TYPES = set(types_in_family("pilates"))
 # Session types that map to strength
 STRENGTH_TYPES = set(types_in_family("strength"))
 
-# Garmin workout API accepts all 35 FIT SDK strength categories (verified by upload test).
-# Using native categories preserves exerciseName + watch animations.
-VALID_WORKOUT_CATEGORIES = {
-    "BANDED_EXERCISES", "BATTLE_ROPE", "BENCH_PRESS", "CALF_RAISE", "CARDIO",
-    "CARRY", "CHOP", "CORE", "CRUNCH", "CURL", "DEADLIFT", "FLYE",
-    "HIP_RAISE", "HIP_STABILITY", "HIP_SWING", "HYPEREXTENSION",
-    "LATERAL_RAISE", "LEG_CURL", "LEG_RAISE", "LUNGE",
-    "OLYMPIC_LIFT", "PLANK", "PLYO", "PULL_UP", "PUSH_UP", "ROW",
-    "SHOULDER_PRESS", "SHOULDER_STABILITY", "SHRUG", "SIT_UP",
-    "SQUAT", "SUSPENSION", "TOTAL_BODY", "TRICEPS_EXTENSION", "WARM_UP",
-}
+# Session types that map to swimming
+SWIMMING_TYPES = set(types_in_family("swimming"))
 
-# Map categories NOT accepted by Garmin's workout API to valid ones.
-# Only 4 exercise DB categories are rejected + generic LLM muscle group names.
-GARMIN_CATEGORY_MAP = {
-    # --- Generic muscle group names (LLM-written plans) ---
-    "GLUTE": "SQUAT",
-    "HIP": "SQUAT",
-    "CALF": "CALF_RAISE",
-    "HAMSTRING": "LEG_CURL",
-    "CHEST": "BENCH_PRESS",
-    "BACK": "ROW",
-    "BICEPS": "CURL",
-    "TRICEPS": "TRICEPS_EXTENSION",
-    "SHOULDERS": "SHOULDER_PRESS",
-    "ABS": "CORE",
-    "LEGS": "SQUAT",
-    # --- 4 exercise DB categories rejected by workout API ---
-    "CUSTOM": "ROW",                    # Band pull apart (posterior chain)
-    "HAMSTRING_CURL": "LEG_CURL",       # Garmin uses LEG_CURL not HAMSTRING_CURL
-    "LAT_PULLDOWN": "PULL_UP",          # Lat pulldown variations
-    "SHOULDER_RAISE": "LATERAL_RAISE",  # Empty can, lateral raises
-    # --- Fallback ---
-    "OTHER": "CARDIO",
-    # --- Cardio equipment (not typically in strength workouts) ---
-    "BIKE_OUTDOOR": "CARDIO",
-    "INDOOR_BIKE": "CARDIO",
-    "ELLIPTICAL": "CARDIO",
-    "FLOOR_CLIMB": "CARDIO",
-    "RUN": "CARDIO",
-    "RUN_INDOOR": "CARDIO",
-    "STAIR_STEPPER": "CARDIO",
-    "SANDBAG": "DEADLIFT",
-    "SLED": "SQUAT",
-    "SLEDGE_HAMMER": "CORE",
-    "TIRE": "DEADLIFT",
-    "LADDER": "CARDIO",
-}
+# Session types that map to padel
+PADEL_TYPES = set(types_in_family("padel"))
 
-# Name-based overrides for exercises where Garmin's DB category is clearly wrong.
-# (e.g. Garmin places CRUNCH, PUSH_UP, SQUAT under SUSPENSION category in the DB)
-# These match on exercise name substring and force the correct category.
-NAME_OVERRIDE_PATTERNS = [
-    ("CRUNCH", "CRUNCH"),
-    ("PUSH_UP", "PUSH_UP"),
-    ("PUSHUP", "PUSH_UP"),
-    ("PLANK", "PLANK"),
-    ("SIT_UP", "SIT_UP"),
-    ("SITUP", "SIT_UP"),
-    ("LEG_EXTENSION", "LEG_CURL"),  # Leg extensions — quad isolation, closest is LEG_CURL bucket
-    ("LEG_RAISE", "LEG_RAISE"),
-    ("LEG_LIFT", "LEG_RAISE"),
-    ("DEAD_BUG", "HIP_STABILITY"),
-    ("BIRD_DOG", "HIP_STABILITY"),
-]
+# Session types to skip (not pushable to Garmin)
+SKIP_TYPES = set(types_in_family("rest"))
+
+# Test session types (special handling)
+TEST_TYPES = {"ftp_test", "threshold_test"}
 
 
-def _get_name_override(ex_name: str) -> str | None:
-    """Return the correct category for an exercise when Garmin's DB is wrong."""
-    for pattern, category in NAME_OVERRIDE_PATTERNS:
-        if pattern in ex_name:
-            return category
-    return None
+class WorkoutAuthoringError(ValueError):
+    """The session does not satisfy the authoring contract. ``problems`` is
+    the list of {'field', 'message'} teaching errors; ``warnings`` rides
+    along so a preview can show both."""
+
+    def __init__(self, problems: list[dict], warnings: list[dict] | None = None):
+        self.problems = list(problems)
+        self.warnings = list(warnings or [])
+        super().__init__('; '.join(f"{p['field']}: {p['message']}" for p in self.problems))
 
 
 def _smart_truncate(text: str, max_len: int) -> str:
@@ -208,29 +200,15 @@ def _smart_truncate(text: str, max_len: int) -> str:
     return text[:cutoff] + "…"
 
 
-# Session types that map to swimming
-SWIMMING_TYPES = set(types_in_family("swimming"))
+def _workout_name(session: dict, default: str) -> str:
+    """The plan's `name` wins, then `description`; cut to Garmin's 40."""
+    raw = session.get("name") or session.get("description") or default
+    return str(raw)[:WORKOUT_NAME_MAX_CHARS]
 
-# Session types that map to padel
-PADEL_TYPES = set(types_in_family("padel"))
 
-# Session types to skip (not pushable to Garmin)
-SKIP_TYPES = set(types_in_family("rest"))
-
-# Test session types (special handling)
-TEST_TYPES = {"ftp_test", "threshold_test"}
-
-# Intensity to HR zone mapping
-INTENSITY_ZONE_MAP = {
-    "easy": "z2_aerobic",
-    "recovery": "z1_recovery",
-    "tempo": "z3_tempo",
-    "threshold": "z4_threshold",
-    "hard": "z4_threshold",
-    "max_effort": "z5_max",
-    "intervals": "z4_threshold",
-}
-
+# ---------------------------------------------------------------------------
+# Zones and targets (ONE intensity vocabulary, in coach/authoring.py)
+# ---------------------------------------------------------------------------
 
 # Default HR zones if athlete profile not configured
 DEFAULT_HR_ZONES = {
@@ -239,29 +217,6 @@ DEFAULT_HR_ZONES = {
     "z3_tempo": [140, 155],
     "z4_threshold": [155, 170],
     "z5_max": [170, 184]
-}
-
-
-def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
-    """Get HR range (low, high) for a given intensity."""
-    hr_zones = get_athlete_hr_zones() or DEFAULT_HR_ZONES
-    zone_key = INTENSITY_ZONE_MAP.get(intensity.lower(), "z2_aerobic")
-    zone_range = hr_zones.get(zone_key)
-    if zone_range and len(zone_range) == 2:
-        return (zone_range[0], zone_range[1])
-    return None
-
-
-# Power zone mapping (intensity -> power zone key)
-INTENSITY_POWER_ZONE_MAP = {
-    "recovery": "z1_recovery",
-    "easy": "z2_endurance",
-    "tempo": "z3_tempo",
-    "threshold": "z4_threshold",
-    "hard": "z4_threshold",
-    "sweet_spot": "z3_tempo",  # Sweet spot is upper Z3 to lower Z4
-    "intervals": "z5_vo2max",
-    "max_effort": "z6_anaerobic",
 }
 
 
@@ -276,6 +231,19 @@ def _read_data_json(filename: str) -> dict:
     return storage.read_json(filename, data_dir=DATA_DIR) or {}
 
 
+def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
+    """HR range (low, high) for an intensity word; None when the word is not
+    in the vocabulary or the zone is not configured."""
+    word = normalise_intensity(intensity)
+    if word is None:
+        return None
+    hr_zones = get_athlete_hr_zones() or DEFAULT_HR_ZONES
+    zone_range = hr_zones.get(INTENSITY_ZONES[word][0])
+    if zone_range and len(zone_range) == 2:
+        return (zone_range[0], zone_range[1])
+    return None
+
+
 def get_athlete_power_zones() -> dict:
     """Load athlete power zones from athlete.json."""
     athlete_path = DATA_DIR / ATHLETE_FILE
@@ -284,33 +252,37 @@ def get_athlete_power_zones() -> dict:
         if not athlete:
             logger.warning("Athlete file not found at %s — power targets unavailable", athlete_path)
             return {}
-        return athlete.get("personal", {}).get("power_zones", {})
+        return athlete.get("personal", {}).get("power_zones", {}) or {}
     except Exception:
         logger.warning("Failed to load power zones from %s", athlete_path, exc_info=True)
         return {}
 
 
-def get_power_target_for_intensity(intensity: str) -> tuple[int, int] | None:
-    """
-    Get power range (low, high) in watts for a given intensity.
+def get_athlete_ftp() -> float | None:
+    """The athlete's FTP (personal.ftp) — the only source for power_pct."""
+    try:
+        ftp = (_read_data_json(ATHLETE_FILE).get("personal", {}) or {}).get("ftp")
+        return float(ftp) if ftp else None
+    except Exception:
+        logger.warning("Failed to load FTP from %s", DATA_DIR / ATHLETE_FILE, exc_info=True)
+        return None
 
-    Returns (low_watts, high_watts) or None if power zones not configured.
-    """
+
+def get_power_target_for_intensity(intensity: str) -> tuple[int, int] | None:
+    """Power range (low, high) in watts for an intensity word; None when the
+    word is unknown or power zones are not configured."""
+    word = normalise_intensity(intensity)
+    if word is None:
+        return None
     power_zones = get_athlete_power_zones()
     if not power_zones:
         return None
-
-    zone_key = INTENSITY_POWER_ZONE_MAP.get(intensity.lower(), "z2_endurance")
-    zone_range = power_zones.get(zone_key)
-
+    zone_range = power_zones.get(INTENSITY_ZONES[word][1])
     if zone_range and len(zone_range) == 2:
-        low_watts = zone_range[0]
-        high_watts = zone_range[1]
-        # Handle None in z7 upper bound
+        low_watts, high_watts = zone_range
         if high_watts is None:
-            high_watts = low_watts + 100  # Cap at +100W above lower bound
+            high_watts = low_watts + 100  # open-ended top zone: cap at +100 W
         return (low_watts, high_watts)
-
     return None
 
 
@@ -368,18 +340,6 @@ def is_simple_outdoor_ride(session: dict) -> bool:
     return True
 
 
-# Running pace zone mapping (intensity -> pace zone key)
-RUNNING_INTENSITY_PACE_MAP = {
-    "recovery": "z1_recovery",
-    "easy": "z2_easy",
-    "tempo": "z3_tempo",
-    "threshold": "z4_threshold",
-    "hard": "z4_threshold",
-    "intervals": "z5_interval",
-    "max_effort": "z5_interval",
-}
-
-
 def get_athlete_running_zones() -> dict:
     """
     Load athlete running zones from athlete.json.
@@ -431,65 +391,79 @@ def get_athlete_running_zones() -> dict:
         return {}
 
 
-def get_pace_target_for_intensity(intensity: str) -> tuple[float, float] | None:
-    """
-    Get pace range (slow, fast) in m/s for a given intensity.
+def _pace_pair_to_mps(slow_sec_per_km: float, fast_sec_per_km: float) -> tuple[float, float]:
+    """(slow_mps, fast_mps) — Garmin takes speeds, low first."""
+    if slow_sec_per_km < fast_sec_per_km:
+        slow_sec_per_km, fast_sec_per_km = fast_sec_per_km, slow_sec_per_km
+    return (1000.0 / slow_sec_per_km, 1000.0 / fast_sec_per_km)
 
-    Garmin expects pace targets in meters per second.
-    Returns (low_speed_mps, high_speed_mps) - note: low speed = slow pace, high speed = fast pace
-    """
+
+def get_pace_target_for_intensity(intensity: str) -> tuple[float, float] | None:
+    """Pace range (slow_mps, fast_mps) for an intensity word; None when the
+    word is unknown or no threshold pace / pace zones are configured."""
+    word = normalise_intensity(intensity)
+    if word is None:
+        return None
     pace_zones = get_athlete_running_zones()
     if not pace_zones:
         return None
-
-    zone_key = RUNNING_INTENSITY_PACE_MAP.get(intensity.lower(), "z2_easy")
-    zone_range = pace_zones.get(zone_key)
-
+    zone_range = pace_zones.get(INTENSITY_ZONES[word][2])
     if zone_range and len(zone_range) == 2:
-        # Convert sec/km to m/s: 1000m / sec_per_km = m/s
-        slow_pace_sec_per_km = zone_range[0]  # Higher number = slower
-        fast_pace_sec_per_km = zone_range[1]  # Lower number = faster (for z5, it's reversed)
-
-        # Handle z5 where fast is first in the array
-        if slow_pace_sec_per_km < fast_pace_sec_per_km:
-            slow_pace_sec_per_km, fast_pace_sec_per_km = fast_pace_sec_per_km, slow_pace_sec_per_km
-
-        slow_speed_mps = 1000.0 / slow_pace_sec_per_km
-        fast_speed_mps = 1000.0 / fast_pace_sec_per_km
-
-        return (slow_speed_mps, fast_speed_mps)
-
+        return _pace_pair_to_mps(float(zone_range[0]), float(zone_range[1]))
     return None
 
 
-def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout | dict | None:
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+def _has_structure(session: dict) -> bool:
+    return bool(session.get("structure")) or bool(session.get("exercises"))
+
+
+def build_workout(session: dict, date: str, report: AuthoringReport | None = None
+                  ) -> CyclingWorkout | RunningWorkout | dict | None:
     """
     Convert a plan session to a Garmin workout.
 
     Args:
-        session: Plan session dict with type, duration_mins, description, etc.
+        session: Plan session dict (type, duration_mins, description, structure/exercises ...)
         date: Date string for naming (YYYY-MM-DD)
+        report: an AuthoringReport from validate_session (built here when omitted);
+            rendering warnings are appended to it.
 
     Returns:
-        CyclingWorkout, RunningWorkout, dict (for yoga/strength), or None if not convertible
+        CyclingWorkout, RunningWorkout, dict (yoga/strength/...), or None when
+        there is nothing to push (rest day, unknown type, zero-length plain
+        session).
+
+    Raises:
+        WorkoutAuthoringError: the session violates the authoring contract.
     """
     session_type = session.get("type", "").lower()
     duration_mins = session.get("duration_mins", 0)
 
-    # Skip rest days
-    if session_type in SKIP_TYPES or duration_mins == 0:
+    # Skip rest days, and plain sessions with nothing to draw
+    if session_type in SKIP_TYPES:
+        return None
+    if not duration_mins and not _has_structure(session):
         return None
 
     # Determine sport via taxonomy workout family (substring fallbacks keep
     # free-form plan types like "morning_run" working)
     family = workout_family_for(session_type)
 
+    if report is None:
+        report = validate_session(session, load_exercise_db())
+    if report.errors:
+        raise WorkoutAuthoringError(report.errors, report.warnings)
+
     if session_type in TEST_TYPES or "ftp_test" in session_type:
         return build_ftp_test_workout(session, date)
     elif family == "cycling" or "ride" in session_type or "cycling" in session_type:
-        return build_cycling_workout(session, date)
+        return build_cycling_workout(session, date, report)
     elif family == "running" or "run" in session_type:
-        return build_running_workout(session, date)
+        return build_running_workout(session, date, report)
     elif family == "swimming":
         return build_swimming_workout(session, date)
     elif family == "yoga":
@@ -497,12 +471,53 @@ def build_workout(session: dict, date: str) -> CyclingWorkout | RunningWorkout |
     elif family == "pilates":
         return build_pilates_workout(session, date)
     elif family == "strength":
-        return build_strength_workout(session, date)
+        return build_strength_workout(session, date, report)
     elif family == "padel":
         return build_padel_workout(session, date)
 
     return None
 
+
+def build_workout_report(session: dict, date: str) -> dict:
+    """Render a session and describe the result: what the watch will show.
+
+    Returns {'ok', 'errors', 'warnings', 'workout', 'workout_type', 'name',
+    'sport', 'estimated_mins', 'steps'}. Never raises for a contract
+    violation: `errors` carries the teaching messages and `workout` is None.
+    """
+    workout_type = get_workout_type_name(session)
+    result = {'ok': False, 'errors': [], 'warnings': [], 'workout': None,
+              'workout_type': workout_type, 'name': None, 'sport': None,
+              'estimated_mins': None, 'steps': []}
+    if workout_type == 'skipped':
+        result['ok'] = True
+        result['warnings'].append({'field': 'type', 'message': 'rest day — nothing is pushed'})
+        return result
+    if workout_type == 'unknown':
+        result['errors'].append({'field': 'type', 'message':
+                                 f"{session.get('type')!r} has no Garmin workout family; nothing can be pushed"})
+        return result
+    report = validate_session(session, load_exercise_db())
+    try:
+        workout = build_workout(session, date, report)
+    except WorkoutAuthoringError as exc:
+        result['errors'] = exc.problems
+        result['warnings'] = exc.warnings
+        return result
+    result['warnings'] = report.warnings
+    if workout is None:
+        result['errors'].append({'field': 'duration_mins', 'message':
+                                 'nothing to render: no duration_mins, structure or exercises'})
+        return result
+    result['ok'] = True
+    result['workout'] = workout
+    result.update(describe_workout(workout))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# FTP test (protocol-driven, unchanged contract: `protocol` phases)
+# ---------------------------------------------------------------------------
 
 def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
     """
@@ -521,7 +536,7 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
     Cadence targets are used because they're independent of power output,
     making the workout accessible to beginners who don't have FTP yet.
     """
-    description = session.get("description", "FTP Test")
+    description = session.get("name") or session.get("description", "FTP Test")
     protocol = session.get("protocol", [])
 
     # FTP tests are always indoor - add tag to name (skip if already tagged)
@@ -606,7 +621,7 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
 
         # Add description/notes for the phase
         if notes:
-            step.description = notes[:50]  # Garmin has character limits
+            step.description = _smart_truncate(notes, STEP_NOTE_MAX_CHARS)
 
         steps.append(step)
         step_order += 1
@@ -625,21 +640,194 @@ def build_ftp_test_workout(session: dict, date: str) -> CyclingWorkout:
     )
 
 
-def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
+# ---------------------------------------------------------------------------
+# Shared phase renderer (running + cycling `structure`)
+# ---------------------------------------------------------------------------
+
+class _PhaseRenderer:
+    """Turns validated Phase / RepeatBlock items into Garmin steps.
+
+    sport: 'running' | 'cycling'; indoor decides how an intensity word
+    resolves on a ride (power zones indoors, HR outdoors).
+    """
+
+    def __init__(self, sport: str, indoor: bool, session_intensity: str | None,
+                 session: dict, report: AuthoringReport):
+        self.sport = sport
+        self.indoor = indoor
+        self.session_intensity = session_intensity
+        self.session = session
+        self.report = report
+        self._order = 0
+        self._ftp = None
+        self._ftp_loaded = False
+
+    def _next_order(self) -> int:
+        self._order += 1
+        return self._order
+
+    def _ftp_value(self) -> float | None:
+        if not self._ftp_loaded:
+            self._ftp_loaded = True
+            raw = self.session.get("ftp") or (self.session.get("power_targets") or {}).get("ftp")
+            self._ftp = float(raw) if raw else get_athlete_ftp()
+        return self._ftp
+
+    def _intensity_target(self, word: str, path: str):
+        if self.sport == "running":
+            pace = get_pace_target_for_intensity(word)
+            if pace:
+                return TARGET_PACE, float(pace[0]), float(pace[1])
+            hr = get_hr_target_for_intensity(word)
+            if hr:
+                return TARGET_HR, float(hr[0]), float(hr[1])
+        else:
+            if self.indoor:
+                power = get_power_target_for_intensity(word)
+                if power:
+                    return TARGET_POWER, float(power[0]), float(power[1])
+            hr = get_hr_target_for_intensity(word)
+            if hr:
+                return TARGET_HR, float(hr[0]), float(hr[1])
+        self.report.warn(path, f"intensity '{word}' has no configured zone on this profile; the step is untargeted")
+        return TARGET_NONE, None, None
+
+    def resolve_target(self, phase: Phase, path: str):
+        key = phase.target_key()
+        if key is None:
+            if self.session_intensity:
+                return self._intensity_target(self.session_intensity, path)
+            return TARGET_NONE, None, None
+        if key == "intensity":
+            return self._intensity_target(phase.intensity, path)
+        if key == "hr_target":
+            lo, hi = sorted(phase.hr_target)
+            return TARGET_HR, float(lo), float(hi)
+        if key == "cadence":
+            lo, hi = sorted(phase.cadence)
+            return TARGET_CADENCE, float(lo), float(hi)
+        if key == "power_watts":
+            lo, hi = sorted(phase.power_watts)
+            return TARGET_POWER, float(lo), float(hi)
+        if key == "power_pct":
+            ftp = self._ftp_value()
+            if not ftp:
+                self.report.error(path, "power_pct needs the athlete's FTP (set_ftp) or the session's 'ftp'; "
+                                        "give power_watts instead")
+                return TARGET_NONE, None, None
+            pct = phase.power_pct
+            if isinstance(pct, list):
+                lo_pct, hi_pct = sorted(pct)
+            else:
+                lo_pct, hi_pct = float(pct) - 5, float(pct) + 5
+            return TARGET_POWER, float(int(ftp * lo_pct / 100)), float(int(ftp * hi_pct / 100))
+        if key == "pace_sec_per_km":
+            slow, fast = _pace_pair_to_mps(float(phase.pace_sec_per_km[0]), float(phase.pace_sec_per_km[1]))
+            return TARGET_PACE, slow, fast
+        if key == "pace":
+            lo, hi = sorted(float(v) for v in phase.pace)
+            return TARGET_PACE, lo, hi
+        return TARGET_NONE, None, None
+
+    def build_step(self, phase: Phase, path: str, inside_repeat: bool) -> tuple[ExecutableStep, int]:
+        kind, value = phase.end_condition()
+        target_type, lo, hi = self.resolve_target(phase, path)
+        step = ExecutableStep(
+            stepOrder=self._next_order(),
+            stepType=PHASE_STEP_TYPES[phase.phase],
+            endCondition={"open": END_LAP_BUTTON, "time": END_TIME, "distance": END_DISTANCE}[kind],
+            targetType=target_type,
+        )
+        est_secs = 0
+        if kind == "time":
+            step.endConditionValue = float(value)
+            est_secs = int(round(value))
+        elif kind == "distance":
+            step.endConditionValue = float(value)
+        if lo is not None and hi is not None:
+            step.targetValueOne = lo
+            step.targetValueTwo = hi
+        if inside_repeat:
+            step.childStepId = 1
+        if phase.notes:
+            step.description = _smart_truncate(str(phase.notes), STEP_NOTE_MAX_CHARS)
+        return step, est_secs
+
+    def build_repeat(self, block: RepeatBlock, path: str, inside_repeat: bool) -> tuple[RepeatGroup, int]:
+        group_order = self._next_order()
+        children, per_iter_secs = [], 0
+        for i, sub in enumerate(block.steps):
+            sub_path = f"{path}.steps[{i}]"
+            if isinstance(sub, RepeatBlock):
+                child, secs = self.build_repeat(sub, sub_path, inside_repeat=True)
+            else:
+                child, secs = self.build_step(sub, sub_path, inside_repeat=True)
+            children.append(child)
+            per_iter_secs += secs
+        group = RepeatGroup(
+            stepOrder=group_order,
+            stepType=STEP_REPEAT,
+            numberOfIterations=block.iterations,
+            workoutSteps=children,
+            endCondition=dict(END_ITERATIONS),
+            endConditionValue=float(block.iterations),
+        )
+        if inside_repeat:
+            group.childStepId = 1
+        return group, block.iterations * per_iter_secs
+
+    def render(self, items: list) -> tuple[list, int]:
+        steps, total = [], 0
+        for i, item in enumerate(items):
+            path = f"structure[{i}]"
+            if isinstance(item, RepeatBlock):
+                step, secs = self.build_repeat(item, path, inside_repeat=False)
+            else:
+                step, secs = self.build_step(item, path, inside_repeat=False)
+            steps.append(step)
+            total += secs
+        return steps, total
+
+
+def _ensure_report(session: dict, report: AuthoringReport | None) -> AuthoringReport:
+    if report is None:
+        report = validate_session(session, load_exercise_db())
+    if report.errors:
+        raise WorkoutAuthoringError(report.errors, report.warnings)
+    return report
+
+
+def _structure_items(session: dict, report: AuthoringReport, structure=None) -> list:
+    """Validated structure items: from the report when it saw them, else parsed now."""
+    if report.structure is not None:
+        return report.structure
+    items, problems = validate_structure(structure if structure is not None else session.get("structure", []))
+    if problems:
+        raise WorkoutAuthoringError(problems, report.warnings)
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Cycling
+# ---------------------------------------------------------------------------
+
+def build_cycling_workout(session: dict, date: str, report: AuthoringReport | None = None) -> CyclingWorkout:
     """
     Build a cycling workout from a plan session.
 
     Target selection:
-    - Indoor cycling (Wattbike/trainer): Use POWER targets
-    - Outdoor cycling: Use HR targets
+    - Indoor cycling (Wattbike/trainer): POWER targets (HR when no power zones)
+    - Outdoor cycling: HR targets
 
-    Warmup handling:
-    - Long outdoor rides (90+ min easy): Skip warmup/cooldown (messes with laps)
-    - Other rides: Include warmup and cooldown
+    A session with `structure` renders exactly those phases (repeats,
+    seconds, fractional minutes, lap-button steps). Without structure: a
+    plain outdoor ride is ONE block for the whole duration; an indoor ride
+    gets a warm-up (10 % up to 10 min), the main block and a cool-down
+    (5 % up to 5 min).
     """
-    duration_mins = session.get("duration_mins", 60)
-    description = session.get("description", "Cycling workout")
-    intensity = session.get("intensity", "easy")
+    duration_mins = session.get("duration_mins") or 0
+    description = session.get("name") or session.get("description", "Cycling workout")
+    intensity = session.get("intensity", "")
 
     # Calculate total duration
     total_secs = duration_mins * 60
@@ -662,7 +850,7 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
     # If structured session (indoor or outdoor), build from structure
     if structure:
-        return build_structured_cycling_workout(session, workout_name, total_secs, structure, indoor)
+        return build_structured_cycling_workout(session, workout_name, total_secs, structure, indoor, report)
 
     # Determine if we should skip warmup (simple outdoor rides without structure)
     skip_warmup = is_simple_outdoor_ride(session)
@@ -753,7 +941,7 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
 
     return CyclingWorkout(
         workoutName=workout_name,
-        description=session.get("notes", session.get("purpose", ""))[:255],
+        description=str(session.get("notes") or session.get("purpose") or "")[:255],
         estimatedDurationInSecs=int(total_secs),
         workoutSegments=[
             WorkoutSegment(
@@ -765,150 +953,31 @@ def build_cycling_workout(session: dict, date: str) -> CyclingWorkout:
     )
 
 
-def build_structured_cycling_workout(session: dict, workout_name: str, total_secs: int, structure: list, indoor: bool = True) -> CyclingWorkout:
+def build_structured_cycling_workout(session: dict, workout_name: str, total_secs: int, structure: list,
+                                     indoor: bool = True, report: AuthoringReport | None = None) -> CyclingWorkout:
     """
-    Build a structured cycling workout with multiple phases.
+    Build a structured cycling workout from `structure` phases.
 
-    Supports both indoor (power/cadence targets) and outdoor (HR targets) rides.
-
-    Structure format:
-    [
-        {"phase": "warmup", "duration_mins": 10, "power_watts": [93, 111], "cadence": [85, 95], "notes": "..."},
-        {"phase": "warmup", "duration_mins": "open", "hr_target": [116, 145], "notes": "Press LAP to start"},
-        {"phase": "interval", "duration_mins": 12, "hr_target": [146, 160], "notes": "Tempo rep 1"},
-        ...
-    ]
-
-    Target priority (indoor): power_watts > power_pct > cadence
-    Target priority (outdoor): hr_target > intensity-based HR lookup
-    Duration: integer minutes for timed steps, "open" for lap-button steps
+    Shares the phase contract with running (coach/authoring.py): phases with
+    one end condition (duration_secs / duration_mins / distance_m, or
+    "open") and at most one target (power_watts, power_pct, hr_target,
+    cadence, intensity), plus repeat blocks that nest. A phase with no
+    target inherits the session intensity. Indoor rides resolve an
+    intensity word to the power zone, outdoor rides to the HR zone.
     """
-    # Get FTP from session or athlete profile
-    ftp = session.get("ftp") or session.get("power_targets", {}).get("ftp")
-    if not ftp:
-        power_zones = get_athlete_power_zones()
-        # Estimate FTP from z4 threshold zone if available
-        z4 = power_zones.get("z4_threshold", [])
-        if z4 and len(z4) == 2:
-            ftp = z4[1]  # Upper bound of threshold is roughly FTP
-
-    steps = []
-    step_order = 1
-    calculated_total_secs = 0
-
-    for phase in structure:
-        phase_name = phase.get("phase", "interval").lower()
-        raw_duration = phase.get("duration_mins", 5)
-        notes = phase.get("notes", "")
-
-        # Handle open steps (lap button to advance) vs timed steps
-        is_open = str(raw_duration).lower() == "open"
-        if is_open:
-            duration_secs = 0  # No fixed duration
-            end_condition = END_LAP_BUTTON
-            # Don't add to calculated total — open steps have no fixed time
-        else:
-            duration_secs = int(float(raw_duration)) * 60
-            calculated_total_secs += duration_secs
-            end_condition = END_TIME
-
-        # Get targets from phase
-        power_watts = phase.get("power_watts")  # [low, high] direct watts
-        power_pct = phase.get("power_pct")       # percentage of FTP
-        cadence = phase.get("cadence")           # [low, high] RPM
-        hr_target = phase.get("hr_target")       # [low, high] bpm
-
-        # Calculate power target if using percentage
-        if power_pct and ftp and not power_watts:
-            pct = power_pct / 100.0
-            low_watts = int(ftp * (pct - 0.05))
-            high_watts = int(ftp * (pct + 0.05))
-            power_watts = [low_watts, high_watts]
-
-        # Map phase name to step type
-        if phase_name == "warmup":
-            step_type = STEP_WARMUP
-        elif phase_name == "cooldown":
-            step_type = STEP_COOLDOWN
-        elif phase_name == "recovery":
-            step_type = STEP_RECOVERY
-        else:
-            step_type = STEP_INTERVAL
-
-        # Determine target type and values
-        # Outdoor rides: prioritize hr_target
-        # Indoor rides: prioritize power > cadence
-        is_cadence_focused = any(x in phase_name for x in ['cadence', 'single_leg', 'spin'])
-
-        if not indoor and hr_target and len(hr_target) == 2:
-            # Outdoor: prefer HR target from structure
-            target_type = TARGET_HR
-            target_low = hr_target[0]
-            target_high = hr_target[1]
-        elif is_cadence_focused and cadence and len(cadence) == 2:
-            target_type = TARGET_CADENCE
-            target_low = cadence[0]
-            target_high = cadence[1]
-        elif power_watts and len(power_watts) == 2:
-            # Power target works for both indoor and outdoor (outdoor power meters common)
-            target_type = TARGET_POWER
-            target_low = power_watts[0]
-            target_high = power_watts[1]
-        elif cadence and len(cadence) == 2:
-            target_type = TARGET_CADENCE
-            target_low = cadence[0]
-            target_high = cadence[1]
-        elif hr_target and len(hr_target) == 2:
-            # Fallback: HR target even for indoor if nothing else specified
-            target_type = TARGET_HR
-            target_low = hr_target[0]
-            target_high = hr_target[1]
-        elif not indoor:
-            # Outdoor structured ride with no explicit targets — fall back to intensity-based HR
-            phase_intensity = phase.get("intensity", session.get("intensity", "easy"))
-            hr_fallback = get_hr_target_for_intensity(phase_intensity)
-            if hr_fallback:
-                target_type = TARGET_HR
-                target_low = hr_fallback[0]
-                target_high = hr_fallback[1]
-            else:
-                target_type = TARGET_NONE
-                target_low = None
-                target_high = None
-        else:
-            target_type = TARGET_NONE
-            target_low = None
-            target_high = None
-
-        # Create the step
-        step = ExecutableStep(
-            stepOrder=step_order,
-            stepType=step_type,
-            endCondition=end_condition,
-            targetType=target_type
-        )
-
-        # Only set endConditionValue for timed steps (not open/lap button)
-        if not is_open:
-            step.endConditionValue = duration_secs
-
-        if target_low is not None and target_high is not None:
-            step.targetValueOne = target_low
-            step.targetValueTwo = target_high
-
-        # Add notes as description
-        if notes:
-            step.description = notes[:50]  # Garmin character limit
-
-        steps.append(step)
-        step_order += 1
+    report = _ensure_report(session, report)
+    items = _structure_items(session, report, structure)
+    renderer = _PhaseRenderer("cycling", indoor, report.session_intensity, session, report)
+    steps, calculated_total_secs = renderer.render(items)
+    if report.errors:
+        raise WorkoutAuthoringError(report.errors, report.warnings)
 
     # Use calculated total if structure defines it, otherwise use passed total
     final_total_secs = calculated_total_secs if calculated_total_secs > 0 else total_secs
 
     return CyclingWorkout(
         workoutName=workout_name,
-        description=session.get("notes", session.get("purpose", ""))[:255],
+        description=str(session.get("notes") or session.get("purpose") or "")[:255],
         estimatedDurationInSecs=int(final_total_secs),
         workoutSegments=[
             WorkoutSegment(
@@ -920,28 +989,27 @@ def build_structured_cycling_workout(session: dict, workout_name: str, total_sec
     )
 
 
-def build_running_workout(session: dict, date: str) -> RunningWorkout:
+# ---------------------------------------------------------------------------
+# Running
+# ---------------------------------------------------------------------------
+
+def build_running_workout(session: dict, date: str, report: AuthoringReport | None = None) -> RunningWorkout:
     """
     Build a running workout from a plan session.
 
     Uses pace targets if threshold_pace is set in athlete profile,
     otherwise falls back to HR zone targets.
 
-    Sports science approach:
-    - Pace is more precise for running than HR (less lag, weather-independent)
-    - Zones derived from threshold pace using Jack Daniels methodology
-    - HR used as secondary metric when pace not available
-
     If session contains a 'structure' field, delegates to the structured
     builder for full interval/repeat support. Otherwise produces the
-    simple 3-step (warmup, main, cooldown) shape.
+    simple 3-step (warmup, main, cooldown) shape from duration_mins and
+    intensity: warm-up and cool-down 10 % each (up to 5 min).
     """
     if session.get("structure"):
-        return build_structured_running_workout(session, date)
+        return build_structured_running_workout(session, date, report)
 
-    duration_mins = session.get("duration_mins", 45)
-    description = session.get("description", "Running workout")
-    intensity = session.get("intensity", "easy")
+    duration_mins = session.get("duration_mins") or 0
+    intensity = session.get("intensity", "")
 
     # Calculate segment durations (in seconds)
     total_secs = duration_mins * 60
@@ -949,8 +1017,7 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     cooldown_secs = min(300, total_secs * 0.1)  # 5 min or 10% max
     main_secs = total_secs - warmup_secs - cooldown_secs
 
-    # Create workout name from description
-    workout_name = description[:40]
+    workout_name = _workout_name(session, "Running workout")
 
     # Try pace targets first (preferred for running), fall back to HR
     main_pace = get_pace_target_for_intensity(intensity)
@@ -961,76 +1028,25 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     # Determine which target type to use
     use_pace = main_pace is not None
 
-    # Build warmup step
-    if use_pace and warmup_pace:
-        warmup_step = ExecutableStep(
-            stepOrder=1,
-            stepType=STEP_WARMUP,
-            endCondition=END_TIME,
-            endConditionValue=warmup_secs,
-            targetType=TARGET_PACE
-        )
-        warmup_step.targetValueOne = warmup_pace[0]  # slow speed m/s
-        warmup_step.targetValueTwo = warmup_pace[1]  # fast speed m/s
-    else:
-        warmup_step = ExecutableStep(
-            stepOrder=1,
-            stepType=STEP_WARMUP,
-            endCondition=END_TIME,
-            endConditionValue=warmup_secs,
-            targetType=TARGET_HR if warmup_hr else TARGET_NONE
-        )
-        if warmup_hr:
-            warmup_step.targetValueOne = warmup_hr[0]
-            warmup_step.targetValueTwo = warmup_hr[1]
+    def _step(order: int, step_type: dict, secs: float, pace, hr) -> ExecutableStep:
+        if use_pace and pace:
+            step = ExecutableStep(stepOrder=order, stepType=step_type, endCondition=END_TIME,
+                                  endConditionValue=secs, targetType=TARGET_PACE)
+            step.targetValueOne = pace[0]  # slow speed m/s
+            step.targetValueTwo = pace[1]  # fast speed m/s
+            return step
+        step = ExecutableStep(stepOrder=order, stepType=step_type, endCondition=END_TIME,
+                              endConditionValue=secs, targetType=TARGET_HR if hr else TARGET_NONE)
+        if hr:
+            step.targetValueOne = hr[0]
+            step.targetValueTwo = hr[1]
+        return step
 
-    # Build main interval step
-    if use_pace:
-        main_step = ExecutableStep(
-            stepOrder=2,
-            stepType=STEP_INTERVAL,
-            endCondition=END_TIME,
-            endConditionValue=main_secs,
-            targetType=TARGET_PACE
-        )
-        main_step.targetValueOne = main_pace[0]  # slow speed m/s
-        main_step.targetValueTwo = main_pace[1]  # fast speed m/s
-    else:
-        main_step = ExecutableStep(
-            stepOrder=2,
-            stepType=STEP_INTERVAL,
-            endCondition=END_TIME,
-            endConditionValue=main_secs,
-            targetType=TARGET_HR if hr_target else TARGET_NONE
-        )
-        if hr_target:
-            main_step.targetValueOne = hr_target[0]
-            main_step.targetValueTwo = hr_target[1]
-
-    # Build cooldown step
-    if use_pace and warmup_pace:
-        cooldown_step = ExecutableStep(
-            stepOrder=3,
-            stepType=STEP_COOLDOWN,
-            endCondition=END_TIME,
-            endConditionValue=cooldown_secs,
-            targetType=TARGET_PACE
-        )
-        cooldown_step.targetValueOne = warmup_pace[0]
-        cooldown_step.targetValueTwo = warmup_pace[1]
-    else:
-        cooldown_step = ExecutableStep(
-            stepOrder=3,
-            stepType=STEP_COOLDOWN,
-            endCondition=END_TIME,
-            endConditionValue=cooldown_secs,
-            targetType=TARGET_HR if warmup_hr else TARGET_NONE
-        )
-        if warmup_hr:
-            cooldown_step.targetValueOne = warmup_hr[0]
-            cooldown_step.targetValueTwo = warmup_hr[1]
-
-    steps = [warmup_step, main_step, cooldown_step]
+    steps = [
+        _step(1, STEP_WARMUP, warmup_secs, warmup_pace, warmup_hr),
+        _step(2, STEP_INTERVAL, main_secs, main_pace, hr_target),
+        _step(3, STEP_COOLDOWN, cooldown_secs, warmup_pace, warmup_hr),
+    ]
 
     return RunningWorkout(
         workoutName=workout_name,
@@ -1045,149 +1061,30 @@ def build_running_workout(session: dict, date: str) -> RunningWorkout:
     )
 
 
-def build_structured_running_workout(session: dict, date: str) -> RunningWorkout:
+def build_structured_running_workout(session: dict, date: str, report: AuthoringReport | None = None) -> RunningWorkout:
     """Build a structured running workout from session['structure'].
 
-    Phase schema (see update_weekly_plan docstring for the full spec):
-      phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest' | 'repeat'
-      End condition (one of, priority order): distance_m, duration_secs,
-        duration_mins, or "open" => lap-button
-      Target (one of, priority order): pace [slow_mps, fast_mps],
-        hr_target [low, high], cadence [low, high], or intensity (resolves
-        to pace zone, falls back to HR zone)
-      notes: free-form, truncated to 50 chars on the step description
-      Repeat phase: iterations: N, steps: [list of nested phases, may
-        contain further repeats]
+    Phase contract (coach/authoring.py, shared with cycling):
+      phase: 'warmup' | 'interval' | 'recovery' | 'cooldown' | 'rest', or a
+        repeat block {'phase': 'repeat', 'iterations': N, 'steps': [...]}
+      End condition (exactly one): distance_m, duration_secs, duration_mins;
+        "open" => lap-button
+      Target (at most one): pace_sec_per_km [slow, fast], pace [slow_mps,
+        fast_mps], hr_target [low, high], cadence [low, high], intensity
+        (pace zone when threshold pace is set, else HR zone). A phase
+        without a target inherits the session intensity.
+      notes: the cue on the step (about 50 characters shown)
     """
-    description = session.get("description", "Running workout")
-    workout_name = description[:40]
-    structure = session.get("structure", [])
-
-    step_order_state = [1]
-
-    def next_order() -> int:
-        n = step_order_state[0]
-        step_order_state[0] += 1
-        return n
-
-    def resolve_target(phase: dict):
-        pace = phase.get("pace")
-        hr_target = phase.get("hr_target")
-        cadence = phase.get("cadence")
-        intensity = phase.get("intensity")
-
-        if pace and len(pace) == 2:
-            return TARGET_PACE, float(pace[0]), float(pace[1])
-        if hr_target and len(hr_target) == 2:
-            return TARGET_HR, float(hr_target[0]), float(hr_target[1])
-        if cadence and len(cadence) == 2:
-            return TARGET_CADENCE, float(cadence[0]), float(cadence[1])
-        if intensity:
-            pace_bounds = get_pace_target_for_intensity(intensity)
-            if pace_bounds:
-                return TARGET_PACE, float(pace_bounds[0]), float(pace_bounds[1])
-            hr_bounds = get_hr_target_for_intensity(intensity)
-            if hr_bounds:
-                return TARGET_HR, float(hr_bounds[0]), float(hr_bounds[1])
-        return TARGET_NONE, None, None
-
-    def resolve_end(phase: dict):
-        """Return (end_condition_dict, end_value_or_None, est_secs)."""
-        distance_m = phase.get("distance_m")
-        if distance_m is not None:
-            if str(distance_m).lower() == "open":
-                return END_LAP_BUTTON, None, 0
-            return END_DISTANCE, float(distance_m), 0
-
-        for key in ("duration_secs", "duration_mins"):
-            val = phase.get(key)
-            if val is None:
-                continue
-            if str(val).lower() == "open":
-                return END_LAP_BUTTON, None, 0
-            secs = float(val) * (60 if key == "duration_mins" else 1)
-            return END_TIME, secs, int(secs)
-
-        return END_LAP_BUTTON, None, 0
-
-    def step_type_for(phase_name: str) -> dict:
-        n = (phase_name or "").lower()
-        if n == "warmup":
-            return STEP_WARMUP
-        if n == "cooldown":
-            return STEP_COOLDOWN
-        if n in ("recovery", "walk", "jog"):
-            return STEP_RECOVERY
-        if n == "rest":
-            return STEP_REST
-        return STEP_INTERVAL
-
-    def build_step(phase: dict, inside_repeat: bool):
-        end_cond, end_val, est_secs = resolve_end(phase)
-        target_type, t_low, t_high = resolve_target(phase)
-
-        step = ExecutableStep(
-            stepOrder=next_order(),
-            stepType=step_type_for(phase.get("phase", "interval")),
-            endCondition=end_cond,
-            targetType=target_type,
-        )
-        if end_val is not None:
-            step.endConditionValue = end_val
-        if t_low is not None and t_high is not None:
-            step.targetValueOne = t_low
-            step.targetValueTwo = t_high
-        if inside_repeat:
-            step.childStepId = 1
-        notes = phase.get("notes")
-        if notes:
-            step.description = str(notes)[:50]
-        return step, est_secs
-
-    def build_repeat(phase: dict, inside_repeat: bool):
-        iterations = int(phase.get("iterations", 1))
-        sub_phases = phase.get("steps", [])
-        group_order = next_order()
-
-        child_steps = []
-        per_iter_secs = 0
-        for sub in sub_phases:
-            if (sub.get("phase") or "").lower() == "repeat":
-                sub_step, sub_secs = build_repeat(sub, inside_repeat=True)
-            else:
-                sub_step, sub_secs = build_step(sub, inside_repeat=True)
-            child_steps.append(sub_step)
-            per_iter_secs += sub_secs
-
-        repeat_group = RepeatGroup(
-            stepOrder=group_order,
-            stepType=STEP_REPEAT,
-            numberOfIterations=iterations,
-            workoutSteps=child_steps,
-            endCondition={
-                "conditionTypeId": 7,
-                "conditionTypeKey": "iterations",
-                "displayOrder": 7,
-                "displayable": False,
-            },
-            endConditionValue=float(iterations),
-        )
-        if inside_repeat:
-            repeat_group.childStepId = 1
-        return repeat_group, iterations * per_iter_secs
-
-    workout_steps = []
-    total_secs = 0
-    for phase in structure:
-        if (phase.get("phase") or "").lower() == "repeat":
-            step_or_group, est = build_repeat(phase, inside_repeat=False)
-        else:
-            step_or_group, est = build_step(phase, inside_repeat=False)
-        workout_steps.append(step_or_group)
-        total_secs += est
+    report = _ensure_report(session, report)
+    workout_name = _workout_name(session, "Running workout")
+    items = _structure_items(session, report)
+    renderer = _PhaseRenderer("running", False, report.session_intensity, session, report)
+    workout_steps, total_secs = renderer.render(items)
+    if report.errors:
+        raise WorkoutAuthoringError(report.errors, report.warnings)
 
     if total_secs <= 0:
-        total_secs = int(session.get("duration_mins", 30)) * 60
+        total_secs = int(session.get("duration_mins") or 30) * 60
 
     return RunningWorkout(
         workoutName=workout_name,
@@ -1202,6 +1099,10 @@ def build_structured_running_workout(session: dict, date: str) -> RunningWorkout
     )
 
 
+# ---------------------------------------------------------------------------
+# Swimming, yoga, pilates, padel (dict payloads)
+# ---------------------------------------------------------------------------
+
 def build_swimming_workout(session: dict, date: str) -> dict:
     """
     Build a swimming workout from a plan session.
@@ -1215,11 +1116,10 @@ def build_swimming_workout(session: dict, date: str) -> dict:
     Pool length defaults to 25m but can be overridden via pool_length_m.
     """
     duration_mins = session.get("duration_mins", 30)
-    description = session.get("description", "Swimming session")
     structure = session.get("structure", [])
     pool_length = session.get("pool_length_m", 25.0)
 
-    workout_name = description[:40]
+    workout_name = _workout_name(session, "Swimming session")
     steps = []
 
     if structure:
@@ -1242,14 +1142,17 @@ def build_swimming_workout(session: dict, date: str) -> dict:
             else:
                 step_type = STEP_INTERVAL
 
-            steps.append({
+            step = {
                 "type": "ExecutableStepDTO",
                 "stepOrder": step_order,
                 "stepType": step_type,
                 "endCondition": END_DISTANCE,
                 "endConditionValue": float(distance_m),
                 "targetType": TARGET_NONE,
-            })
+            }
+            if phase.get("notes"):
+                step["description"] = _smart_truncate(str(phase["notes"]), STEP_NOTE_MAX_CHARS)
+            steps.append(step)
             step_order += 1
 
         # Estimate duration from distance (assume ~2:00/100m for beginner)
@@ -1293,29 +1196,28 @@ def build_yoga_workout(session: dict, date: str) -> dict:
     support detailed yoga pose sequences via API.
     """
     duration_mins = session.get("duration_mins", 45)
-    description = session.get("description", "Yoga/Mobility session")
     session_type = session.get("type", "yoga").lower()
 
     # Calculate segment durations (in seconds)
     total_secs = duration_mins * 60
 
-    # Create workout name from description
-    workout_name = description[:40]
+    workout_name = _workout_name(session, "Yoga/Mobility session")
 
     # Determine sport type (yoga or pilates)
     sport_type = PILATES_SPORT if session_type == "pilates" else YOGA_SPORT
 
     # Build simple timed steps for yoga - must match Garmin's expected format
-    steps = [
-        {
-            "type": "ExecutableStepDTO",
-            "stepOrder": 1,
-            "stepType": STEP_INTERVAL,
-            "endCondition": END_TIME,
-            "endConditionValue": float(total_secs),
-            "targetType": TARGET_NONE,
-        }
-    ]
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": 1,
+        "stepType": STEP_INTERVAL,
+        "endCondition": END_TIME,
+        "endConditionValue": float(total_secs),
+        "targetType": TARGET_NONE,
+    }
+    notes = session.get("notes")
+    if notes:
+        step["description"] = _smart_truncate(str(notes), STEP_NOTE_MAX_CHARS)
 
     return {
         "workoutName": workout_name,
@@ -1325,7 +1227,7 @@ def build_yoga_workout(session: dict, date: str) -> dict:
             {
                 "segmentOrder": 1,
                 "sportType": sport_type,
-                "workoutSteps": steps
+                "workoutSteps": [step]
             }
         ]
     }
@@ -1347,7 +1249,7 @@ def build_pilates_workout(session: dict, date: str) -> dict:
     on the watch.
     """
     duration_mins = session.get("duration_mins", 15)
-    description = session.get("description", "")
+    description = session.get("name") or session.get("description", "")
     session_type = session.get("type", "").lower()
     notes = session.get("notes", "")
     exercises = session.get("exercises", [])
@@ -1458,12 +1360,7 @@ def build_pilates_workout(session: dict, date: str) -> dict:
             "childStepId": 1,
             "numberOfIterations": sets,
             "workoutSteps": [exercise_step, rest_step],
-            "endCondition": {
-                "conditionTypeId": 7,
-                "conditionTypeKey": "iterations",
-                "displayOrder": 7,
-                "displayable": False,
-            },
+            "endCondition": dict(END_ITERATIONS),
             "endConditionValue": float(sets),
         }
 
@@ -1495,7 +1392,7 @@ def build_padel_workout(session: dict, date: str) -> dict:
     duration is variable based on game play.
     """
     duration_mins = session.get("duration_mins", 90)
-    description = session.get("description", "")
+    description = session.get("name") or session.get("description", "")
 
     # Generate workout name
     if description and description.lower() != "padel":
@@ -1532,6 +1429,10 @@ def build_padel_workout(session: dict, date: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Strength
+# ---------------------------------------------------------------------------
+
 def load_exercise_db() -> dict:
     """Load Garmin exercise database for (category, exerciseName) validation."""
     return _read_data_json("exercises.json").get("exercises", {})
@@ -1561,84 +1462,144 @@ def get_exercise_note(exercise_name: str, library: dict) -> str:
     return ""
 
 
-def load_strength_baseline() -> dict:
-    """Load the strength baseline from athlete profile."""
-    return _read_data_json(ATHLETE_FILE).get("strength_baseline", {}).get("exercises", {})
+def _timed_step(order: int, step_type: dict, secs: float, *, category: str | None = None,
+                child: bool = False, description: str | None = None) -> dict:
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": order,
+        "stepType": step_type,
+        "endCondition": END_TIME,
+        "endConditionValue": float(secs),
+        "targetType": TARGET_NONE,
+    }
+    if category is not None:
+        step["category"] = category
+        step["exerciseName"] = ""
+    if child:
+        step["childStepId"] = 1
+    if description:
+        step["description"] = description
+    return step
 
 
-def get_baseline_weight(exercise_name: str, category: str, baseline: dict) -> float:
-    """Get baseline weight for an exercise from strength baseline."""
-    from .config import DEFAULT_EQUIVALENCE_GROUPS
-
-    # Normalize exercise lookup key
-    category_key = category.lower().replace(' ', '_')
-
-    # Check if we have a baseline for this category
-    if category_key in baseline:
-        current = baseline[category_key].get('current', {})
-        return current.get('weight_kg')
-
-    # Check via equivalence groups
-    for group, exercises in DEFAULT_EQUIVALENCE_GROUPS.items():
-        if exercise_name in exercises or category in exercises:
-            group_key = group.lower().replace(' ', '_')
-            if group_key in baseline:
-                current = baseline[group_key].get('current', {})
-                return current.get('weight_kg')
-
-    return None
+def _lap_rest_step(order: int, child: bool = False) -> dict:
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": order,
+        "stepType": STEP_REST,
+        "endCondition": END_LAP_BUTTON,
+        "targetType": TARGET_NONE,
+    }
+    if child:
+        step["childStepId"] = 1
+    return step
 
 
-def build_strength_workout(session: dict, date: str) -> dict:
+def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library: dict) -> tuple[dict, int]:
+    """One exercise step inside a repeat group, plus its estimated seconds."""
+    category, garmin_exercise_name, _warning = resolve_exercise_category(spec, exercise_db)
+    if not category:  # validate_session has already reported this; defensive
+        raise WorkoutAuthoringError([{'field': spec.name, 'message': "category is required"}])
+
+    # The coach's cue wins; the researched library cue fills in when absent.
+    cue = str(spec.notes or "").strip() or get_exercise_note(spec.name, library)
+    readable_name = spec.name.replace("_", " ").title()
+    side = "each side" if spec.each_side else ""
+    if garmin_exercise_name:
+        # Watch shows the exercise name already: description = cue (+ side)
+        parts = [p for p in (side, cue) if p]
+        description = ": ".join(parts) if len(parts) == 2 else "".join(parts)
+    else:
+        head = f"{readable_name} {side}".strip()
+        description = f"{head}: {cue}" if cue else head
+    description = _smart_truncate(description, STEP_NOTE_MAX_CHARS)
+
+    if spec.duration_secs is not None:
+        end_condition, end_value, est = END_TIME, float(spec.duration_secs), int(spec.duration_secs)
+    elif spec.reps == "open":
+        end_condition, end_value, est = END_LAP_BUTTON, None, 45
+    else:
+        end_condition, end_value, est = END_REPS, float(spec.reps), max(20, int(spec.reps) * 3)
+    if spec.each_side:
+        est *= 2
+
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": order,
+        "stepType": STEP_INTERVAL,
+        "childStepId": 1,
+        "endCondition": end_condition,
+        "targetType": TARGET_NONE,
+        "category": category,
+        "exerciseName": garmin_exercise_name,
+    }
+    if end_value is not None:
+        step["endConditionValue"] = end_value
+    if description:
+        step["description"] = description
+    if spec.weight_kg is not None:
+        step["weightValue"] = float(spec.weight_kg)
+        step["weightUnit"] = dict(WEIGHT_UNIT_KG)
+    return step, est
+
+
+def _repeat_group(order: int, iterations: int, children: list, notes: str | None = None) -> dict:
+    group = {
+        "type": "RepeatGroupDTO",
+        "stepOrder": order,
+        "stepType": STEP_REPEAT,
+        "childStepId": 1,
+        "numberOfIterations": iterations,
+        "workoutSteps": children,
+        "endCondition": dict(END_ITERATIONS),
+        "endConditionValue": float(iterations),
+    }
+    if notes:
+        group["description"] = _smart_truncate(str(notes), STEP_NOTE_MAX_CHARS)
+    return group
+
+
+def build_strength_workout(session: dict, date: str, report: AuthoringReport | None = None) -> dict:
     """
-    Build a strength workout from a plan session.
+    Build a strength workout from a plan session — exactly what the
+    `exercises` list says (contract: coach/authoring.py).
 
-    If session contains 'exercises' list, builds detailed workout with
-    RepeatGroupDTO for each exercise (containing sets x reps + rest).
-    Otherwise creates a simple timed strength workout.
-
-    Form cues from the exercise library are included as notes on each exercise.
-    Weights are automatically pulled from strength baseline if not specified.
-
-    Session flags:
-        skip_warmup (bool): Skip the built-in 5-min CARDIO warmup + lap-button
-            rest step. Use ONLY when the athlete will warm up separately (e.g.
-            seated/lying session because of a lower-body injury, or they've
-            already warmed up on a bike trainer). WARNING: Injured tissue
-            typically needs MORE warmup, not less — this flag means "warmup
-            will happen externally", not "warmup is unnecessary".
+    - `warmup_mins` (session level) renders a timed WARM_UP block followed by
+      a lap-button rest; nothing is inserted otherwise.
+    - Each exercise is a RepeatGroupDTO of `sets` iterations holding the
+      exercise step (reps -> END_REPS, duration_secs -> END_TIME, "open"
+      reps -> lap button) and a rest step (timed when rest_secs is given,
+      lap button otherwise; none when rest_secs is 0).
+    - A circuit is one RepeatGroupDTO of `rounds` iterations holding every
+      exercise step back to back, then the rest step.
+    - The exercise `notes` cue is the step description; the researched
+      exercise-library cue fills in only when the plan gives no notes.
+    - Weight is sent only when `weight_kg` is stated. Garmin keeps the
+      exercise name only for catalogue entries whose category matches; the
+      description carries the readable name otherwise.
+    - No exercises: ONE timed block for duration_mins (the validator warns
+      when the description reads like sets and reps).
     """
-    duration_mins = session.get("duration_mins", 45)
-    description = session.get("description", "Strength training")
-    exercises = session.get("exercises", [])
+    report = _ensure_report(session, report)
+    duration_mins = session.get("duration_mins") or 0
+    workout_name = _workout_name(session, "Strength training")
 
-    # Load exercise library for form cues
     exercise_library = load_exercise_library()
-
-    # Load strength baseline for weights
-    strength_baseline = load_strength_baseline()
-
-    # Load Garmin exercise DB for (category, exerciseName) validation
     exercise_db = load_exercise_db()
 
-    # Create workout name from description
-    workout_name = description[:40]
+    items = report.exercises
+    if items is None and session.get("exercises"):
+        items, problems = validate_exercises(session.get("exercises"))
+        if problems:
+            raise WorkoutAuthoringError(problems, report.warnings)
 
     # If no exercises provided, create simple timed workout
-    if not exercises:
+    if not items:
         total_secs = duration_mins * 60
-        steps = [
-            {
-                "type": "ExecutableStepDTO",
-                "stepOrder": 1,
-                "stepType": STEP_WARMUP,
-                "endCondition": END_TIME,
-                "endConditionValue": float(total_secs),
-                "targetType": TARGET_NONE,
-                "category": "CARDIO",
-                "exerciseName": "",
-            }
-        ]
+        step = _timed_step(1, STEP_INTERVAL, total_secs, category="CARDIO")
+        notes = session.get("notes")
+        if notes:
+            step["description"] = _smart_truncate(str(notes), STEP_NOTE_MAX_CHARS)
         return {
             "workoutName": workout_name,
             "sportType": STRENGTH_SPORT,
@@ -1647,182 +1608,65 @@ def build_strength_workout(session: dict, date: str) -> dict:
                 {
                     "segmentOrder": 1,
                     "sportType": STRENGTH_SPORT,
-                    "workoutSteps": steps
+                    "workoutSteps": [step]
                 }
             ]
         }
 
-    # Build workout with exercise details using RepeatGroupDTO
-    steps = []
+    steps: list[dict] = []
     step_order = 1
-    child_step_order = 1
-    skip_warmup = session.get("skip_warmup", False)
-    total_time = 0 if skip_warmup else 300  # 5 min warmup unless skipped
+    child_order = 1
+    total_time = 0
+    exercise_count = 0
 
-    if not skip_warmup:
-        # Add warmup step
-        steps.append({
-            "type": "ExecutableStepDTO",
-            "stepOrder": step_order,
-            "stepType": STEP_WARMUP,
-            "endCondition": END_TIME,
-            "endConditionValue": 300.0,  # 5 min warmup
-            "targetType": TARGET_NONE,
-            "category": "CARDIO",
-            "exerciseName": "",
-        })
+    warmup_mins = session.get("warmup_mins")
+    if warmup_mins:
+        warmup_secs = float(warmup_mins) * 60
+        steps.append(_timed_step(step_order, STEP_WARMUP, warmup_secs, category="WARM_UP"))
         step_order += 1
-
-        # Add REST step after warmup (press lap when ready for first exercise)
-        steps.append({
-            "type": "ExecutableStepDTO",
-            "stepOrder": step_order,
-            "stepType": STEP_REST,
-            "endCondition": END_LAP_BUTTON,
-            "targetType": TARGET_NONE,
-        })
+        steps.append(_lap_rest_step(step_order))  # press lap when ready for the first exercise
         step_order += 1
+        total_time += int(warmup_secs)
 
-    # Each exercise becomes a RepeatGroupDTO
-    for exercise in exercises:
-        ex_name = exercise.get("name", "UNKNOWN").upper()  # Normalize to uppercase
-        # Look up category from exercise DB if not provided in plan
-        original_category = exercise.get("category")
-        if original_category:
-            original_category = original_category.upper()  # Handle LLM lowercase variance
-        else:
-            db_entry = exercise_db.get(ex_name, {})
-            original_category = db_entry.get("category", "OTHER")
-        # Name-based overrides fix worst cases where Garmin's exercise DB
-        # mis-categorizes common movements (e.g. CRUNCH under SUSPENSION).
-        name_override = _get_name_override(ex_name)
-        fabricated_category = False
-        if name_override:
-            category = name_override
-        elif original_category in VALID_WORKOUT_CATEGORIES:
-            category = original_category
-        elif original_category in GARMIN_CATEGORY_MAP:
-            category = GARMIN_CATEGORY_MAP[original_category]
-        elif ex_name in GARMIN_CATEGORY_MAP:
-            category = GARMIN_CATEGORY_MAP[ex_name]
-        else:
-            logger.warning(
-                "Exercise %r with category %r fell through to CARDIO fallback — "
-                "add it to GARMIN_CATEGORY_MAP or the exercise DB",
-                ex_name, original_category
-            )
-            category = "CARDIO"
-            fabricated_category = True
-        sets = exercise.get("sets", 3)
-        reps = exercise.get("reps", 10)
-        # rest_secs is for time ESTIMATION only - actual rest uses lap button
-        rest_secs = exercise.get("rest_secs", DEFAULT_REST_SECS)
-        weight = exercise.get("weight_kg")
+    for item in items:
+        if isinstance(item, Circuit):
+            children, round_secs = [], 0
+            for spec in item.exercises:
+                step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library)
+                children.append(step)
+                child_order += 1
+                round_secs += est
+                exercise_count += 1
+            if item.rest_secs is None:
+                children.append(_lap_rest_step(child_order, child=True))
+                child_order += 1
+                round_secs += DEFAULT_REST_SECS
+            elif item.rest_secs > 0:
+                children.append(_timed_step(child_order, STEP_REST, item.rest_secs, child=True))
+                child_order += 1
+                round_secs += item.rest_secs
+            steps.append(_repeat_group(step_order, item.rounds, children, item.notes or item.name))
+            step_order += 1
+            total_time += item.rounds * round_secs
+            continue
 
-        # Garmin workout API only preserves exerciseName when:
-        # 1. The exercise is non-custom in Garmin's DB
-        # 2. The exercise's DB category matches the workout step's category
-        # Cross-category names and custom exercises are silently stripped.
-        if category not in VALID_WORKOUT_CATEGORIES:
-            garmin_exercise_name = ""
-            category = "CARDIO"
-        elif not exercise_db:
-            # No exercise DB on this install (data/exercises.json is a
-            # gitignored cache) — trust the caller's (name, category) pair.
-            # Garmin strips invalid combos server-side; blanking here would
-            # guarantee the name is lost even when valid. A fabricated
-            # CARDIO fallback category is NOT the caller's pair — blank it.
-            garmin_exercise_name = "" if fabricated_category else ex_name
-        else:
-            db_entry = exercise_db.get(ex_name, {})
-            is_custom = db_entry.get("custom", False)
-            db_cat = db_entry.get("category", "")
-            if not is_custom and db_cat == category:
-                garmin_exercise_name = ex_name
-            else:
-                garmin_exercise_name = ""
-
-        # If no explicit weight, try to get from strength baseline
-        if not weight:
-            weight = get_baseline_weight(ex_name, original_category, strength_baseline)
-
-        # Get form cues from library if available
-        exercise_note = get_exercise_note(ex_name, exercise_library)
-
-        # Description content depends on whether exerciseName is preserved:
-        # - exerciseName set: watch shows name already, description = form cues only
-        # - exerciseName empty: watch shows category only, description = name + cues
-        readable_name = ex_name.replace("_", " ").title()
-        if garmin_exercise_name:
-            # Watch shows exerciseName — don't duplicate, just form cues
-            description = exercise_note or ""
-        elif exercise_note:
-            description = f"{readable_name}: {exercise_note}"
-        else:
-            description = readable_name
-        description = _smart_truncate(description, 50)
-
-        # Build exercise step (inside repeat group)
-        exercise_step = {
-            "type": "ExecutableStepDTO",
-            "stepOrder": child_step_order,
-            "stepType": STEP_INTERVAL,
-            "childStepId": 1,
-            "endCondition": END_REPS,
-            "endConditionValue": float(reps),
-            "targetType": TARGET_NONE,
-            "category": category,
-            "exerciseName": garmin_exercise_name,
-        }
-
-        # Add description (exercise name and/or form cues)
-        if description:
-            exercise_step["description"] = description
-
-        # Add weight if specified
-        if weight:
-            exercise_step["weightValue"] = float(weight)
-            exercise_step["weightUnit"] = {
-                "unitId": 8,
-                "unitKey": "kilogram",
-                "factor": 1000.0
-            }
-
-        child_step_order += 1
-
-        # Build rest step (inside repeat group) - uses LAP BUTTON to end
-        rest_step = {
-            "type": "ExecutableStepDTO",
-            "stepOrder": child_step_order,
-            "stepType": STEP_REST,
-            "childStepId": 1,
-            "endCondition": END_LAP_BUTTON,
-            "targetType": TARGET_NONE,
-        }
-        child_step_order += 1
-
-        # Create RepeatGroupDTO containing exercise + rest
-        repeat_group = {
-            "type": "RepeatGroupDTO",
-            "stepOrder": step_order,
-            "stepType": STEP_REPEAT,
-            "childStepId": 1,
-            "numberOfIterations": sets,
-            "workoutSteps": [exercise_step, rest_step],
-            "endCondition": {
-                "conditionTypeId": 7,
-                "conditionTypeKey": "iterations",
-                "displayOrder": 7,
-                "displayable": False
-            },
-            "endConditionValue": float(sets),
-        }
-
-        steps.append(repeat_group)
+        spec: Exercise = item
+        step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library)
+        children = [step]
+        child_order += 1
+        set_secs = est
+        if spec.rest_secs is None:
+            children.append(_lap_rest_step(child_order, child=True))
+            child_order += 1
+            set_secs += DEFAULT_REST_SECS
+        elif spec.rest_secs > 0:
+            children.append(_timed_step(child_order, STEP_REST, spec.rest_secs, child=True))
+            child_order += 1
+            set_secs += spec.rest_secs
+        steps.append(_repeat_group(step_order, spec.sets, children))
         step_order += 1
-
-        # Estimate time for planning: ~45 secs per set + rest_secs
-        total_time += sets * (45 + rest_secs)
+        total_time += spec.sets * set_secs
+        exercise_count += 1
 
     return {
         "workoutName": workout_name,
@@ -1835,7 +1679,116 @@ def build_strength_workout(session: dict, date: str) -> dict:
                 "workoutSteps": steps
             }
         ],
-        "exercise_count": len(exercises)
+        "exercise_count": exercise_count
+    }
+
+
+# ---------------------------------------------------------------------------
+# Preview: describe a rendered workout the way the watch will show it
+# ---------------------------------------------------------------------------
+
+def _get(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _fmt_secs(secs: float) -> str:
+    secs = int(round(secs))
+    if secs >= 3600:
+        return f"{secs // 3600}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+def _fmt_pace(mps: float) -> str:
+    if not mps:
+        return "?"
+    sec_per_km = 1000.0 / mps
+    return f"{int(sec_per_km // 60)}:{int(round(sec_per_km % 60)):02d}/km"
+
+
+def _describe_target(step) -> str:
+    target = _get(step, "targetType") or {}
+    key = _get(target, "workoutTargetTypeKey", "no.target")
+    lo, hi = _get(step, "targetValueOne"), _get(step, "targetValueTwo")
+    if key == "no.target" or lo is None or hi is None:
+        return ""
+    if key == "heart.rate.zone":
+        return f"HR {int(lo)}-{int(hi)} bpm"
+    if key == "power.zone":
+        return f"{int(lo)}-{int(hi)} W"
+    if key == "cadence.zone":
+        return f"cadence {int(lo)}-{int(hi)}"
+    if key == "pace.zone":
+        return f"pace {_fmt_pace(lo)} to {_fmt_pace(hi)}"
+    return f"{key} {lo}-{hi}"
+
+
+def _describe_end(step) -> str:
+    end = _get(step, "endCondition") or {}
+    key = _get(end, "conditionTypeKey", "lap.button")
+    value = _get(step, "endConditionValue")
+    if key == "time" and value is not None:
+        return _fmt_secs(value)
+    if key == "distance" and value is not None:
+        return f"{int(value)} m" if value < 1000 else f"{value / 1000:g} km"
+    if key == "reps" and value is not None:
+        return f"{int(value)} reps"
+    return "lap button"
+
+
+def _describe_step(step, index: str, lines: list[str], indent: str) -> None:
+    kind = _get(step, "type") or ("RepeatGroupDTO" if _get(step, "numberOfIterations") is not None else "ExecutableStepDTO")
+    if kind == "RepeatGroupDTO":
+        n = _get(step, "numberOfIterations")
+        label = _get(step, "description")
+        header = f"{indent}{index}. {n} x" + (f" {label}" if label else "")
+        lines.append(header)
+        for i, child in enumerate(_get(step, "workoutSteps") or [], start=1):
+            _describe_step(child, f"{index}.{i}", lines, indent + "   ")
+        return
+    step_type = _get(_get(step, "stepType") or {}, "stepTypeKey", "interval")
+    category = _get(step, "category")
+    name = _get(step, "exerciseName")
+    description = _get(step, "description")
+    end = _describe_end(step)
+    if category is not None:  # strength step
+        weight = _get(step, "weightValue")
+        if step_type == "rest":
+            label = "Rest"
+        elif name:
+            label = name
+        else:
+            label = f"[{str(category).replace('_', ' ').title()}]"
+        bits = [label, end]
+        if weight:
+            bits.append(f"@ {weight:g} kg")
+        line = f"{indent}{index}. {' '.join(bits)}"
+    else:
+        label = {"warmup": "Warm-up", "cooldown": "Cool-down", "recovery": "Recovery",
+                 "rest": "Rest", "interval": "Interval"}.get(step_type, step_type.title())
+        target = _describe_target(step)
+        line = f"{indent}{index}. {label} {end}" + (f" @ {target}" if target else "")
+    if description:
+        line += f' — "{description}"'
+    lines.append(line)
+
+
+def describe_workout(workout) -> dict:
+    """{'name', 'sport', 'estimated_mins', 'steps': [lines]} for a built
+    workout (typed garminconnect model or dict payload)."""
+    sport = _get(_get(workout, "sportType") or {}, "sportTypeKey", "")
+    segments = _get(workout, "workoutSegments") or []
+    steps = _get(segments[0], "workoutSteps") if segments else []
+    lines: list[str] = []
+    for i, step in enumerate(steps or [], start=1):
+        _describe_step(step, str(i), lines, "")
+    est = _get(workout, "estimatedDurationInSecs") or 0
+    return {
+        "name": _get(workout, "workoutName"),
+        "sport": sport,
+        "estimated_mins": int(round(est / 60)),
+        "steps": lines,
     }
 
 

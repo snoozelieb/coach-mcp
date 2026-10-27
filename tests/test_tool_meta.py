@@ -45,12 +45,20 @@ async def test_always_load_descriptions_fit_the_upfront_cap():
         f'when loaded upfront: {too_long}')
 
 
+async def test_update_weekly_plan_fits_the_upfront_cap():
+    """A coach-only Claude Code session loads every tool upfront (definitions
+    under 10 % of context), so the planning contract must survive the cut."""
+    tools = await _tools()
+    assert len(tools['update_weekly_plan'].description or '') <= UPFRONT_DESCRIPTION_CAP
+
+
 async def test_gated_tool_descriptions_lead_with_their_gates():
     """Tool search matches only the first 4,096 chars of a description, and an
     upfront load cuts there. The gate contracts must sit inside that window."""
     tools = await _tools()
     head = (tools['update_weekly_plan'].description or '')[:UPFRONT_DESCRIPTION_CAP]
-    for marker in ('purpose_gate', 'injury_gate', 'plan_dates', 'grounding_warnings'):
+    for marker in ('purpose_gate', 'injury_gate', 'plan_dates', 'grounding_warnings',
+                   'authoring_error', 'preview_workout'):
         assert marker in head, f'update_weekly_plan: {marker!r} past the 4,096-char window'
     head = (tools['training_program'].description or '')[:UPFRONT_DESCRIPTION_CAP]
     for marker in ('capacity_anchor_mismatch', 'injury_gate', 'program_dates'):

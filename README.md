@@ -212,13 +212,13 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 
 ## MCP surface
 
-51 tools — you don't call them directly; the coach uses them during
+52 tools — you don't call them directly; the coach uses them during
 conversation:
 
 | Category | Tools |
 |----------|-------|
 | **Coaching core** | `get_coaching_snapshot` (canonical, sectioned), `get_compliance_report`, `get_coaching_score` |
-| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `push_plan_to_garmin`, `training_program` (action=get/set; multi-week programs, capacity-anchored and injury-gated), `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status`, `update_phase` |
+| **Planning** | `get_weekly_plan`, `update_weekly_plan`, `preview_workout` (render one session the way the watch will show it, or fetch the session contract), `push_plan_to_garmin` (preview with the step tree per session, then confirm), `training_program` (action=get/set; multi-week programs, capacity-anchored and injury-gated), `get_week_constraints`, `get_weekly_prescription`, `get_periodization_status`, `update_phase` |
 | **Garmin data** | `query_metrics` (kind=fitness/sport_history/intensity/daily/readiness/personal_records), `get_activities_range` |
 | **Athlete** | `get_athlete`, `update_athlete`, `set_ftp`, `set_threshold_pace`, `analyze_ftp_test`, `refresh_athlete_baseline`, `refresh_fitness_history`, `backfill_history`, `get_onboarding_guide` |
 | **Methodology** | `get_methodology`, `update_methodology` |
@@ -275,7 +275,7 @@ committed.
 # HTTP transport (streamable-http) instead of stdio
 COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
 
-# Code Mode (search/execute meta-tools instead of 50 individual tools)
+# Code Mode (search/execute meta-tools instead of 52 individual tools)
 pip install fastmcp[code-mode]
 COACH_CODE_MODE=1 garmin-coach-mcp
 

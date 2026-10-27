@@ -44,6 +44,7 @@ READ_ONLY_TOOLS = {
     'interactive_check_in',
     'list_exercises',
     'list_pending_approvals',
+    'preview_workout',
     # read-only but fetches from Garmin or the web
     'analyze_ftp_test',
     'generate_strength_workout',
