@@ -187,7 +187,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,653 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
+1,691 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
@@ -233,8 +233,12 @@ cover Claude Desktop).
 Coaching judgment about how a session is composed lives in the sport skills
 (markdown); code holds the invariants. `coach/authoring.py` is the ONE
 vocabulary for `structure` (runs, rides) and `exercises` (strength): strict
-models with teaching errors (unknown keys name the allowed keys; nothing is
-defaulted — no 3x10, no category weights, no 5-minute phases).
+models with teaching errors (unknown keys name the allowed keys; nothing the
+plan states is defaulted — no 3x10, no category weights, no library cue or
+baseline load without a flag; plain runs and indoor rides split warm-up and
+cool-down by documented percentages unless `warmup_mins`/`cooldown_mins` are
+stated, and the contract document says so). The injury gate also reads
+strength exercises (a restricted movement word in a Garmin key or category).
 `update_weekly_plan` rejects contract violations (`authoring_error`),
 `push_plan_to_garmin`'s preview carries the rendered step tree per session and
 lists `unrenderable` sessions (never uploaded), and `preview_workout(session)`

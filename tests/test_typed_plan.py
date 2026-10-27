@@ -99,6 +99,16 @@ class TestSessionSchema:
         assert s.intensity == 'discretion'
         assert s.constraints == ['Z2 only', 'no running']
 
+    def test_typed_schema_accepts_what_the_contract_accepts(self):
+        """reps "open", fractional rests and holds, circuits (extra keys) all pass
+        the lenient storage schema (red-team S1)."""
+        plan = WeeklyPlan.model_validate({'days': {TOMORROW: {'planned': {
+            'type': 'strength', 'exercises': [
+                {'name': 'PULL_UP', 'sets': 3, 'reps': 'open', 'rest_secs': 90.5},
+                {'name': 'PLANK', 'sets': 3, 'duration_secs': 45.0, 'each_side': True, 'weight_kg': 5},
+                {'rounds': 2, 'exercises': [{'name': 'PUSH_UP', 'reps': 10}]}]}}}})
+        assert plan.days[TOMORROW].planned.exercises[0].reps == 'open'
+
     def test_weekly_plan_shape_unchanged(self):
         plan = WeeklyPlan.model_validate({
             'days': {TOMORROW: {'planned': {'type': 'running'}}},

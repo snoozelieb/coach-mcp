@@ -879,13 +879,13 @@ class TestBuildStrengthWorkout:
         session = {
             "type": "strength", "duration_mins": 30,
             "exercises": [{"name": "SIDE_LUNGE_JUMP_OFF", "sets": 2, "reps": 8,
-                           "notes": "PUSH OFF LEFT, finish through toe. No jump"}],
+                           "notes": "No jump. Push off the left foot"}],
         }
         result = build_strength_workout(session, "2025-01-01")
         step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
         assert step["exerciseName"] == "SIDE_LUNGE_JUMP_OFF"
         assert step["category"] == "LUNGE"
-        assert step["description"] == "PUSH OFF LEFT, finish through toe. No jump"
+        assert step["description"] == "No jump. Push off the left foot"
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     def test_duration_secs_renders_a_timed_hold(self, mock_library):

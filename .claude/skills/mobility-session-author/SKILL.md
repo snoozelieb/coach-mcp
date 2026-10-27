@@ -28,6 +28,10 @@ the watch gets; `preview_workout()` returns the contract.
   strength-session-author — so sets and reps reach the watch with Garmin keys.
 - Keep mobility inside the injury gate like everything else: a restricted
   movement pattern stays out, and the cue says what to avoid.
+- Size and place the session from coaching memory: the last
+  `record_athlete_response` to mobility work, `adaptation_patterns` (does
+  this athlete sleep better after evening mobility, or worse?), and the
+  snapshot's readiness — not from a fixed weekly slot.
 
 ## Worked example — evening mobility
 

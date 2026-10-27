@@ -49,6 +49,10 @@ Key pages to review:
 - Lifecycle: `server/discover` and the Multi Round-Trip Requests pattern (`basic/patterns/mrtr`)
 - Tool, resource, and prompt definitions
 
+**Still the latest revision on 2026-10-27:** `/specification/latest` redirects to 2026-07-28 and the draft changelog is empty. Extensions (`extensions` capability field, ids `vendor/name`, opt-in): official ones are MCP Apps (`io.modelcontextprotocol/ui`), OAuth client credentials, enterprise-managed authorization, Tasks (`io.modelcontextprotocol/tasks`) and Skills (`io.modelcontextprotocol/skills`, SEP-2640, Final since 2026-09-13: `skills/list`, `skills/get`, files via `resources/read`, 512 files / 16 MiB per skill). Skills-extension support on 2026-10-27: TypeScript SDK 2.4.0 ships it (`@modelcontextprotocol/server/ext/skills`), the Python SDK merged it after 2.3.0 (unreleased), FastMCP 4.1.x has it behind `SkillsDirectoryProvider(..., experimental_skills=True)`, and no Claude client (Code, Desktop, claude.ai) implements it — skills for Claude clients are project/personal/claude.ai-uploaded skills, not MCP-served ones.
+
+**Client budgets (Claude Code, verified 2026-10-27):** server instructions and upfront-loaded tool descriptions are cut at 4,096 characters, deferred (tool-search) descriptions at 16,384, and tool search matches only the first 4,096; `_meta` `anthropic/alwaysLoad: true` loads a tool upfront, `anthropic/requiresUserInteraction: true` forces approval on every call; `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` overrides per machine only. Tool results are capped at 25,000 tokens. Put gate contracts in the head of a description and long doctrine in a resource.
+
 **The stateless protocol core (2026-07-28) — design implications:**
 
 The 2026-07-28 revision transformed MCP from a bidirectional stateful protocol into a request/response stateless protocol. Design every new server for this model:
@@ -71,9 +75,9 @@ The 2026-07-28 revision transformed MCP from a bidirectional stateful protocol i
 
 - **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines
 
-**SDK status (verified 2026-08):** the Tier 1 SDKs' v2 lines are **GA** and implement the 2026-07-28 spec — `server/discover`, the stateless lifecycle, MRTR, and cache hints are handled automatically, while the same deployment still serves 2025-era clients:
-- **TypeScript**: servers install `@modelcontextprotocol/server` (2.x, Node >=20, Zod 4); clients `@modelcontextprotocol/client`; HTTP serving via `@modelcontextprotocol/express`/`fastify`/`hono`/`node` adapters. The old `@modelcontextprotocol/sdk` package is the maintained v1 line. Docs: `https://ts.sdk.modelcontextprotocol.io/v2/`; migrate v1 code with `npx @modelcontextprotocol/codemod@latest v1-to-v2`.
-- **Python**: `mcp` 2.x — `from mcp.server import MCPServer` (the bundled FastMCP was renamed; `mcp.server.fastmcp` no longer exists in v2). Docs: `https://py.sdk.modelcontextprotocol.io/`. The standalone `fastmcp` package's 2026-07-28-era v4 is still beta; its stable v3.x line targets the 2025-era protocol.
+**SDK status (verified 2026-10-27):** the Tier 1 SDKs' v2 lines are **GA** and implement the 2026-07-28 spec — `server/discover`, the stateless lifecycle, MRTR, and cache hints are handled automatically, while the same deployment still serves 2025-era clients:
+- **TypeScript**: servers install `@modelcontextprotocol/server` (2.x, Node >=20, Zod 4); clients `@modelcontextprotocol/client`; HTTP serving via `@modelcontextprotocol/express`/`fastify`/`hono`/`node` adapters. The old `@modelcontextprotocol/sdk` package is the maintained v1 line. Docs: `https://ts.sdk.modelcontextprotocol.io/v2/`; migrate v1 code with `npx @modelcontextprotocol/codemod@latest v1-to-v2 .` run at the package root (2.4.0: `@modelcontextprotocol/server` and `/client` 2.4.0, Node >= 20, Zod 4; v1 `@modelcontextprotocol/sdk` 1.32.x gets fixes for at least six months after 2026-07-27).
+- **Python**: `mcp` 2.x — `from mcp.server import MCPServer` (the bundled FastMCP was renamed; `mcp.server.fastmcp` no longer exists in v2). Docs: `https://py.sdk.modelcontextprotocol.io/`. The standalone `fastmcp` package (PrefectHQ) is GA on its 4.x line since 4.0.0 (2026-08-31; 4.1.4 on 2026-10-26, requires `mcp>=2.3`), with 3.4.x kept as a maintenance line; FastMCP's own policy lets MINOR releases carry deliberate breaking changes, so pin with a lockfile or an upper bound. `mcp` 2.3.0 (2026-10-02) is current; `import mcp.server.fastmcp` raises a ModuleNotFoundError that points at the migration guide.
 
 **For TypeScript (recommended):**
 - **TypeScript SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
@@ -156,7 +160,7 @@ Review for:
 
 **TypeScript:**
 - Run `npm run build` to verify compilation
-- Test with MCP Inspector: `npx @modelcontextprotocol/inspector`
+- Test with MCP Inspector: `npx @modelcontextprotocol/inspector` (Inspector 2.12 needs Node >= 22.19)
 
 **Python:**
 - Verify syntax: `python -m py_compile your_server.py`

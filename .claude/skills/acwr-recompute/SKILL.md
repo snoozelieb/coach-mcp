@@ -27,7 +27,7 @@ or historical `daily_loads` were backfilled/repaired.
 2. **Dry-run and actually read it** (default mode; writes nothing):
 
    ```bash
-   python scripts/recompute_acwr_history.py --check
+   .venv/Scripts/python.exe scripts/recompute_acwr_history.py --check
    ```
 
    Review the printed change list WITH the user — zone flips
@@ -38,7 +38,7 @@ or historical `daily_loads` were backfilled/repaired.
 3. **Apply**:
 
    ```bash
-   python scripts/recompute_acwr_history.py --apply
+   .venv/Scripts/python.exe scripts/recompute_acwr_history.py --apply
    ```
 
    `--apply` takes a one-time `fitness_history.json.pre-acwr-cutover.bak`
@@ -46,7 +46,7 @@ or historical `daily_loads` were backfilled/repaired.
    atomically/locked via `coach.storage`.
 
 4. **Verify**: re-run `--check` (should report no changes), then
-   `python -m pytest -q`, then have the running MCP server reconnected so the
+   `.venv/Scripts/python.exe -m pytest -q`, then have the running MCP server reconnected so the
    snapshot serves recomputed values.
 
 `--data-dir path/to/data` targets a non-default data directory (e.g. a restored

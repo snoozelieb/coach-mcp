@@ -22,6 +22,10 @@ ride for this athlete today — written in the contract.
 3. Indoor or outdoor decides the target family: types `wattbike`,
    `indoor_cycling`, `trainer`, `ftp_test` (or `"indoor": true`) resolve
    intensity words to power zones; everything else to HR zones.
+4. Coaching memory: `adaptation_patterns` and the last `record_athlete_response`
+   for this kind of session, and the snapshot's sleep and readiness signals.
+   Size today's session from how the athlete responded last time, not from
+   what the plan intended.
 
 ## Composition judgment
 
@@ -36,14 +40,18 @@ ride for this athlete today — written in the contract.
   % of FTP (a single number means ±5 %), `power_watts` [low, high], `cadence`
   [low, high] rpm, `hr_target`; an `intensity` word may label the phase or be
   its target. A phase without a target inherits the session intensity.
-- Bands to reach for: recovery 45–55 %, endurance 56–75 %, tempo 76–87 %,
-  sweet spot 88–94 %, threshold 95–105 %, VO2 106–120 % of FTP. Cadence
-  drills (single-leg, spin-ups) take a `cadence` target with the power cue in
-  `notes`; Garmin shows one target per step.
+- Intensity words render to the athlete's own `power_zones` on the profile;
+  those zones win over any textbook band. When you write an explicit
+  `power_pct` band, the usual FTP fractions are: recovery 45–55 %, endurance
+  56–75 %, tempo 76–87 %, sweet spot 88–94 %, threshold 95–105 %, VO2
+  106–120 % — adjust them to what the last comparable session showed the
+  athlete can hold. Cadence drills (single-leg, spin-ups) take a `cadence`
+  target with the power cue in `notes`; Garmin shows one target per step.
 - Micro-intervals (30/30, 40/20) are repeat blocks with `duration_secs`
-  phases; long sweet spot is 2 × 20 or 3 × 15 with 5 minutes recovery; a
-  threshold 4 × 4 keeps recoveries at 4 minutes. Progress one lever a week:
-  reps, then duration, then band.
+  phases. Sweet-spot blocks and threshold repeats take their rep count and
+  durations from `capacity.cycling` and the last comparable session in
+  `sport_history`; progress one lever at a time (reps, then duration, then
+  band) and only after the recorded response to the previous one was good.
 - An FTP test is `"type": "ftp_test"`: the protocol (warm-up, blowout, 20-minute
   test, cool-down) is built in; afterwards `analyze_ftp_test` and `set_ftp`.
 - Session `name` is the Garmin workout name; the renderer appends "(Indoor)" or

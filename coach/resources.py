@@ -101,21 +101,30 @@ auto-approval on readOnlyHint will prompt once per session).
 
 update_weekly_plan takes a structured `plan` dict (preferred); `plan_json`
 is a deprecated JSON-string alias — provide exactly one. The plan validates
-through pydantic (errors name the offending day/field), then three gates run:
+through pydantic (errors name the offending day/field), then the gates run:
 (1) DATE — plans whose days are all in the past are rejected ("build a
 current week"), as is any day key more than 21 days out (fat-finger guard).
 (2) PURPOSE — every non-rest session needs a non-empty `purpose` (nested
 session lists are checked at the leaf level) or the save is REJECTED with
-error 'purpose_gate'; override_purpose_gate=True bypasses with a logged
-note — a session you can't explain shouldn't be on the plan. (3) INJURY —
-sessions matching an active/improving injury's restricted_activities reject
-the save (taxonomy-aware: 'long_ride' is caught by a 'cycling' restriction;
-free-text restrictions match by substring); override_injury_gate=True
-bypasses only with athlete consent and a logged rationale. A plan failing
-purpose AND injury reports both in one error. For athlete-discretion days,
-keep the plan truthful: set intensity 'discretion' plus a `constraints` list
-(e.g. constraints: ['Z2 only', 'no running']) instead of inventing a session
-the athlete didn't commit to.
+error 'purpose_gate'; there is no bypass (override_purpose_gate is
+deprecated and ignored) — a session you can't explain shouldn't be on the
+plan. (3) INJURY — sessions matching an active/improving injury's
+restricted_activities reject the save (taxonomy-aware: 'long_ride' is
+caught by a 'cycling' restriction; free-text restrictions match by
+substring; a strength exercise whose Garmin key or category carries a
+restricted movement word such as 'jump' or 'overhead' is caught too);
+override_injury_gate=True bypasses only with the athlete's own words
+(athlete_statement) and a logged rationale. A plan failing purpose AND
+injury reports both in one error. (4) SESSION CONTRACT — a session whose
+structure or exercises the renderer cannot draw as written is rejected
+with 'authoring_error' naming the field and the allowed keys; what it can
+draw but the watch will not show as written comes back as
+authoring_warnings. (5) GROUNDING — advisory grounding_warnings compare the
+plan's longest session per sport with demonstrated capacity. For
+athlete-discretion days, keep the plan truthful: set intensity 'discretion'
+plus a `constraints` list (e.g. constraints: ['Z2 only', 'no running']) —
+the constraints are written on the watch step and nothing is targeted —
+instead of inventing a session the athlete didn't commit to.
 
 ## Grounding Prescriptions (VERIFY BEFORE PRESCRIBING)
 

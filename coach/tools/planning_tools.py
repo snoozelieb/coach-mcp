@@ -18,7 +18,7 @@ from ..fitness import (load_fitness_history, calculate_fitness_metrics,
                      demonstrated_max_mins)
 from ..schemas import (WeeklyPlan as WeeklyPlanSchema,
                      TrainingProgram as TrainingProgramSchema)
-from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS
+from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS, is_known_type
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
 from datetime import date, timedelta
 from pydantic import ValidationError
@@ -94,12 +94,57 @@ def _iter_plan_sessions(day_data: dict):
                     yield sub
 
 
+def _restriction_stems(restriction: str) -> set[str]:
+    """Comparable forms of a movement restriction: 'jumping' -> {'jumping',
+    'jump'}, 'overhead pressing' -> {'overhead_pressing', 'overhead_press'}."""
+    base = _norm_type(restriction)
+    stems = {base}
+    if base.endswith('ing') and len(base) > 6:
+        stems.add(base[:-3])
+    if base.endswith('s') and len(base) > 4:
+        stems.add(base[:-1])
+    return {s for s in stems if len(s) >= 4}
+
+
+def _iter_session_exercises(session: dict):
+    """(name, category) for every exercise in a session, circuits included."""
+    for item in session.get('exercises') or []:
+        if not isinstance(item, dict):
+            continue
+        members = item.get('exercises') if isinstance(item.get('exercises'), list) else [item]
+        for ex in members:
+            if isinstance(ex, dict):
+                yield _norm_type(ex.get('name')), _norm_type(ex.get('category'))
+
+
+def _exercise_restriction_hits(session: dict, restrictions: list) -> list[dict]:
+    """Movement-level matches: an active injury's restriction word ('jump',
+    'overhead', 'shoulder_press', 'plyo') found in an exercise's Garmin key or
+    category. Sport words ('running', 'cycling') are judged on the session
+    type, not on exercise names, so a 'cycling' restriction never trips on a
+    core movement that happens to carry the word."""
+    movement_restrictions = [r for r in restrictions if not is_known_type(r)]
+    if not movement_restrictions:
+        return []
+    hits = []
+    for name, category in _iter_session_exercises(session):
+        matched = []
+        for restriction in movement_restrictions:
+            if any(stem in name or (category and stem in category)
+                   for stem in _restriction_stems(restriction)):
+                matched.append(restriction)
+        if matched:
+            hits.append({'exercise': name.upper(), 'matched_restrictions': matched})
+    return hits
+
+
 def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
     """Find non-rest sessions whose type intersects an active/improving injury's
-    restricted_activities.
+    restricted_activities, and strength exercises whose Garmin key or category
+    carries a restricted movement word.
 
-    Returns a list of {date, session_type, injury, matched_restrictions} dicts —
-    empty when the plan is safe.
+    Returns a list of {date, session_type, injury, injury_status,
+    matched_restrictions[, exercise]} dicts — empty when the plan is safe.
     """
     gating = [
         normalize_injury(i) for i in (injuries or [])
@@ -128,6 +173,15 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
                         'injury': injury['name'],
                         'injury_status': injury['status'],
                         'matched_restrictions': matched,
+                    })
+                for hit in _exercise_restriction_hits(session, injury['restricted_activities']):
+                    violations.append({
+                        'date': day_str,
+                        'session_type': session.get('type'),
+                        'exercise': hit['exercise'],
+                        'injury': injury['name'],
+                        'injury_status': injury['status'],
+                        'matched_restrictions': hit['matched_restrictions'],
                     })
     return violations
 
@@ -290,24 +344,27 @@ def _format_plan_validation_errors(exc: ValidationError) -> list[dict]:
 
 
 def _authoring_problems(plan_days: dict) -> tuple[list[dict], list[dict]]:
-    """(errors, warnings) from the session contract, over every leaf session.
+    """(errors, warnings) from rendering every pushable session exactly as
+    push_plan_to_garmin will — same expansion of legacy nested days, same
+    renderer — so the save gate and the push gate cannot disagree.
 
-    Each entry: {date, session (type/name), field, message}. Containers that
-    only hold a nested 'sessions' list are not sessions themselves.
+    Each entry: {date, session (type/name), field, message}. Sessions Garmin
+    has no sport for (skipped at push) are not errors here.
     """
-    from ..authoring import validate_session
-    from ..workout_builder import load_exercise_db
-    catalogue = load_exercise_db()
+    import copy
+    from ..workout_builder import build_workout_report
     errors, warnings = [], []
     for day_str, day_data in sorted((plan_days or {}).items()):
-        for session in _iter_plan_sessions(day_data):
-            if isinstance(session.get('sessions'), list):
+        if not isinstance(day_data, dict) or not day_data.get('planned'):
+            continue
+        for session in _expand_push_sessions(copy.deepcopy(day_data)):
+            report = build_workout_report(session, day_str)
+            if report['workout_type'] in ('skipped', 'unknown'):
                 continue
-            report = validate_session(session, catalogue)
             label = session.get('name') or session.get('description') or session.get('type')
-            for problem in report.errors:
+            for problem in report['errors']:
                 errors.append({'date': day_str, 'session': label, **problem})
-            for problem in report.warnings:
+            for problem in report['warnings']:
                 warnings.append({'date': day_str, 'session': label, **problem})
     return errors, warnings
 
@@ -859,8 +916,7 @@ def update_weekly_plan(plan: dict | None = None,
                        override_rationale: str | None = None) -> dict:
     """
     Saves a new or updated weekly training plan — the rolling 7-day plan,
-    at most 21 days ahead. Every save runs five code-enforced checks; read
-    them before building the plan.
+    at most 21 days ahead. Every save runs five code-enforced checks.
 
     GATES AND ERROR CODES
 
@@ -875,13 +931,15 @@ def update_weekly_plan(plan: dict | None = None,
       intensity 'discretion' and still states its purpose.
     - injury_gate: REJECTED when a non-rest session's type intersects an
       active/improving injury's restricted_activities (taxonomy-aware:
-      'long_ride' is caught by 'cycling'; free text matches by substring).
+      'long_ride' is caught by 'cycling'; free text matches by substring)
+      or a strength exercise's key/category carries a restricted movement
+      word ('jump', 'overhead', 'shoulder_press'); the violation names it.
       override_injury_gate=True needs athlete_statement (the athlete's own
       words) and override_rationale, logged as a 'gate_override' decision;
       without them: 'override_requires_confirmation'. A plan failing both
       gates reports both (injury_gate carries a 'purpose_gate' section).
-    - plan_dates: REJECTED when every day key is in the past ('build a
-      current week') or any day key is more than 21 days out.
+    - plan_dates: REJECTED when every day is in the past or any day is
+      more than 21 days out.
     - authoring_error: REJECTED when a session's 'structure' (runs, rides)
       or 'exercises' (strength) breaks the session contract — an unknown
       key, a phase without an end condition, an exercise without sets or
@@ -894,10 +952,10 @@ def update_weekly_plan(plan: dict | None = None,
       no_demonstrated_history (30+ min in a sport with no completed
       session in the window). Address each before pushing.
     - authoring_warnings (save succeeds): what the watch will not show as
-      written — an off-catalogue exercise name, a cue over 50 chars, a
-      session intensity outside the zone vocabulary.
-    - validation_error: the dict failed the typed schema (day keys must be
-      YYYY-MM-DD; every session needs a string 'type').
+      written (off-catalogue name, cue over 50 chars, no load stated while
+      the baseline has one, no warm-up before loaded compounds).
+    - validation_error: the dict failed the typed schema (ISO day keys;
+      every session needs a string 'type').
 
     PLAN STRUCTURE (plan)
 
@@ -907,16 +965,17 @@ def update_weekly_plan(plan: dict | None = None,
 
         Session: 'type' (REQUIRED), 'purpose' (REQUIRED unless rest),
         'duration_mins', 'intensity', 'name' (Garmin workout name, 40
-        chars), 'description', 'structure' (runs, rides), 'exercises' and
-        'warmup_mins' (strength). 'intensity' is free text; 'discretion'
-        marks an athlete-choice day, bounded by 'constraints': ['Z2 only'].
+        chars), 'description', 'structure' (runs, rides), 'exercises'
+        (strength), 'warmup_mins'/'cooldown_mins'. 'discretion' as the
+        intensity marks an athlete-choice day; its 'constraints' list goes
+        on the watch.
         'planned' may be a LIST when a day has two or three workouts; each
         is pushed and counted on its own.
 
-    SESSION CONTRACT (what the watch shows; preview_workout renders it)
+    SESSION CONTRACT (preview_workout renders it)
 
-        The renderer draws exactly what the session says and defaults
-        nothing. 'structure': phases {phase: warmup|interval|recovery|
+        The renderer draws what the session says and defaults nothing.
+        'structure': phases {phase: warmup|interval|recovery|
         cooldown|rest; ONE of duration_secs|duration_mins|distance_m, or
         "open" for a lap-button step; ONE target: intensity recovery|easy|
         tempo|sweet_spot|threshold|vo2|max_effort, hr_target [lo,hi],
@@ -928,9 +987,8 @@ def update_weekly_plan(plan: dict | None = None,
         structure a session is one block (runs/indoor rides: warm-up, main,
         cool-down). preview_workout() returns the full contract.
 
-    LIFECYCLE: saved as supplied; pushed_workout_ids is preserved;
-    week_start/week_end derive from the day keys; days older than 9 days
-    are pruned to plan_history.json.
+    LIFECYCLE: saved as supplied (pushed_workout_ids preserved); days older
+    than 9 days are pruned to plan_history.json.
 
     Args:
         plan: the plan dict (preferred). plan_json: DEPRECATED JSON string.
@@ -1163,7 +1221,8 @@ def update_weekly_plan(plan: dict | None = None,
 # ---------------------------------------------------------------------------
 
 PUSH_TOKEN_TTL_SECS = 600
-_push_tokens: dict[str, tuple[str, float]] = {}   # token -> (plan digest, issued at)
+# token -> (plan digest, issued at, the rendered manifest the athlete saw)
+_push_tokens: dict[str, tuple[str, float, dict]] = {}
 _push_token_lock = threading.Lock()
 
 
@@ -1183,38 +1242,45 @@ def _push_digest(plan: dict, previous_ids: list, override: bool) -> str:
         json.dumps(material, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
 
 
-def _issue_push_token(digest: str) -> str:
+def _issue_push_token(digest: str, manifest: dict) -> str:
+    """Mint a single-use token bound to the plan digest AND to the rendered
+    manifest the preview showed: the confirm step uploads these payloads,
+    not a re-render (a profile or catalogue edit between the two calls can
+    no longer change what the athlete approved)."""
     now = time.monotonic()
     with _push_token_lock:
-        for token, (_digest, issued) in list(_push_tokens.items()):
+        for token, (_digest, issued, _manifest) in list(_push_tokens.items()):
             if now - issued > PUSH_TOKEN_TTL_SECS:
                 _push_tokens.pop(token, None)
         token = secrets.token_hex(8)
-        _push_tokens[token] = (digest, now)
+        _push_tokens[token] = (digest, now, manifest)
     return token
 
 
-def _consume_push_token(token: str, digest: str) -> dict | None:
-    """Pop the token (single use) and validate it. None when the push may proceed."""
+def _consume_push_token(token: str, digest: str) -> tuple[dict | None, dict | None]:
+    """Pop the token (single use) and validate it.
+
+    Returns (error, manifest): error is None when the push may proceed, and
+    manifest is the rendered manifest from the preview."""
     with _push_token_lock:
         entry = _push_tokens.pop(str(token), None)
     hint = 'Call push_plan_to_garmin() without a token for a fresh preview.'
     if entry is None:
-        return {'error': 'confirm_token_invalid',
-                'message': ('Unknown or already used confirm_token — tokens are '
-                            'single-use and live 10 minutes. Nothing was pushed.'),
-                'hint': hint}
-    stored_digest, issued = entry
+        return ({'error': 'confirm_token_invalid',
+                 'message': ('Unknown or already used confirm_token — tokens are '
+                             'single-use and live 10 minutes. Nothing was pushed.'),
+                 'hint': hint}, None)
+    stored_digest, issued, manifest = entry
     if time.monotonic() - issued > PUSH_TOKEN_TTL_SECS:
-        return {'error': 'confirm_token_expired',
-                'message': 'The preview is older than 10 minutes. Nothing was pushed.',
-                'hint': hint}
+        return ({'error': 'confirm_token_expired',
+                 'message': 'The preview is older than 10 minutes. Nothing was pushed.',
+                 'hint': hint}, None)
     if stored_digest != digest:
-        return {'error': 'confirm_token_mismatch',
-                'message': ('The plan\'s sessions or its pushed workouts changed since '
-                            'the preview. Nothing was pushed.'),
-                'hint': hint}
-    return None
+        return ({'error': 'confirm_token_mismatch',
+                 'message': ('The plan\'s sessions or its pushed workouts changed since '
+                             'the preview. Nothing was pushed.'),
+                 'hint': hint}, None)
+    return None, manifest
 
 
 def _expand_push_sessions(day_data: dict) -> list[dict]:
@@ -1229,7 +1295,7 @@ def _expand_push_sessions(day_data: dict) -> list[dict]:
             continue
         if isinstance(session.get('sessions'), list):
             parent_exercises = session.get('exercises', [])
-            parent_intensity = session.get('intensity', 'easy')
+            parent_intensity = session.get('intensity')  # inherited only when the parent states one
             for sub in session.get('sessions', []):
                 if not isinstance(sub, dict):
                     continue
@@ -1244,7 +1310,7 @@ def _expand_push_sessions(day_data: dict) -> list[dict]:
                     sub['description'] = "Ankle Rehab"
                 elif 'description' not in sub:
                     sub['description'] = sub.get('notes', session.get('description', ''))
-                if 'intensity' not in sub:
+                if 'intensity' not in sub and parent_intensity is not None:
                     sub['intensity'] = parent_intensity
                 if sub_type == 'strength' and parent_exercises:
                     sub['exercises'] = parent_exercises
@@ -1334,9 +1400,12 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
     anthropic/requiresUserInteraction — the athlete says yes before step 2.
 
     STEP 2 — CONFIRM (confirm_token from step 1): deletes the listed
-    workouts, builds and uploads each session (running, cycling, strength,
-    yoga, pilates, swimming, padel; rest days skipped), schedules it to its
-    date and records the new workout ids on the plan. A token is rejected
+    workouts, uploads exactly the payloads rendered for the preview (running,
+    cycling, strength, yoga, pilates, swimming, padel; rest days skipped —
+    a profile or catalogue change after the preview cannot alter what the
+    athlete approved), schedules each to its date and records the new
+    workout ids on the plan. 'status' is 'partial' when anything the preview
+    listed did not land (see errors). A token is rejected
     when it is unknown or already used ('confirm_token_invalid'), older than
     10 minutes ('confirm_token_expired'), or when the plan's sessions or its
     pushed ids changed since the preview ('confirm_token_mismatch') — ask for
@@ -1365,8 +1434,8 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
         'warnings'), 'unrenderable', 'skipped', 'workouts_to_delete',
         'grounding_warnings', 'injury_violations', 'confirm_token',
         'expires_in_minutes', 'next'}.
-        Confirm: {'status': 'success', 'duplicates_deleted', 'pushed',
-        'skipped', 'errors', 'summary'}, or a structured error.
+        Confirm: {'status': 'success' | 'partial', 'duplicates_deleted',
+        'pushed', 'skipped', 'errors', 'summary'}, or a structured error.
     """
     try:
         today = date.today()
@@ -1405,10 +1474,11 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
 
         previous_ids = list(plan.get('pushed_workout_ids', []) or [])
         digest = _push_digest(plan, previous_ids, override_injury_gate)
-        to_push, skipped, unrenderable = _build_push_manifest(plan)
 
         # ---------------- STEP 1: preview (read-only) ----------------
         if confirm_token is None:
+            to_push, skipped, unrenderable = _build_push_manifest(plan)
+            manifest = {'to_push': to_push, 'skipped': skipped, 'unrenderable': unrenderable}
             library_note = None
             if previous_ids:
                 try:
@@ -1431,7 +1501,7 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
                 'workouts_to_delete': to_delete,
                 'grounding_warnings': _grounding_warnings(plan.get('days', {}), today),
                 'injury_violations': violations,
-                'confirm_token': _issue_push_token(digest),
+                'confirm_token': _issue_push_token(digest, manifest),
                 'expires_in_minutes': PUSH_TOKEN_TTL_SECS // 60,
                 'next': ('Show the athlete each session\'s steps and the deletions. When they '
                          'agree, call push_plan_to_garmin(confirm_token=...) with the '
@@ -1447,9 +1517,12 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
             return preview
 
         # ---------------- STEP 2: confirm ----------------
-        token_error = _consume_push_token(confirm_token, digest)
+        # Uploads the manifest rendered at preview time — the step trees the
+        # athlete approved — never a fresh render.
+        token_error, manifest = _consume_push_token(confirm_token, digest)
         if token_error:
             return token_error
+        to_push, skipped, unrenderable = manifest['to_push'], manifest['skipped'], manifest['unrenderable']
 
         injury_gate_note = None
         if violations:
@@ -1557,6 +1630,8 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
                 today=today)
             results['decision_logged'] = decision.get('id')
 
+        if results['errors']:
+            results['status'] = 'partial'  # something the athlete approved did not land
         pushed_count = len(results['pushed'])
         if pushed_count > 0:
             dates = [p['date'] for p in results['pushed']]

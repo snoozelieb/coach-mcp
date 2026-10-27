@@ -108,11 +108,13 @@ CATALOGUE_CATEGORY_TO_WORKOUT: dict[str, str] = {
     "OTHER": "",
 }
 
-# The cached catalogue keeps ONE category per exercise name, but Garmin's
-# real catalogue lists common bodyweight movements in several (PLANK exists
-# under PLANK and under SUSPENSION). When the plan omits the category these
-# corrections pick the one the watch animates. They never override a
-# category the plan states.
+# The cached catalogue keeps ONE category per exercise name, and files the
+# plain bodyweight movements (PLANK, CRUNCH, PUSH_UP, SIT_UP) under
+# SUSPENSION, where Garmin also lists them. When the plan omits the category
+# these corrections pick the category the watch animates — only for an exact
+# name match, or for a name the cache files under SUSPENSION. Any other
+# cached category is trusted as is (a substring match used to override 31
+# valid categories silently). They never override a category the plan states.
 CATALOGUE_CATEGORY_CORRECTIONS: tuple[tuple[str, str], ...] = (
     ("CRUNCH", "CRUNCH"),
     ("PUSH_UP", "PUSH_UP"),
@@ -123,6 +125,7 @@ CATALOGUE_CATEGORY_CORRECTIONS: tuple[tuple[str, str], ...] = (
     ("LEG_RAISE", "LEG_RAISE"),
     ("LEG_LIFT", "LEG_RAISE"),
 )
+MISFILED_CATEGORY = "SUSPENSION"
 
 # Muscle-group words coaches write instead of a Garmin category. They are
 # NOT silently mapped (that is judgment); the error suggests them.
@@ -234,11 +237,13 @@ class Phase(StrictModel):
     def _intensity_word(cls, v):
         if v is None:
             return None
+        if str(v).strip().lower() == 'none':
+            return 'none'  # explicitly untargeted, even when the session has an intensity
         word = normalise_intensity(v)
         if word is None:
             raise ValueError(
                 f"intensity {v!r} is not in the vocabulary {', '.join(INTENSITY_WORDS)} "
-                "(z1-z6 are accepted as aliases)")
+                "(z1-z6 are accepted as aliases; 'none' = no target on this step)")
         return word
 
     @field_validator('duration_secs', 'duration_mins', 'distance_m', mode='before')
@@ -275,6 +280,28 @@ class Phase(StrictModel):
                 raise ValueError(f"power_pct must be [low_pct, high_pct] or one number, got {v!r}")
             return v
         return v
+
+    RANGES: ClassVar[dict[str, tuple[float, float, str]]] = {
+        'hr_target': (30, 230, 'bpm'),
+        'pace_sec_per_km': (120, 1200, 'sec/km (2:00-20:00 per km)'),
+        'pace': (0.5, 10, 'm/s (prefer pace_sec_per_km)'),
+        'power_watts': (0, 2000, 'W'),
+        'power_pct': (20, 200, '% of FTP (a fraction such as 1.0 is not a percentage)'),
+        'cadence': (20, 250, 'rpm/spm'),
+    }
+
+    @model_validator(mode='after')
+    def _plausible(self):
+        for key, (lo, hi, unit) in self.RANGES.items():
+            value = getattr(self, key)
+            if value is None:
+                continue
+            values = value if isinstance(value, list) else [value]
+            if any(v < lo or v > hi for v in values):
+                raise ValueError(f"{key} values must be {lo:g}-{hi:g} {unit}, got {value!r}")
+        if self.distance_m is not None and not _is_open(self.distance_m) and float(self.distance_m) < 20:
+            raise ValueError(f"distance_m must be at least 20 m, got {self.distance_m!r}")
+        return self
 
     @model_validator(mode='after')
     def _one_end_one_target(self):
@@ -320,8 +347,8 @@ class RepeatBlock(StrictModel):
 
 def _structure_discriminator(value: Any) -> str:
     if isinstance(value, dict):
-        word = str(value.get('phase', '')).strip().lower()
-        if word == 'repeat' or 'iterations' in value or 'steps' in value:
+        word = str(value.get('phase', '') or '').strip().lower()
+        if word == 'repeat' or (not word and ('iterations' in value or 'steps' in value)):
             return 'repeat'
         return 'phase'
     return 'repeat' if isinstance(value, RepeatBlock) else 'phase'
@@ -347,7 +374,7 @@ class CircuitExercise(StrictModel):
     name: str = Field(min_length=1, description="Garmin exercise key, e.g. GOBLET_SQUAT (spaces are normalised)")
     category: str | None = Field(default=None, description="Garmin workout category; required when the name is not in the catalogue")
     reps: int | Literal["open"] | None = Field(default=None, description="reps per set, or \"open\" to end the set with the lap button")
-    duration_secs: int | None = Field(default=None, ge=1, description="hold/carry time per set — timed sets instead of reps")
+    duration_secs: float | None = Field(default=None, ge=1, description="hold/carry time per set in seconds — timed sets instead of reps")
     each_side: bool = Field(default=False, description="reps/time are per side; the cue says so on the watch")
     weight_kg: float | None = Field(default=None, gt=0, description="load; only an explicit value is sent")
     notes: str | None = Field(default=None, description=f"form cue shown on the step (about {STEP_NOTE_MAX_CHARS} characters visible)")
@@ -404,7 +431,7 @@ class CircuitExercise(StrictModel):
 
 class Exercise(CircuitExercise):
     sets: int = Field(ge=1, description="number of sets (required — never defaulted)")
-    rest_secs: int | None = Field(default=None, ge=0, description="rest between sets; a timed rest step when given, a lap-button rest otherwise")
+    rest_secs: float | None = Field(default=None, ge=0, description="rest between sets in seconds; a timed rest step when given, a lap-button rest otherwise")
 
 
 class Circuit(StrictModel):
@@ -412,7 +439,7 @@ class Circuit(StrictModel):
     N times (supersets, Tabata rounds, rehab circuits)."""
     rounds: int = Field(ge=1)
     exercises: list[CircuitExercise] = Field(min_length=1)
-    rest_secs: int | None = Field(default=None, ge=0, description="rest after each round")
+    rest_secs: float | None = Field(default=None, ge=0, description="rest after each round, in seconds")
     notes: str | None = None
     name: str | None = Field(default=None, description="label for the preview only")
 
@@ -434,10 +461,30 @@ class ExerciseList(BaseModel):
     items: list[ExerciseItem] = Field(min_length=1)
 
 
-class StrengthSessionFields(StrictModel):
-    """Session-level strength keys the renderer reads (validated in isolation
-    so the lenient Session schema stays lenient)."""
-    warmup_mins: float | None = Field(default=None, gt=0, description="explicit timed warm-up block before the first exercise; none is inserted otherwise")
+class SessionFields(StrictModel):
+    """Session-level keys the renderer reads (validated in isolation so the
+    lenient Session schema stays lenient).
+
+    Strength: warmup_mins renders a WARM_UP block before the first exercise;
+    none is inserted otherwise. Plain runs and rides (no structure): when
+    stated, warmup_mins / cooldown_mins replace the documented default split
+    (runs: 10 % each up to 5 min; indoor rides: 10 % up to 10 min / 5 % up to
+    5 min; plain outdoor rides: one block).
+    """
+    warmup_mins: float | None = Field(default=None, gt=0, description="explicit warm-up block in minutes")
+    cooldown_mins: float | None = Field(default=None, gt=0, description="explicit cool-down block in minutes (plain runs and rides)")
+
+
+StrengthSessionFields = SessionFields  # backward-compatible name
+
+# Categories where a set normally carries a load; used only to WARN when the
+# plan states none (never to pick one).
+LOADED_CATEGORIES = frozenset({
+    "SQUAT", "DEADLIFT", "BENCH_PRESS", "ROW", "SHOULDER_PRESS", "OLYMPIC_LIFT",
+    "CURL", "TRICEPS_EXTENSION", "LUNGE", "SHRUG", "CARRY", "FLYE", "LATERAL_RAISE",
+})
+# Compound lifts a coach would not start cold; the plan must say how to warm up.
+COMPOUND_CATEGORIES = frozenset({"SQUAT", "DEADLIFT", "BENCH_PRESS", "OLYMPIC_LIFT", "SHOULDER_PRESS"})
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +551,14 @@ def _format_pydantic_errors(exc: ValidationError, root: str, allowed_keys_for: d
         elif kind in ('int_parsing', 'int_type', 'float_parsing', 'float_type', 'int_from_float'):
             key = path_parts[-1][1:] if path_parts and path_parts[-1].startswith('.') else owner
             msg = f"{key} must be a number, got {err.get('input')!r}"
-        elif kind == 'union_tag_invalid':
-            msg = "each entry must be an object (a phase or a repeat block)"
+        elif kind == 'list_type':
+            key = path_parts[-1][1:] if path_parts and path_parts[-1].startswith('.') else owner
+            msg = f"{key} must be a [low, high] pair, got {err.get('input')!r}"
+        elif kind in ('union_tag_invalid', 'dict_type', 'model_type', 'model_attributes_type'):
+            what = "a phase or a repeat block" if root == 'structure' else "an exercise or a circuit"
+            msg = f"each entry must be an object ({what}), got {err.get('input')!r}"
+        elif kind == 'literal_error' and path_parts and path_parts[-1] == '.phase':
+            msg = "a block with iterations/steps is {'phase': 'repeat', ...}; a plain step has no steps"
         problems.append({'field': root + ''.join(path_parts), 'message': msg})
     seen, unique = set(), []
     for p in problems:
@@ -522,7 +575,7 @@ ALLOWED_KEYS = {
     'exercise': tuple(Exercise.model_fields),
     'circuit': tuple(Circuit.model_fields),
     'circuit_exercise': tuple(CircuitExercise.model_fields),
-    'session': tuple(StrengthSessionFields.model_fields),
+    'session': tuple(SessionFields.model_fields),
 }
 
 
@@ -575,7 +628,7 @@ def resolve_exercise_category(spec: CircuitExercise, catalogue: dict | None) -> 
     custom = bool(entry.get('custom')) if entry else False
     corrected = None
     for pattern, cat in CATALOGUE_CATEGORY_CORRECTIONS:
-        if pattern in spec.name:
+        if spec.name == pattern or (cat_category == MISFILED_CATEGORY and pattern in spec.name):
             corrected = cat
             break
 
@@ -655,14 +708,18 @@ def _check_phase(item: Phase | RepeatBlock, path: str, family: str, report: Auth
                            "the session intensity is not a zone word; it renders as an untargeted step"))
 
 
-def validate_session(session: dict, catalogue: dict | None = None) -> AuthoringReport:
+def validate_session(session: dict, catalogue: dict | None = None,
+                     strength_baseline: dict | None = None) -> AuthoringReport:
     """Validate the authoring surface of ONE plan session.
 
     Checks `structure` (running, cycling) and `exercises` (strength) against
     the strict models, resolves exercise categories against the Garmin
     catalogue when one is supplied, and warns about session-level intensity
-    words outside the vocabulary. Rest days and families without structure
-    pass through with an empty report.
+    words outside the vocabulary. With `strength_baseline` (the athlete's
+    `strength_baseline.exercises` mapping) it also warns when a loaded
+    movement states no load although the baseline holds one — a fact about
+    the athlete's record, never a value the renderer would pick. Rest days
+    and families without structure pass through with an empty report.
     """
     report = AuthoringReport()
     if not isinstance(session, dict):
@@ -679,6 +736,13 @@ def validate_session(session: dict, catalogue: dict | None = None) -> AuthoringR
     if family == 'rest':
         return report
 
+    duration = session.get('duration_mins')
+    if duration is not None and not isinstance(duration, bool):
+        try:
+            float(duration)
+        except (TypeError, ValueError):
+            report.error('duration_mins', f"duration_mins must be a number of minutes, got {duration!r}")
+
     raw_intensity = session.get('intensity')
     if raw_intensity is not None and str(raw_intensity).strip().lower() != 'discretion':
         word = normalise_intensity(raw_intensity)
@@ -687,7 +751,17 @@ def validate_session(session: dict, catalogue: dict | None = None) -> AuthoringR
             report.warn('intensity', (f"intensity {raw_intensity!r} is not in the zone vocabulary "
                                       f"({', '.join(INTENSITY_WORDS)}); the main step renders "
                                       "without a target"))
+    elif raw_intensity is None and family in ('running', 'cycling') and not session.get('structure') \
+            and not _is_ftp_test(session_type):
+        report.warn('intensity', ("no intensity stated: the main block renders without a target "
+                                  f"(state one of {', '.join(INTENSITY_WORDS)}, or 'discretion' "
+                                  "for an athlete-choice day)"))
 
+    if _is_ftp_test(session_type):
+        _check_protocol(session, report)
+        return report
+
+    prose = ' '.join(str(session.get(k) or '') for k in ('description', 'notes'))
     structure = session.get('structure')
     if structure not in (None, [], {}):
         if family in ('running', 'cycling'):
@@ -698,9 +772,13 @@ def validate_session(session: dict, catalogue: dict | None = None) -> AuthoringR
                 for i, item in enumerate(items):
                     _check_phase(item, f"structure[{i}]", family, report, report.session_intensity)
         elif family == 'swimming':
-            pass  # swimming structure (distance_m per phase) keeps its own lenient shape
+            _check_swimming(session, report)  # lenient shape, but the numbers must be numbers
         else:
             report.warn('structure', f"'structure' is read for running and cycling sessions only; a {family} session ignores it")
+    elif family in ('running', 'cycling') and _looks_like_intervals(prose):
+        report.warn('structure', ("the description reads like intervals or repeats but the session has "
+                                  "no 'structure', so the watch shows ONE block at the session intensity; "
+                                  "write the phases in structure (preview_workout() shows the contract)"))
 
     exercises = session.get('exercises')
     if exercises not in (None, [], {}):
@@ -716,31 +794,182 @@ def validate_session(session: dict, catalogue: dict | None = None) -> AuthoringR
                     else:
                         _check_exercise(item, f"exercises[{i}]", catalogue, report)
         elif family == 'pilates':
-            pass  # rehab sessions keep the lenient reps-or-time-or-lap shape
+            _check_pilates(exercises, report)  # lenient reps-or-time-or-lap shape; numbers must be numbers
         else:
             report.warn('exercises', f"'exercises' is read for strength and pilates sessions only; a {family} session ignores it")
-    elif family == 'strength':
-        text = ' '.join(str(session.get(k) or '') for k in ('description', 'notes'))
-        if _looks_like_sets(text):
-            report.warn('exercises', ("the description reads like sets and reps but the session has "
-                                      "no 'exercises' list, so it renders as ONE timed block; "
-                                      "put each movement in exercises"))
+    elif family == 'strength' and _looks_like_sets(prose):
+        report.error('exercises', ("the description reads like sets and reps but the session has "
+                                   "no 'exercises' list, so the watch would get ONE timed block; "
+                                   "put each movement in exercises (name, sets, reps or duration_secs)"))
 
-    if family == 'strength':
-        extra = {k: session[k] for k in ('warmup_mins',) if k in session}
+    if family in ('strength', 'running', 'cycling'):
+        extra = {k: session[k] for k in ('warmup_mins', 'cooldown_mins') if k in session}
         try:
-            StrengthSessionFields.model_validate(extra)
+            SessionFields.model_validate(extra)
         except ValidationError as exc:
             report.errors.extend(_format_pydantic_errors(exc, 'session', ALLOWED_KEYS))
+    if family == 'strength':
         if session.get('skip_warmup') is not None:
             report.warn('skip_warmup', "skip_warmup is retired: no warm-up is inserted unless warmup_mins is set")
+        if report.exercises:
+            _check_athlete_facing(session, report, catalogue, strength_baseline)
 
     return report
+
+
+def _iter_exercise_specs(items) -> list[tuple[str, CircuitExercise]]:
+    out = []
+    for i, item in enumerate(items or []):
+        if isinstance(item, Circuit):
+            out.extend((f"exercises[{i}].exercises[{j}]", ex) for j, ex in enumerate(item.exercises))
+        else:
+            out.append((f"exercises[{i}]", item))
+    return out
+
+
+def _baseline_load_for(category: str | None, baseline: dict | None) -> tuple[str, float] | None:
+    """(baseline key, current weight) when the athlete's strength baseline
+    holds a load for this category; None otherwise. Data only."""
+    if not category or not baseline:
+        return None
+    entry = baseline.get(category.lower())
+    if not isinstance(entry, dict):
+        return None
+    current = entry.get('current') if isinstance(entry.get('current'), dict) else {}
+    weight = current.get('weight_kg') if current else entry.get('current_weight_kg')
+    try:
+        weight = float(weight) if weight is not None else None
+    except (TypeError, ValueError):
+        weight = None
+    if not weight:
+        return None
+    return category.lower(), weight
+
+
+def _check_athlete_facing(session: dict, report: AuthoringReport, catalogue: dict | None,
+                          baseline: dict | None) -> None:
+    """Warnings about the athlete, not about Garmin: a loaded movement with no
+    stated load while the baseline records one; loaded compounds with no
+    warm-up stated. Facts for the coach to act on — nothing is filled in."""
+    specs = _iter_exercise_specs(report.exercises)
+    categories = []
+    for path, spec in specs:
+        category, _name, _warning = resolve_exercise_category(spec, catalogue)
+        categories.append(category)
+        if spec.weight_kg is None and category in LOADED_CATEGORIES:
+            found = _baseline_load_for(category, baseline)
+            if found:
+                key, weight = found
+                variation = (baseline.get(key) or {}).get('preferred_variation') if baseline else None
+                report.warn(path, (f"{spec.name} states no load; the strength baseline records "
+                                   f"{weight:g} kg for {key}"
+                                   + (f" ({variation})" if variation else "")
+                                   + " — write weight_kg if a load is meant, the watch shows none"))
+    compounds = [c for c in categories if c in COMPOUND_CATEGORIES]
+    if compounds and not session.get('warmup_mins'):
+        first = categories[0] if categories else None
+        if first != 'WARM_UP':
+            report.warn('warmup_mins', (f"loaded compound work ({', '.join(sorted(set(compounds)))}) with no "
+                                        "warm-up stated: set warmup_mins or start with a WARM_UP-category "
+                                        "movement; nothing is inserted"))
+
+
+def _is_ftp_test(session_type: str) -> bool:
+    return session_type in ('ftp_test', 'threshold_test') or 'ftp_test' in session_type
+
+
+class ProtocolPhase(StrictModel):
+    """One phase of an FTP-test `protocol` (the built-in protocol is used when
+    the session gives none). Timed phases with optional cadence guidance."""
+    phase: str | None = None
+    name: str | None = None
+    duration_mins: float = Field(gt=0)
+    cadence_min: float | None = Field(default=None, ge=20, le=250)
+    cadence_max: float | None = Field(default=None, ge=20, le=250)
+    notes: str | None = None
+
+    @model_validator(mode='after')
+    def _cadence_pair(self):
+        if (self.cadence_min is None) != (self.cadence_max is None):
+            raise ValueError("cadence_min and cadence_max go together")
+        return self
+
+
+def _check_protocol(session: dict, report: AuthoringReport) -> None:
+    if session.get('structure'):
+        report.error('structure', ("an ftp_test renders its test protocol and ignores 'structure'; "
+                                   "remove structure, or use type 'wattbike' with structure for a "
+                                   "custom session"))
+    protocol = session.get('protocol')
+    if protocol in (None, []):
+        return
+    if not isinstance(protocol, list):
+        report.error('protocol', "protocol must be a list of phases")
+        return
+    for i, phase in enumerate(protocol):
+        try:
+            ProtocolPhase.model_validate(phase)
+        except ValidationError as exc:
+            for problem in _format_pydantic_errors(exc, f'protocol[{i}]', {f'protocol[{i}]': tuple(ProtocolPhase.model_fields)}):
+                if problem['message'].startswith('unknown key'):
+                    problem['message'] = problem['message'].split('; allowed keys')[0] + \
+                        f"; allowed keys: {', '.join(ProtocolPhase.model_fields)}"
+                report.errors.append(problem)
+
+
+def _positive_number(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _check_swimming(session: dict, report: AuthoringReport) -> None:
+    pool = session.get('pool_length_m')
+    if pool is not None and not _positive_number(pool):
+        report.error('pool_length_m', f"pool_length_m must be a number of metres, got {pool!r}")
+    for i, phase in enumerate(session.get('structure') or []):
+        if not isinstance(phase, dict):
+            report.error(f'structure[{i}]', "each swimming phase is an object with distance_m")
+            continue
+        distance = phase.get('distance_m')
+        if distance is not None and not _positive_number(distance):
+            report.error(f'structure[{i}].distance_m', f"distance_m must be a number of metres, got {distance!r}")
+
+
+PILATES_EXERCISE_KEYS = ('name', 'sets', 'reps', 'duration_secs', 'notes')
+
+
+def _check_pilates(exercises: Any, report: AuthoringReport) -> None:
+    if not isinstance(exercises, list):
+        report.error('exercises', "exercises must be a list")
+        return
+    for i, ex in enumerate(exercises):
+        if not isinstance(ex, dict):
+            report.error(f'exercises[{i}]', "each rehab exercise is an object (name, sets, reps or duration_secs, notes)")
+            continue
+        for key in ('sets', 'reps', 'duration_secs'):
+            value = ex.get(key)
+            if value is not None and not _positive_number(value):
+                report.error(f'exercises[{i}].{key}', f"{key} must be a whole number, got {value!r}")
+        unknown = [k for k in ex if k not in PILATES_EXERCISE_KEYS]
+        if unknown:
+            report.warn(f'exercises[{i}]', (f"unknown key(s) {', '.join(map(repr, unknown))} are ignored on a rehab "
+                                           f"exercise; keys read: {', '.join(PILATES_EXERCISE_KEYS)}"))
 
 
 def _looks_like_sets(text: str) -> bool:
     import re
     return bool(re.search(r'\b\d+\s*[xX×]\s*\d+\b', text or ''))
+
+
+def _looks_like_intervals(text: str) -> bool:
+    """'5 x 3 min', '4x4', '6 x 400m', 'intervals', 'repeats', 'strides', 'ladder'."""
+    import re
+    text = text or ''
+    if re.search(r'\b\d+\s*[xX×]\s*\d+', text):
+        return True
+    return bool(re.search(r'\b(intervals?|repeats?|reps|strides|ladder|fartlek|hill reps?)\b', text, re.I))
 
 
 # ---------------------------------------------------------------------------
@@ -767,7 +996,8 @@ def contract_document(sport: str | None = None) -> str:
     for word, (hr, pw, pace) in INTENSITY_ZONES.items():
         parts.append(f"| {word} | {hr} | {pw} | {pace} |")
     parts.append("\nAliases: z1-z6, zone1-zone5, endurance/aerobic (easy), hard (threshold), "
-                 "vo2max (vo2), anaerobic/sprint (max_effort). Any other word is an error inside "
+                 "vo2max (vo2), anaerobic/sprint (max_effort); 'none' on a phase means no target "
+                 "even when the session has an intensity. Any other word is an error inside "
                  "a phase and a warning at session level. A running step resolves intensity to a "
                  "pace zone when threshold pace is set, else HR; an indoor ride to a power zone "
                  "when power zones are set, else HR; an outdoor ride to HR.\n")
@@ -779,8 +1009,17 @@ def contract_document(sport: str | None = None) -> str:
                   "'steps': [...]} (nests). Cycling steps take power_watts, power_pct (list, or one "
                   "number for a ±5 % band of the athlete's FTP), hr_target, cadence or intensity; running "
                   "steps take pace_sec_per_km, pace (m/s), hr_target, cadence or intensity. A session "
-                  "without structure renders as warm-up / main / cool-down from duration_mins and "
-                  "intensity (plain outdoor rides: one block).\n",
+                  "without structure renders from duration_mins and intensity: a plain outdoor ride is "
+                  "ONE block; a plain run gets a warm-up and cool-down of 10 % each (up to 5 min); a "
+                  "plain indoor ride 10 % warm-up (up to 10 min) and 5 % cool-down (up to 5 min) — "
+                  "state warmup_mins / cooldown_mins on the session to replace those splits. A "
+                  "description that reads like intervals without a structure list is a warning: the "
+                  "watch shows one block. On a 'discretion' day the main block is untargeted and the "
+                  "session's constraints are written on it.\n",
+                  "Plausibility (errors outside): hr_target 30-230 bpm, pace_sec_per_km 120-1200, "
+                  "pace 0.5-10 m/s, power_watts 0-2000, power_pct 20-200 (a percentage, not a "
+                  "fraction), cadence 20-250, distance_m >= 20. An ftp_test takes an optional "
+                  "'protocol' (phases with duration_mins and cadence_min/max) and ignores structure.\n",
                   "```json\n" + json.dumps(_schema(Phase), indent=1) + "\n```\n"]
     if sport in (None, 'strength'):
         parts += ["## Strength: `exercises`\n",
@@ -789,9 +1028,11 @@ def contract_document(sport: str | None = None) -> str:
                   "catalogue), each_side, weight_kg (only an explicit value is sent), rest_secs (a timed "
                   "rest step when given, lap button otherwise), notes (the cue on the watch). Circuit: "
                   "{'rounds': N, 'exercises': [...], 'rest_secs': S}. Session-level warmup_mins adds a "
-                  "timed warm-up block; none is inserted otherwise. Garmin keeps the exercise name only "
-                  "for catalogue entries whose category matches; otherwise the watch shows the category "
-                  "and the description (readable name + cue).\n",
+                  "timed warm-up block; none is inserted otherwise. Sets and reps written in the "
+                  "description without an exercises list are an error. Garmin keeps the exercise name "
+                  "only for catalogue entries whose category matches; otherwise the watch shows the "
+                  "category and the description (readable name + cue). When the plan gives no notes, "
+                  "the researched exercise-library cue is used and flagged as such.\n",
                   f"Allowed categories: {', '.join(sorted(VALID_WORKOUT_CATEGORIES))}\n",
                   "```json\n" + json.dumps(_schema(Exercise), indent=1) + "\n```\n",
                   "```json\n" + json.dumps(_schema(Circuit), indent=1) + "\n```\n"]

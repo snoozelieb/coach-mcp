@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut and publish a garmin-coach-mcp release — version triple-bump, tag push (CI publishes PyPI + GitHub release + MCP registry), and the two-account git push auth dance. Use when the user asks to release, publish, cut a version, or bump the package.
+description: Release garmin-coach-mcp — version triple-bump, changelog, the two-account GitHub push/tag dance, and what the tag-triggered CI does (PyPI trusted publishing, GitHub Release, MCP Registry via OIDC). Use when cutting a version or verifying a release landed.
 ---
 
 # Releasing garmin-coach-mcp
@@ -11,8 +11,14 @@ the machine-specific facts that are NOT in the runbook.
 ## Preflight
 
 1. `git branch --show-current` must be `main`, tree clean, up to date with origin.
-2. Full suite green locally: `python -m pytest -q`.
+2. Full suite green locally with the venv interpreter:
+   `.venv/Scripts/python.exe -m pytest -q`, and `python -m ruff check .` clean
+   (CI runs the lint job and the suite on Python 3.12/3.13/3.14).
 3. `CHANGELOG.md` `[Unreleased]` section describes what ships.
+4. Nothing personal in the tree: `git status --short` shows no `data/*`
+   (except `methodology.json`), `.garth/`, `.env`, `*.log`, `test_fixtures.json`
+   or `data-backups/`. The review docs under `docs/*_REVIEW_*.md` that name
+   unfixed findings stay untracked.
 
 ## 1. Version triple-bump (test-enforced)
 
@@ -22,7 +28,8 @@ Bump ALL THREE, or `tests/test_packaging.py` fails:
 - `server.json` → **both** `version` fields (top level AND `packages[0]`)
 - `CHANGELOG.md` → retitle `[Unreleased]` to `## [x.y.z] - YYYY-MM-DD`
 
-Run `python -m pytest tests/test_packaging.py -q` to confirm, then commit.
+Run `.venv/Scripts/python.exe -m pytest tests/test_packaging.py -q` to confirm,
+then commit (no AI attribution lines in the message — user rule).
 
 ## 2. Push + tag — the auth dance (IMPORTANT)
 
@@ -30,7 +37,8 @@ The machine has two GitHub accounts (`snoozelieb` owns this repo; the default
 `gh` account is a work account that cannot push here or create releases). The
 repo has a local `credential.helper = !gh auth git-credential`. The user does
 NOT want browser auth flows (password manager). Run these via the **Bash tool,
-NOT PowerShell, and never compound the commands**:
+NOT PowerShell, as bare single commands — compounding them with `&&` or `;`
+gets the call denied**:
 
 ```bash
 gh auth switch --user snoozelieb
@@ -40,47 +48,53 @@ git push origin vX.Y.Z
 gh auth switch    # ALWAYS switch back afterwards (no --user needed: toggles to the other account)
 ```
 
-The tag push triggers `.github/workflows/release.yml`: builds sdist+wheel
-(verifies tag matches `pyproject.toml`), publishes to PyPI via trusted
-publishing (OIDC, no tokens), creates the GitHub Release with the CHANGELOG
-excerpt, and registers `server.json` with the MCP Registry (job
-`publish-to-mcp-registry`, OIDC — no token). Note: the local `gh` default is
-the work account, which **cannot** create releases on this repo — that's why
-CI does it.
+Pushing a tag is outward-facing: PyPI cannot take a version back and the
+registry refuses duplicates. Tag only when the user has said so.
 
-## 3. Verify
+## 3. What the tag triggers (`.github/workflows/release.yml`)
 
-- Actions → Release run is green.
+1. **build** — verifies the tag matches `pyproject.toml`, builds sdist + wheel.
+2. **publish-to-pypi** — trusted publishing (OIDC, environment `pypi`, no
+   token; PEP 740 attestations). The trusted publisher on pypi.org is
+   constrained to that environment.
+3. **github-release** — creates the GitHub Release with the `CHANGELOG.md`
+   excerpt for the version and the artifacts. The local `gh` default is the
+   work account, which **cannot** create releases here — that is why CI does it.
+4. **publish-to-mcp-registry** — after PyPI: downloads `mcp-publisher` at the
+   pinned `MCP_PUBLISHER_VERSION`, checks `MCP_PUBLISHER_SHA256` and the
+   Sigstore bundle, `login github-oidc`, then `publish` with retries while
+   PyPI metadata lags. Pinned v1.8.5 is the latest publisher on 2026-10-27
+   (SHA verified); the four `actions/*@v4`/`@v5` steps are Node 20 actions
+   and emit deprecation notices on Node 24 runners — bump to checkout@v7,
+   setup-python@v7, upload-artifact@v7, download-artifact@v8 when convenient. No secret anywhere. Independent of the release job: a
+   registry failure never blocks the release, and re-running just that job is
+   safe. Bumping the publisher = update both pins together
+   (`docs/PUBLISHING.md`). The registry checks the `mcp-name:` marker in the
+   README as published on PyPI — it is already there; do not remove it.
+
+## 4. Verify
+
+- Actions → Release run: all four jobs green (the registry job is the one to
+  watch on a first run after a workflow change).
 - https://pypi.org/project/garmin-coach-mcp/ shows the new version.
 - GitHub Release exists with wheel + sdist.
-- The registry lists the version (the job retries up to 5 min while PyPI lags):
-  `curl "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.snoozelieb/coach-mcp"`
+- Registry: `curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.snoozelieb/coach-mcp&version=latest"`
+  lists the version (`/v0.1/` is the stable API; without `version=latest`
+  superseded versions come back first). A lagging registry version is cosmetic — installs come
+  from PyPI.
+- MCP clients must reconnect to see a changed tool surface (Claude Desktop
+  restarts the server; Claude Code `/mcp` reconnect).
 
-## 4. MCP Registry (CI does it — manual fallback only)
+## 5. Manual registry fallback (only if the CI job fails)
 
-The Release workflow's `publish-to-mcp-registry` job registers `server.json`
-after the PyPI job succeeds (pinned + Sigstore-verified `mcp-publisher`,
-`login github-oidc`, retry while PyPI metadata lags). If that job fails: read
-its log, fix the cause, and **re-run the failed job** from the Actions UI
-(safe — the registry refuses duplicate versions). Do not re-push the tag: that
-re-runs the PyPI job, which rejects duplicates.
-
-Manual fallback (registry outage, OIDC exchange disabled). From the repo root
-(where `server.json` lives). Both commands are USER-run: the login is an
-interactive device-code flow that must authorize the `snoozelieb` GitHub
-account, and the permission classifier blocks `publish` for Claude. Suggest
-the `!` prefix or a PowerShell window:
+From the repo root (where `server.json` lives), the user runs the interactive
+steps with the `!` prefix so output lands in the session:
 
 ```bash
-./mcp-publisher.exe login github
-./mcp-publisher.exe publish
+mcp-publisher login github     # device-code flow — user-run (interactive)
+mcp-publisher publish
 ```
 
-`mcp-publisher.exe` in the repo root is gitignored and kept for this fallback.
-Verify:
-
-```bash
-curl "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.snoozelieb/coach-mcp"
-```
-
-A lagging registry version is cosmetic — installs come from PyPI.
+`./mcp-publisher.exe publish` is classifier-blocked for the assistant, so it is
+always user-run. The local `mcp-publisher.exe` is gitignored; keep it in sync
+with the pinned CI version when you use it.

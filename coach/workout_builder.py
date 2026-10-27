@@ -421,6 +421,29 @@ def _has_structure(session: dict) -> bool:
     return bool(session.get("structure")) or bool(session.get("exercises"))
 
 
+def _is_discretion(session: dict) -> bool:
+    return str(session.get("intensity") or "").strip().lower() == "discretion"
+
+
+def _discretion_note(session: dict) -> str:
+    """The constraints of an athlete-choice day, as the main step's cue."""
+    constraints = session.get("constraints") or []
+    if isinstance(constraints, str):
+        constraints = [constraints]
+    text = "; ".join(str(c) for c in constraints if c)
+    return _smart_truncate(f"Your call: {text}" if text else "Your call", STEP_NOTE_MAX_CHARS)
+
+
+def _plain_split(session: dict, total_secs: float, warmup_default: float, cooldown_default: float
+                 ) -> tuple[float, float, float]:
+    """(warmup, main, cooldown) seconds for a plain session: the plan's
+    warmup_mins / cooldown_mins when stated, else the documented defaults."""
+    warmup = float(session["warmup_mins"]) * 60 if session.get("warmup_mins") else warmup_default
+    cooldown = float(session["cooldown_mins"]) * 60 if session.get("cooldown_mins") else cooldown_default
+    main = max(0.0, total_secs - warmup - cooldown)
+    return warmup, main, cooldown
+
+
 def build_workout(session: dict, date: str, report: AuthoringReport | None = None
                   ) -> CyclingWorkout | RunningWorkout | dict | None:
     """
@@ -454,7 +477,7 @@ def build_workout(session: dict, date: str, report: AuthoringReport | None = Non
     family = workout_family_for(session_type)
 
     if report is None:
-        report = validate_session(session, load_exercise_db())
+        report = validate_session(session, load_exercise_db(), load_strength_baseline())
     if report.errors:
         raise WorkoutAuthoringError(report.errors, report.warnings)
 
@@ -497,17 +520,26 @@ def build_workout_report(session: dict, date: str) -> dict:
         result['errors'].append({'field': 'type', 'message':
                                  f"{session.get('type')!r} has no Garmin workout family; nothing can be pushed"})
         return result
-    report = validate_session(session, load_exercise_db())
+    report = validate_session(session, load_exercise_db(), load_strength_baseline())
     try:
         workout = build_workout(session, date, report)
     except WorkoutAuthoringError as exc:
         result['errors'] = exc.problems
         result['warnings'] = exc.warnings
         return result
+    except Exception as exc:  # a malformed value in a lenient lane must name itself, not kill the push
+        logger.exception("build_workout failed for %s on %s", session.get('type'), date)
+        result['errors'] = [{'field': 'session', 'message': f"cannot render: {exc.__class__.__name__}: {exc}"}]
+        result['warnings'] = report.warnings
+        return result
     result['warnings'] = report.warnings
     if workout is None:
-        result['errors'].append({'field': 'duration_mins', 'message':
-                                 'nothing to render: no duration_mins, structure or exercises'})
+        # A placeholder (type + purpose, no duration, structure or exercises)
+        # is a legitimate plan entry; it just never reaches the watch.
+        result['ok'] = True
+        result['warnings'].append({'field': 'duration_mins', 'message':
+                                   'nothing to render: no duration_mins, structure or exercises — '
+                                   'nothing is pushed for this session'})
         return result
     result['ok'] = True
     result['workout'] = workout
@@ -699,6 +731,8 @@ class _PhaseRenderer:
                 return self._intensity_target(self.session_intensity, path)
             return TARGET_NONE, None, None
         if key == "intensity":
+            if phase.intensity == "none":
+                return TARGET_NONE, None, None  # explicitly untargeted
             return self._intensity_target(phase.intensity, path)
         if key == "hr_target":
             lo, hi = sorted(phase.hr_target)
@@ -791,7 +825,7 @@ class _PhaseRenderer:
 
 def _ensure_report(session: dict, report: AuthoringReport | None) -> AuthoringReport:
     if report is None:
-        report = validate_session(session, load_exercise_db())
+        report = validate_session(session, load_exercise_db(), load_strength_baseline())
     if report.errors:
         raise WorkoutAuthoringError(report.errors, report.warnings)
     return report
@@ -828,6 +862,7 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     duration_mins = session.get("duration_mins") or 0
     description = session.get("name") or session.get("description", "Cycling workout")
     intensity = session.get("intensity", "")
+    discretion = _is_discretion(session)
 
     # Calculate total duration
     total_secs = duration_mins * 60
@@ -855,8 +890,13 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     # Determine if we should skip warmup (simple outdoor rides without structure)
     skip_warmup = is_simple_outdoor_ride(session)
 
-    # Get targets based on indoor/outdoor
-    if indoor:
+    # Get targets based on indoor/outdoor. A discretion day states no
+    # intensity: the main block is untargeted and carries the constraints,
+    # and the warm-up/cool-down are untargeted too (the plan granted choice).
+    if discretion:
+        main_target = warmup_target = None
+        target_type = warmup_target_type = TARGET_NONE
+    elif indoor:
         # Indoor: use power zones
         main_target = get_power_target_for_intensity(intensity)
         warmup_target = get_power_target_for_intensity("recovery")
@@ -872,8 +912,8 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     steps = []
     step_order = 1
 
-    if skip_warmup:
-        # Long outdoor ride: single main interval, no warmup/cooldown
+    if skip_warmup and not (session.get("warmup_mins") or session.get("cooldown_mins")):
+        # Plain outdoor ride: single main interval, no warmup/cooldown
         main_secs = total_secs
 
         main_step = ExecutableStep(
@@ -888,13 +928,15 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
             main_step.targetValueTwo = main_target[1]
             if not indoor:
                 main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
+        if discretion:
+            main_step.description = _discretion_note(session)
 
         steps = [main_step]
     else:
-        # Regular ride: warmup + main + cooldown
-        warmup_secs = min(600, total_secs * 0.1)  # 10 min or 10% max
-        cooldown_secs = min(300, total_secs * 0.05)  # 5 min or 5% max
-        main_secs = total_secs - warmup_secs - cooldown_secs
+        # Regular ride: warmup + main + cooldown (the plan's warmup_mins /
+        # cooldown_mins when stated; else 10 % up to 10 min / 5 % up to 5 min)
+        warmup_secs, main_secs, cooldown_secs = _plain_split(
+            session, total_secs, min(600, total_secs * 0.1), min(300, total_secs * 0.05))
 
         # Build warmup step
         warmup_step = ExecutableStep(
@@ -923,6 +965,8 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
             main_step.targetValueTwo = main_target[1]
             if not indoor:
                 main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
+        if discretion:
+            main_step.description = _discretion_note(session)
         steps.append(main_step)
         step_order += 1
 
@@ -1010,20 +1054,25 @@ def build_running_workout(session: dict, date: str, report: AuthoringReport | No
 
     duration_mins = session.get("duration_mins") or 0
     intensity = session.get("intensity", "")
+    discretion = _is_discretion(session)
 
-    # Calculate segment durations (in seconds)
+    # Segment durations: the plan's warmup_mins / cooldown_mins when stated,
+    # else 10 % each up to 5 min
     total_secs = duration_mins * 60
-    warmup_secs = min(300, total_secs * 0.1)  # 5 min or 10% max
-    cooldown_secs = min(300, total_secs * 0.1)  # 5 min or 10% max
-    main_secs = total_secs - warmup_secs - cooldown_secs
+    warmup_secs, main_secs, cooldown_secs = _plain_split(
+        session, total_secs, min(300, total_secs * 0.1), min(300, total_secs * 0.1))
 
     workout_name = _workout_name(session, "Running workout")
 
-    # Try pace targets first (preferred for running), fall back to HR
-    main_pace = get_pace_target_for_intensity(intensity)
-    warmup_pace = get_pace_target_for_intensity("recovery")
-    hr_target = get_hr_target_for_intensity(intensity)
-    warmup_hr = get_hr_target_for_intensity("recovery")
+    # Try pace targets first (preferred for running), fall back to HR. A
+    # discretion day is untargeted throughout and carries its constraints.
+    if discretion:
+        main_pace = warmup_pace = hr_target = warmup_hr = None
+    else:
+        main_pace = get_pace_target_for_intensity(intensity)
+        warmup_pace = get_pace_target_for_intensity("recovery")
+        hr_target = get_hr_target_for_intensity(intensity)
+        warmup_hr = get_hr_target_for_intensity("recovery")
 
     # Determine which target type to use
     use_pace = main_pace is not None
@@ -1047,6 +1096,8 @@ def build_running_workout(session: dict, date: str, report: AuthoringReport | No
         _step(2, STEP_INTERVAL, main_secs, main_pace, hr_target),
         _step(3, STEP_COOLDOWN, cooldown_secs, warmup_pace, warmup_hr),
     ]
+    if discretion:
+        steps[1].description = _discretion_note(session)
 
     return RunningWorkout(
         workoutName=workout_name,
@@ -1443,6 +1494,16 @@ def load_exercise_library() -> dict:
     return _read_data_json(EXERCISE_LIBRARY_FILE)
 
 
+def load_strength_baseline() -> dict:
+    """The athlete's strength_baseline.exercises mapping (athlete.json) — read
+    only to WARN when a loaded movement states no load; never to pick one."""
+    try:
+        return (_read_data_json(ATHLETE_FILE).get("strength_baseline") or {}).get("exercises") or {}
+    except Exception:
+        logger.warning("Failed to load the strength baseline", exc_info=True)
+        return {}
+
+
 # Exercise notes come from researched web pages; Garmin shows ~250 chars.
 GARMIN_NOTE_MAX_CHARS = 250
 
@@ -1495,14 +1556,21 @@ def _lap_rest_step(order: int, child: bool = False) -> dict:
     return step
 
 
-def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library: dict) -> tuple[dict, int]:
+def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library: dict,
+                   path: str = "", report: AuthoringReport | None = None) -> tuple[dict, int]:
     """One exercise step inside a repeat group, plus its estimated seconds."""
     category, garmin_exercise_name, _warning = resolve_exercise_category(spec, exercise_db)
     if not category:  # validate_session has already reported this; defensive
         raise WorkoutAuthoringError([{'field': spec.name, 'message': "category is required"}])
 
-    # The coach's cue wins; the researched library cue fills in when absent.
-    cue = str(spec.notes or "").strip() or get_exercise_note(spec.name, library)
+    # The coach's cue wins. The researched exercise-library cue fills in when
+    # the plan is silent — web-derived text, so it is flagged, never silent.
+    cue = str(spec.notes or "").strip()
+    if not cue:
+        cue = get_exercise_note(spec.name, library)
+        if cue and report is not None:
+            report.warn(path or spec.name, (f"{spec.name}: no notes in the plan; the researched "
+                                            f"exercise-library cue goes on the watch: \"{cue}\""))
     readable_name = spec.name.replace("_", " ").title()
     side = "each side" if spec.each_side else ""
     if garmin_exercise_name:
@@ -1519,7 +1587,7 @@ def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library
     elif spec.reps == "open":
         end_condition, end_value, est = END_LAP_BUTTON, None, 45
     else:
-        end_condition, end_value, est = END_REPS, float(spec.reps), max(20, int(spec.reps) * 3)
+        end_condition, end_value, est = END_REPS, float(spec.reps), max(25, int(spec.reps) * 4)
     if spec.each_side:
         est *= 2
 
@@ -1541,6 +1609,13 @@ def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library
         step["weightValue"] = float(spec.weight_kg)
         step["weightUnit"] = dict(WEIGHT_UNIT_KG)
     return step, est
+
+
+def _rest_estimate(category: str | None) -> int:
+    """Seconds assumed for a lap-button rest in the duration ESTIMATE only:
+    loaded compounds rest longer than accessories. Never sent to Garmin."""
+    from .authoring import COMPOUND_CATEGORIES
+    return 120 if category in COMPOUND_CATEGORIES else DEFAULT_REST_SECS
 
 
 def _repeat_group(order: int, iterations: int, children: list, notes: str | None = None) -> dict:
@@ -1628,11 +1703,12 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
         step_order += 1
         total_time += int(warmup_secs)
 
-    for item in items:
+    for index, item in enumerate(items):
         if isinstance(item, Circuit):
             children, round_secs = [], 0
-            for spec in item.exercises:
-                step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library)
+            for j, spec in enumerate(item.exercises):
+                step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library,
+                                           path=f"exercises[{index}].exercises[{j}]", report=report)
                 children.append(step)
                 child_order += 1
                 round_secs += est
@@ -1651,14 +1727,15 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
             continue
 
         spec: Exercise = item
-        step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library)
+        step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library,
+                                   path=f"exercises[{index}]", report=report)
         children = [step]
         child_order += 1
         set_secs = est
         if spec.rest_secs is None:
             children.append(_lap_rest_step(child_order, child=True))
             child_order += 1
-            set_secs += DEFAULT_REST_SECS
+            set_secs += _rest_estimate(step.get("category"))
         elif spec.rest_secs > 0:
             children.append(_timed_step(child_order, STEP_REST, spec.rest_secs, child=True))
             child_order += 1
@@ -1667,6 +1744,13 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
         step_order += 1
         total_time += spec.sets * set_secs
         exercise_count += 1
+
+    planned_secs = float(duration_mins) * 60 if duration_mins else 0
+    if planned_secs and total_time and abs(total_time - planned_secs) > 0.4 * planned_secs:
+        report.warn('duration_mins', (f"planned {duration_mins:g} min but the exercises estimate to "
+                                      f"about {int(round(total_time / 60))} min (lap-button rests "
+                                      f"assumed at {DEFAULT_REST_SECS} s, {_rest_estimate('SQUAT')} s "
+                                      "after loaded compounds); check volume, rests or the duration"))
 
     return {
         "workoutName": workout_name,

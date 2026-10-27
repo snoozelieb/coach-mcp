@@ -9,9 +9,13 @@ import json
 import re
 from pathlib import Path
 
+import ast
+
 import pytest
 
 from coach.authoring import validate_session
+from coach.resources import COACHING_DOCTRINE
+from coach.schemas import WeeklyPlan
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / '.claude' / 'skills'
@@ -64,6 +68,31 @@ class TestSportSkills:
         assert 'preview_workout' in text
         assert 'update_weekly_plan' in text
 
+    def test_every_json_example_passes_the_typed_save_schema(self, skill):
+        """The preview loop dead-ends if the typed WeeklyPlan schema rejects a
+        session the contract accepts (red-team finding S1)."""
+        text = (SKILLS_DIR / skill / 'SKILL.md').read_text(encoding='utf-8')
+        for session in [b for b in _json_blocks(text) if isinstance(b, dict) and 'type' in b]:
+            WeeklyPlan.model_validate({'days': {'2030-01-01': {'planned': session}}})
+
+    def test_skill_sizes_from_capacity_and_memory_not_templates(self, skill):
+        text = (SKILLS_DIR / skill / 'SKILL.md').read_text(encoding='utf-8')
+        assert 'record_athlete_response' in text and 'adaptation_patterns' in text
+        if skill != 'mobility-session-author':
+            assert 'capacity' in text
+
+
+def test_doctrine_worked_example_obeys_the_contract():
+    """The doctrine resource carries the canonical structured-run example; it
+    must not drift from the contract the renderer enforces."""
+    start = COACHING_DOCTRINE.index("    {'type': 'running'")
+    end = COACHING_DOCTRINE.index("## Injury Protocol", start)
+    literal = '\n'.join(line.strip() for line in COACHING_DOCTRINE[start:end].splitlines())
+    session = ast.literal_eval(literal)
+    report = validate_session(session, catalogue=None)
+    assert report.ok, report.errors
+    WeeklyPlan.model_validate({'days': {'2030-01-01': {'planned': session}}})
+
 
 class TestWorkoutAuthorAgent:
     def test_agent_definition_is_tracked_and_well_formed(self):
@@ -75,6 +104,12 @@ class TestWorkoutAuthorAgent:
     def test_agent_never_saves_or_pushes_on_its_own(self):
         text = AGENT_FILE.read_text(encoding='utf-8')
         assert 'never call update_weekly_plan or push_plan_to_garmin' in text
+        meta = _frontmatter(text)
+        # Prompt-only "never" decays; the tools that write or push are denied in code
+        for tool in ('update_weekly_plan', 'push_plan_to_garmin', 'update_injury_status',
+                     'training_program', 'get_coaching_snapshot'):
+            assert tool in meta.get('disallowedTools', ''), tool
+        assert 'missing_brief' in text
 
     def test_gitignore_tracks_only_this_agent(self):
         ignore = (ROOT / '.gitignore').read_text(encoding='utf-8')

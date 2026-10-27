@@ -304,7 +304,10 @@ def author_session_prompt(sport: str = "", brief: str = "") -> PromptResult:
             "target (intensity word, hr_target, pace_sec_per_km). Pace targets need "
             "threshold pace on the profile (set_threshold_pace); without it an "
             "intensity word resolves to HR. Return-to-run work is a ladder of short "
-            "run/walk repeats, progressed ~10 % a week, every step cued in notes."),
+            "run/walk repeats sized from capacity.running and the last recorded response, "
+            "advanced only when the current level was completed pain-free (the "
+            "running-session-author skill holds the ladder and the one progression rule), "
+            "every step cued in notes."),
         "cycling": (
             "RIDES: an outdoor endurance ride is ONE block from duration_mins + "
             "intensity (HR). Structured work (tempo climbs, sweet spot, threshold, "
@@ -319,11 +322,16 @@ def author_session_prompt(sport: str = "", brief: str = "") -> PromptResult:
             "key from list_exercises; spaces are normalised), sets, reps or "
             "duration_secs (holds), each_side, rest_secs (timed rest; lap button "
             "when omitted), weight_kg (explicit only — look at get_strength_baseline "
-            "and write the number; nothing is guessed), notes (the physio's cue, "
-            "first 50 characters show). Off-catalogue names need a category; the "
-            "watch then shows the category plus the readable name. Supersets and "
-            "Tabata are circuits {rounds, exercises, rest_secs}. State warmup_mins "
-            "when a warm-up block is wanted."),
+            "and write the number; nothing is guessed — the save warns when the "
+            "baseline records a load the plan omits), notes (the physio's cue, first "
+            "50 characters show; without notes the researched library cue is used and "
+            "flagged). Off-catalogue names need a category; the watch then shows the "
+            "category plus the readable name — prefer that over a catalogue key that "
+            "names the movement the athlete must avoid (a JUMP key for a no-jump "
+            "athlete). Supersets and Tabata are circuits {rounds, exercises, "
+            "rest_secs}. State warmup_mins before loaded compounds (the save warns "
+            "when it is missing). Sets written in the description without an "
+            "exercises list are an error."),
         "mobility": (
             "MOBILITY: yoga, stretching and mobility are ONE timed block (type yoga / "
             "stretching, duration_mins, notes listing the flow). Rehab tracked as "

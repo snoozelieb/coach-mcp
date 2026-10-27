@@ -21,6 +21,10 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
    (`set_threshold_pace`). Without it an intensity word resolves to the HR
    zone, which is honest but lags on short reps; for 1-minute efforts prefer a
    cue in `notes` or an explicit `pace_sec_per_km`.
+4. Coaching memory: `adaptation_patterns` and the last `record_athlete_response`
+   for this kind of session, and the snapshot's sleep and readiness signals.
+   Size today's session from how the athlete responded last time, not from
+   what the plan intended.
 
 ## Composition judgment
 
@@ -35,13 +39,20 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
   one numeric target (`pace_sec_per_km` [slow, fast], `hr_target` [low, high],
   `cadence`); an `intensity` word can label the phase or be its target. A
   phase with no target inherits the session intensity.
-- Return to running: a run/walk ladder (L1 R2/W2 × 6, L2 R4/W2 × 4, L3 R6/W2 ×
-  3 …) progressed one level a week when pain-free, every step cued
-  (`"notes": "Run 4 min, land soft"`), recoveries as `recovery` phases so the
-  watch separates them. Keep the whole session inside demonstrated capacity.
-- Intervals: tempo 2 × 10 min at threshold with 3 min easy; VO2 5 × 3 min at
-  vo2 with 2 min recovery; hills by `distance_m` or `duration_secs` with the
-  jog back as `recovery` `"open"` (lap button) when the descent length varies.
+- Return to running is a ladder of run/walk repeats (a level is one shape,
+  e.g. R4/W2 × 4), every step cued (`"notes": "Run 4 min, land soft"`),
+  recoveries as `recovery` phases so the watch separates them. The one
+  progression rule: advance a level only when the current level was completed
+  pain-free AND the recorded response to it was good (`record_athlete_response`,
+  `adaptation_patterns`) — never on the calendar, and never past demonstrated
+  capacity. Which level the athlete is on comes from the physio's clearance
+  and the last completed session, not from this skill.
+- Interval shapes (tempo blocks with easy floats, VO2 reps with equal
+  recoveries, hills by `distance_m` or `duration_secs` with the jog back as a
+  `recovery` `"open"` lap-button step when the descent length varies) take
+  their rep count and durations from `capacity.running` and the last
+  comparable session in `sport_history`. The shape is the coach's; the numbers
+  are the athlete's. A number you cannot trace to the history is a template.
 - Strides: `{"phase": "repeat", "iterations": 6, "steps": [{"phase":
   "interval", "duration_secs": 20, "intensity": "max_effort", "notes":
   "Stride, tall, relaxed"}, {"phase": "recovery", "duration_secs": 60}]}` after

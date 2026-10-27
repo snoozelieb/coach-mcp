@@ -485,7 +485,9 @@ class TestPreviewAndToken:
         assert gym['steps'][:5] == [
             '1. [Warm Up] 5:00', '2. Rest lap button',
             '3. 3 x', '   3.1. GOBLET_SQUAT 10 reps @ 24 kg', '   3.2. Rest 1:00']
-        assert gym['warnings'] == []
+        # Two short lifts cannot fill 45 planned minutes — the preview says so
+        assert [w['field'] for w in gym['warnings']] == ['duration_mins']
+        assert 'planned 45 min' in gym['warnings'][0]['message']
 
     def test_contract_errors_are_previewed_and_never_pushed(self, push_env):
         """A session that breaks the contract on disk (e.g. written before the
@@ -505,12 +507,82 @@ class TestPreviewAndToken:
 
         result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
         assert [p['date'] for p in result['pushed']] == [D0, D1, D3]
         assert len(client.uploaded) == 3
         error = result['errors'][0]
         assert error['date'] == D2 and error['error'].startswith('authoring_error')
         assert 'NOT pushed' in result['summary']
+
+    def test_confirm_uploads_what_was_previewed_not_a_rerender(self, push_env):
+        """Red-team C1: an FTP edit between preview and confirm must not change
+        the watts the athlete approved."""
+        data_env, client = push_env
+        planner.merge_plan_days({D0: {'planned': {
+            'type': 'wattbike', 'duration_mins': 30, 'intensity': 'threshold', 'purpose': 'FTP block',
+            'structure': [{'phase': 'interval', 'duration_mins': 10, 'power_pct': [95, 100]}]}}})
+        athlete = json.loads((data_env / 'athlete.json').read_text(encoding='utf-8'))
+        athlete['personal']['ftp'] = 200
+        _write(data_env, 'athlete.json', athlete)
+
+        preview = push_plan_to_garmin()
+        ride = [s for s in preview['sessions'] if s['date'] == D0][0]
+        assert ride['steps'] == ['1. Interval 10:00 @ 190-200 W']
+
+        athlete['personal']['ftp'] = 300  # set_ftp between preview and confirm
+        _write(data_env, 'athlete.json', athlete)
+        result = push_plan_to_garmin(confirm_token=preview['confirm_token'])
+
+        assert result['status'] == 'success'
+        uploaded = _uploads_by_kind(client)['cycling']
+        step = uploaded.workoutSegments[0].workoutSteps[0]
+        assert (step.targetValueOne, step.targetValueTwo) == (190.0, 200.0)
+
+    def test_malformed_legacy_protocol_is_unrenderable_not_a_crash(self, push_env):
+        """Red-team C2: one bad value in an exempt lane used to fail the whole push."""
+        data_env, client = push_env
+        planner.merge_plan_days({D0: {'planned': {
+            'type': 'ftp_test', 'duration_mins': 60, 'purpose': 'test week',
+            'protocol': [{'phase': 'warmup', 'duration_mins': 'open'}]}}})
+
+        preview = push_plan_to_garmin()
+
+        assert preview['status'] == 'preview'
+        assert [u['date'] for u in preview['unrenderable']] == [D0]
+        assert 'duration_mins' in preview['unrenderable'][0]['errors'][0]['field']
+        assert [s['date'] for s in preview['sessions']] == [D1, D2, D3]
+
+    def test_contract_features_round_trip_through_save_and_push(self, data_env, monkeypatch):
+        """Red-team S1: circuits, holds, open reps and per-side work through the
+        typed save and the real push."""
+        _seed_athlete(data_env)
+        plan = {'days': {D1: {'planned': {
+            'type': 'strength', 'duration_mins': 30, 'name': 'Finisher', 'purpose': 'core + pull',
+            'exercises': [
+                {'name': 'PULL_UP', 'category': 'PULL_UP', 'sets': 3, 'reps': 'open', 'rest_secs': 90.5,
+                 'notes': 'to failure'},
+                {'name': 'PLANK', 'category': 'PLANK', 'sets': 3, 'duration_secs': 45},
+                {'rounds': 2, 'rest_secs': 60, 'exercises': [
+                    {'name': 'DEAD_BUG', 'category': 'HIP_STABILITY', 'reps': 8, 'each_side': True},
+                    {'name': 'PUSH_UP', 'category': 'PUSH_UP', 'reps': 10}]},
+            ]}}}, 'rationale': 'contract round trip'}
+        save = update_weekly_plan(plan=plan)
+        assert save.get('status') == 'success', save
+        client = FakeGarminClient()
+        patch_garmin_everywhere(monkeypatch, client)
+
+        result = _push()
+
+        assert result['status'] == 'success' and result['errors'] == []
+        workout = [w for kind, w in client.uploaded if kind == 'generic'][0]
+        groups = workout['workoutSegments'][0]['workoutSteps']
+        assert [g['numberOfIterations'] for g in groups] == [3, 3, 2]
+        pull, plank, circuit = groups
+        assert pull['workoutSteps'][0]['endCondition']['conditionTypeKey'] == 'lap.button'
+        assert pull['workoutSteps'][1]['endConditionValue'] == 90.5
+        assert plank['workoutSteps'][0]['endConditionValue'] == 45.0
+        assert [s['exerciseName'] for s in circuit['workoutSteps'][:2]] == ['DEAD_BUG', 'PUSH_UP']
+        assert workout['exercise_count'] == 4
 
     def test_token_is_single_use(self, push_env):
         _, client = push_env
@@ -590,7 +662,7 @@ class TestBookkeeping:
 
         result = _push()
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'  # something the athlete approved did not land
         assert len(result['pushed']) == 3
         failed = [e for e in result['errors'] if 'scheduling failed' in e['error']]
         assert len(failed) == 1 and failed[0]['workout_id']

@@ -904,6 +904,8 @@ Request-scoped `notifications/progress` still flows on the originating request's
 
 ### Spec 2026-07-28 Notes
 
+- **Skills extension (SEP-2640, Final)**: shipped in `@modelcontextprotocol/server` 2.4.0 (2026-10-23) as `@modelcontextprotocol/server/ext/skills` (`loadSkills(folder)` + `skills.attach(server)`, experimental). No Claude client reads MCP-served skills yet; see the client matrix before relying on it.
+
 - **All results carry a required `resultType`** — `"complete"` for ordinary results, `"input_required"` for MRTR interim results.
 - **Interactive input is MRTR, not server-initiated requests**: `elicitation/create`, `sampling/createMessage`, and `roots/list` as server-initiated requests are no longer supported (SEP-2322). A tool needing mid-call user input returns an `InputRequiredResult`; the client retries the original request with `inputResponses`. Only `tools/call`, `prompts/get`, and `resources/read` may return it.
 - **Roots, Sampling, and MCP Logging are Deprecated** (SEP-2577): pass paths via tool parameters instead of Roots; call LLM provider APIs directly instead of Sampling; log to stderr (stdio) or OpenTelemetry instead of MCP Logging.

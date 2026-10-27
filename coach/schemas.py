@@ -23,7 +23,7 @@ models directly in tool code.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator
 
@@ -151,12 +151,18 @@ class AthleteProfile(LenientModel):
 # ---------------------------------------------------------------------------
 
 class SessionExercise(LenientModel):
+    """One strength exercise as stored. The strict authoring contract
+    (coach/authoring.py) is the gate; this model only has to ACCEPT what the
+    contract accepts — reps may be "open" (lap button), rests and holds may be
+    fractional — so the typed save never rejects a previewed session."""
     name: str | None = None
     category: str | None = None
     sets: int | None = None
-    reps: int | None = None
-    rest_secs: int | None = None
-    duration_secs: int | None = None
+    reps: int | Literal["open"] | None = None
+    rest_secs: float | None = None
+    duration_secs: float | None = None
+    weight_kg: float | None = None
+    each_side: bool | None = None
     notes: str | None = None
 
 

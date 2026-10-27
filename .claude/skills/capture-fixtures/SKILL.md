@@ -7,13 +7,13 @@ description: Refresh the real Garmin API test fixtures (test_fixtures.json) — 
 
 ## The rule that matters most
 
-`python scripts/capture_fixtures.py` hits the live Garmin API with the owner's
+`scripts/capture_fixtures.py` (run with the venv interpreter, `.venv/Scripts/python.exe`) hits the live Garmin API with the owner's
 session and writes personal health data. **Agents and CI must NEVER run it.**
 Ask the user to run it themselves — suggest the `!` prefix so the output lands
 in the session:
 
 ```
-! python scripts/capture_fixtures.py
+! .venv/Scripts/python.exe scripts/capture_fixtures.py
 ```
 
 ## How the two-layer fixture system works
@@ -41,7 +41,7 @@ The capture script redacts obvious PII before writing (names/emails →
 ## Prerequisites & verification
 
 - Valid Garmin session (`.garth/` tokens or credentials in `.env`); if auth
-  fails: `python scripts/garmin_login.py` (also owner-run — interactive MFA).
+  fails: `.venv/Scripts/python.exe scripts/garmin_login.py` (or the installed `garmin-coach-login`) (also owner-run — interactive MFA).
 - Afterwards: confirm `git status` does NOT list `test_fixtures.json` (it must
-  stay gitignored), then `python -m pytest -q` — real shapes now overlay the
+  stay gitignored), then `.venv/Scripts/python.exe -m pytest -q` — real shapes now overlay the
   synthetic ones.

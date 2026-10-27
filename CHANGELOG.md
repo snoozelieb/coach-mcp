@@ -63,7 +63,36 @@ that teach, and the push preview shows the step tree before anything lands.
 ### Changed
 - Strength warm-ups are explicit: `warmup_mins` renders a WARM_UP block; the
   implicit 5-minute CARDIO warm-up and the `skip_warmup` flag are gone
-  (`skip_warmup` now only warns).
+  (`skip_warmup` now only warns; the save warns when loaded compounds have
+  no warm-up stated). Plain runs and rides take explicit `warmup_mins` /
+  `cooldown_mins`; without them the documented percentage split applies.
+- The push confirm uploads the payloads rendered at preview time, bound to
+  the single-use token, instead of re-rendering: an FTP or zone edit between
+  preview and confirm can no longer change the targets the athlete approved.
+  A confirm with anything not pushed returns `status: 'partial'`.
+- The save gate renders every pushable session the way the push does (same
+  legacy nested-day expansion, same renderer), so a session the save accepts
+  cannot come back `unrenderable` at push; a malformed value in a lenient lane
+  (FTP-test `protocol`, swimming phases, rehab exercises) is a named error
+  instead of a crash that failed the whole push.
+- The injury gate also matches strength exercises: a restricted movement
+  word (`jump`, `overhead`, `shoulder_press`) in an exercise's Garmin key or
+  category rejects the save and the push, naming the exercise.
+- A description that reads like intervals on a run or ride without
+  `structure` warns; sets and reps in a strength description without
+  `exercises` are an error. A plain run or ride with no intensity warns that
+  its main block is untargeted. On a `discretion` day nothing is targeted and
+  the `constraints` are written on the main step.
+- Teaching warnings about the athlete, never values: a loaded movement with no
+  `weight_kg` while the strength baseline records one; a researched
+  exercise-library cue used because the plan gave no notes; an estimated
+  duration far from the planned one. Catalogue category corrections apply to
+  exact names (or names the cache files under SUSPENSION) only; phase targets
+  carry plausibility ranges; `intensity: 'none'` makes a step untargeted.
+- Rollback note: a plan written in the new vocabulary (`reps: "open"`,
+  circuits, `duration_secs` holds, `warmup_mins`) does not render on the
+  previous release's renderer — revert the code and re-author, or keep this
+  release.
 - Muscle-group words as categories (`GLUTE`, `CALF`, ...) are rejected with
   Garmin-category suggestions instead of being mapped silently; a missing or
   unknown category is an error instead of a nameless CARDIO step.
