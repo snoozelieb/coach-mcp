@@ -64,9 +64,10 @@ registry refuses duplicates. Tag only when the user has said so.
    pinned `MCP_PUBLISHER_VERSION`, checks `MCP_PUBLISHER_SHA256` and the
    Sigstore bundle, `login github-oidc`, then `publish` with retries while
    PyPI metadata lags. Pinned v1.8.5 is the latest publisher on 2026-10-27
-   (SHA verified); the four `actions/*@v4`/`@v5` steps are Node 20 actions
-   and emit deprecation notices on Node 24 runners — bump to checkout@v7,
-   setup-python@v7, upload-artifact@v7, download-artifact@v8 when convenient. No secret anywhere. Independent of the release job: a
+   (SHA verified); the `actions/*` steps sit on the Node 24 majors
+   (checkout@v7, setup-python@v7, upload-artifact@v7, download-artifact@v8,
+   bumped 2026-10-28 — we download artifacts by name, so the v5 by-id path
+   change and the v8 hash enforcement do not affect us). No secret anywhere. Independent of the release job: a
    registry failure never blocks the release, and re-running just that job is
    safe. Bumping the publisher = update both pins together
    (`docs/PUBLISHING.md`). The registry checks the `mcp-name:` marker in the

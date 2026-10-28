@@ -72,6 +72,9 @@ that teach, and the push preview shows the step tree before anything lands.
   the brief.
 
 ### Changed
+- CI and release workflows run the Node 24 action majors (checkout@v7,
+  setup-python@v7, upload-artifact@v7, download-artifact@v8); the Node 20
+  deprecation notices are gone before Node 20 actions stop running.
 - Strength warm-ups are explicit: `warmup_mins` renders a WARM_UP block; the
   implicit 5-minute CARDIO warm-up and the `skip_warmup` flag are gone
   (`skip_warmup` now only warns; the save warns when loaded compounds have
