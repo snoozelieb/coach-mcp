@@ -299,7 +299,7 @@
     {
       "id": "ride_sweet_spot_2x20",
       "sport": "cycling",
-      "brief": "PURPOSE: sweet-spot work to lift FTP without the fatigue of full threshold; indoor.\nSESSION: indoor trainer (type indoor_cycling). 10-minute warm-up at 120-150 W, then 2 x 20 minutes at 229-242 W (88-93 percent of FTP 260) with 5 minutes recovery at 120-140 W between, then a 5-minute cool-down at 100-120 W. Name it 'Sweet spot 2x20'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min, last sweet-spot ride 2 x 15 completed; running 6 sessions.\nATHLETE FACTS: FTP 260 W; power zones Z2 143-195 W, Z3 195-234 W, Z4 234-273 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "brief": "PURPOSE: sweet-spot work to lift FTP without the fatigue of full threshold; indoor.\nSESSION: indoor trainer (type indoor_cycling). 10-minute warm-up at 120-150 W, then ONE repeat block of 2 rounds, each round 20 minutes at 229-242 W (88-93 percent of FTP 260) followed by 5 minutes recovery at 120-140 W (so the second recovery precedes the cool-down), then a 5-minute cool-down at 100-120 W. Name it 'Sweet spot 2x20'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min, last sweet-spot ride 2 x 15 completed; running 6 sessions.\nATHLETE FACTS: FTP 260 W; power zones Z2 143-195 W, Z3 195-234 W, Z4 234-273 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
       "checks": {
         "ok": true,
         "workout_type": "cycling",
@@ -644,10 +644,10 @@
       }
     },
     {
-      "id": "gym_missing_load",
+      "id": "gym_missing_purpose",
       "sport": "strength",
       "expect_missing_brief": true,
-      "brief": "PURPOSE: lower-body strength maintenance.\nSESSION: 5-minute warm-up block; goblet squat 3 x 10 - the load has NOT been decided and is not given here, do not assume one; push-up 3 x 12; lap-button rests. Name it 'Lower maintenance'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min.\nATHLETE FACTS: strength baseline: not provided; FTP 260 W; threshold pace 5:00/km; max HR 185."
+      "brief": "SESSION: 5-minute warm-up block; goblet squat 3 x 10 at 20 kg; push-up 3 x 12; lap-button rests. Name it 'Lower maintenance'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min.\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.\n(No PURPOSE is given for this session.)"
     },
     {
       "id": "yoga_30",

@@ -39,6 +39,9 @@ A brief must carry all of:
 When any of these is missing, return `missing_brief: [...]` naming the items
 and stop. Do not fill a gap with a plausible number: a load, a key or a rep
 count you did not receive stays out.
+A load the brief marks as undecided stays out (the preview warns that the
+watch shows none); a load the brief simply omits for a loaded movement, or a
+missing purpose, is a `missing_brief` item.
 
 ## Procedure
 
