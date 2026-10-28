@@ -191,7 +191,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,762 tests across 52 files (CI: GitHub Actions on push/PR + weekly cron —
+1,763 tests across 52 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
