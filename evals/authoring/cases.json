@@ -1,0 +1,747 @@
+{
+  "_readme": "Authoring eval cases (see scripts/authoring_eval.py). Each case: a coaching brief in the shape the workout-author agent demands (PURPOSE, SESSION, RESTRICTIONS, CAPACITY, ATHLETE FACTS), the checks its rendering must satisfy (regexes over the preview step tree, case-insensitive; a steps_match entry may be {pattern, min}), and a golden session that satisfies them. The athlete is synthetic (evals/authoring/athlete.json): FTP 260 W, threshold pace 5:00/km, HR zones Z2 125-140, baseline goblet squat 20 kg and Bulgarian split squat 10 kg.",
+  "cases": [
+    {
+      "id": "run_easy_hr",
+      "sport": "running",
+      "brief": "PURPOSE: aerobic base; keep the week's easy day easy after yesterday's intervals.\nSESSION: easy run, 45 minutes total: a 5-minute walk warm-up with no target on the watch, then 40 minutes continuous easy running at HR 125-140 bpm. No cool-down step. Name it 'Easy run 45'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): running 6 sessions, longest 50 min / 9 km, typical 35-45 min easy; cycling 8 rides, longest 120 min; strength 2 a week; mobility 2 a week.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; HR zones Z1 under 125, Z2 125-140, Z3 140-155, Z4 155-168, Z5 168-185 bpm; strength baseline: goblet squat 20 kg, Bulgarian split squat 10 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "running",
+        "estimated_mins": [
+          44,
+          46
+        ],
+        "steps_count": 2,
+        "steps_match": [
+          "^1[.] Warm-up 5:00",
+          "^2[.] Interval 40:00 @ HR 125-140 bpm"
+        ],
+        "steps_absent": [
+          "Cool-down"
+        ]
+      },
+      "golden": {
+        "type": "running",
+        "name": "Easy run 45",
+        "description": "Easy aerobic run",
+        "purpose": "Aerobic base; keep the easy day easy after intervals",
+        "duration_mins": 45,
+        "intensity": "easy",
+        "structure": [
+          {
+            "phase": "warmup",
+            "duration_mins": 5,
+            "intensity": "none",
+            "notes": "Walk"
+          },
+          {
+            "phase": "interval",
+            "duration_mins": 40,
+            "hr_target": [
+              125,
+              140
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "run_threshold_intervals",
+      "sport": "running",
+      "brief": "PURPOSE: threshold development, second quality session of the build block.\nSESSION: 10-minute easy warm-up, then 6 x 3 minutes at 4:25-4:35 per km with 90-second easy jog recoveries, then a 5-minute easy cool-down. Name it 'Threshold 6x3'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): running 6 sessions, longest 50 min / 9 km, typical 35-45 min easy, one interval session a week of 40-45 min; cycling 8 rides.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km (300 s/km); max HR 185; HR zones Z2 125-140, Z4 155-168 bpm; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "running",
+        "estimated_mins": [
+          41,
+          43
+        ],
+        "steps_match": [
+          "^1[.] Warm-up 10:00",
+          "^2[.] 6 x$",
+          "^   2[.]1[.] Interval 3:00 @ pace 4:35/km to 4:25/km",
+          "^   2[.]2[.] Recovery 1:30",
+          "^3[.] Cool-down 5:00"
+        ]
+      },
+      "golden": {
+        "type": "running",
+        "name": "Threshold 6x3",
+        "description": "6 x 3 min at threshold pace, 90 s jog recoveries",
+        "purpose": "Threshold development, second quality session of the build block",
+        "duration_mins": 42,
+        "intensity": "threshold",
+        "structure": [
+          {
+            "phase": "warmup",
+            "duration_mins": 10,
+            "intensity": "easy"
+          },
+          {
+            "phase": "repeat",
+            "iterations": 6,
+            "steps": [
+              {
+                "phase": "interval",
+                "duration_mins": 3,
+                "pace_sec_per_km": [
+                  275,
+                  265
+                ]
+              },
+              {
+                "phase": "recovery",
+                "duration_secs": 90,
+                "intensity": "easy",
+                "notes": "Jog"
+              }
+            ]
+          },
+          {
+            "phase": "cooldown",
+            "duration_mins": 5,
+            "intensity": "easy"
+          }
+        ]
+      }
+    },
+    {
+      "id": "run_walk_ladder",
+      "sport": "running",
+      "brief": "PURPOSE: return-to-run ladder, level 3 of the physio's progression; load the tendon without a continuous run.\nSESSION: 4 x (8 minutes run at HR 120-145 bpm, then 2 minutes walk with no target). Nothing before or after the repeats: no warm-up step, no cool-down step. Name it 'Run/walk 4x8'.\nRESTRICTIONS: none (the running restriction was lifted last week; no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): running 5 run/walk sessions, longest 36 min total, last level 3 x 8/2 completed with HR under 145; cycling 8 rides.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; HR zones Z1 under 125, Z2 125-140, Z3 140-155 bpm; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "running",
+        "estimated_mins": [
+          39,
+          41
+        ],
+        "steps_match": [
+          "^1[.] 4 x$",
+          "^   1[.]1[.] Interval 8:00 @ HR 120-145 bpm",
+          "^   1[.]2[.] Recovery 2:00"
+        ],
+        "steps_absent": [
+          "Warm-up",
+          "Cool-down"
+        ]
+      },
+      "golden": {
+        "type": "running",
+        "name": "Run/walk 4x8",
+        "description": "Return-to-run ladder, level 3",
+        "purpose": "Return-to-run ladder, level 3 of the physio progression",
+        "duration_mins": 40,
+        "intensity": "easy",
+        "structure": [
+          {
+            "phase": "repeat",
+            "iterations": 4,
+            "steps": [
+              {
+                "phase": "interval",
+                "duration_mins": 8,
+                "hr_target": [
+                  120,
+                  145
+                ],
+                "notes": "Run"
+              },
+              {
+                "phase": "recovery",
+                "duration_mins": 2,
+                "intensity": "none",
+                "notes": "Walk"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "run_long_distance_untargeted",
+      "sport": "running",
+      "brief": "PURPOSE: long run, time on feet, the week's only long effort.\nSESSION: 16 km by feel as ONE step by distance with no target on the watch (intensity none); no warm-up or cool-down steps; cue 'By feel, conversational'. Name it 'Long run 16 km'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): running 6 sessions, longest 14 km / 80 min, typical 35-45 min; cycling 8 rides.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; HR zones Z2 125-140 bpm; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "running",
+        "steps_count": 1,
+        "steps_match": [
+          "^1[.] Interval 16 km"
+        ],
+        "steps_absent": [
+          "@ ",
+          "Warm-up",
+          "Cool-down"
+        ]
+      },
+      "golden": {
+        "type": "running",
+        "name": "Long run 16 km",
+        "description": "Long run by feel",
+        "purpose": "Long run, time on feet, the week's only long effort",
+        "duration_mins": 95,
+        "intensity": "easy",
+        "structure": [
+          {
+            "phase": "interval",
+            "distance_m": 16000,
+            "intensity": "none",
+            "notes": "By feel, conversational"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ride_threshold_4x4_indoor",
+      "sport": "cycling",
+      "brief": "PURPOSE: threshold power, first hard ride of the block, on the indoor trainer.\nSESSION: indoor trainer (type indoor_cycling). 10-minute warm-up at 130-160 W, then 4 x 4 minutes at 234-250 W with 4 minutes recovery at 130-150 W, then a 5-minute cool-down at 100-130 W. Name it 'Threshold 4x4'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min, one interval ride a week; running 6 sessions.\nATHLETE FACTS: FTP 260 W; power zones Z2 143-195 W, Z3 195-234 W, Z4 234-273 W, Z5 273-312 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "cycling",
+        "estimated_mins": [
+          46,
+          48
+        ],
+        "steps_match": [
+          "^1[.] Warm-up 10:00 @ 130-160 W",
+          "^2[.] 4 x$",
+          "^   2[.]1[.] Interval 4:00 @ 234-250 W",
+          "^   2[.]2[.] Recovery 4:00 @ 130-150 W",
+          "^3[.] Cool-down 5:00 @ 100-130 W"
+        ]
+      },
+      "golden": {
+        "type": "indoor_cycling",
+        "name": "Threshold 4x4",
+        "description": "4 x 4 min at threshold on the trainer",
+        "purpose": "Threshold power, first hard ride of the block",
+        "duration_mins": 47,
+        "intensity": "threshold",
+        "structure": [
+          {
+            "phase": "warmup",
+            "duration_mins": 10,
+            "power_watts": [
+              130,
+              160
+            ]
+          },
+          {
+            "phase": "repeat",
+            "iterations": 4,
+            "steps": [
+              {
+                "phase": "interval",
+                "duration_mins": 4,
+                "power_watts": [
+                  234,
+                  250
+                ]
+              },
+              {
+                "phase": "recovery",
+                "duration_mins": 4,
+                "power_watts": [
+                  130,
+                  150
+                ]
+              }
+            ]
+          },
+          {
+            "phase": "cooldown",
+            "duration_mins": 5,
+            "power_watts": [
+              100,
+              130
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ride_outdoor_endurance_hr",
+      "sport": "cycling",
+      "brief": "PURPOSE: endurance volume for the long-ride goal; the week's long ride.\nSESSION: 90-minute outdoor endurance ride as a single block at HR 125-140 bpm; no warm-up or cool-down steps. Name it 'Endurance 90'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min; running 6 sessions.\nATHLETE FACTS: FTP 260 W; max HR 185; HR zones Z1 under 125, Z2 125-140, Z3 140-155 bpm; threshold pace 5:00/km; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "cycling",
+        "estimated_mins": [
+          89,
+          91
+        ],
+        "steps_count": 1,
+        "steps_match": [
+          "^1[.] Interval 1:30:00 @ HR 125-140 bpm"
+        ]
+      },
+      "golden": {
+        "type": "cycling",
+        "name": "Endurance 90",
+        "description": "Steady endurance ride",
+        "purpose": "Endurance volume for the long-ride goal",
+        "duration_mins": 90,
+        "intensity": "easy",
+        "structure": [
+          {
+            "phase": "interval",
+            "duration_mins": 90,
+            "hr_target": [
+              125,
+              140
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ride_sweet_spot_2x20",
+      "sport": "cycling",
+      "brief": "PURPOSE: sweet-spot work to lift FTP without the fatigue of full threshold; indoor.\nSESSION: indoor trainer (type indoor_cycling). 10-minute warm-up at 120-150 W, then 2 x 20 minutes at 229-242 W (88-93 percent of FTP 260) with 5 minutes recovery at 120-140 W between, then a 5-minute cool-down at 100-120 W. Name it 'Sweet spot 2x20'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min, last sweet-spot ride 2 x 15 completed; running 6 sessions.\nATHLETE FACTS: FTP 260 W; power zones Z2 143-195 W, Z3 195-234 W, Z4 234-273 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "cycling",
+        "estimated_mins": [
+          64,
+          66
+        ],
+        "steps_match": [
+          "^1[.] Warm-up 10:00 @ 120-150 W",
+          "^2[.] 2 x$",
+          "^   2[.]1[.] Interval 20:00 @ 229-242 W",
+          "^   2[.]2[.] Recovery 5:00 @ 120-140 W",
+          "^3[.] Cool-down 5:00 @ 100-120 W"
+        ]
+      },
+      "golden": {
+        "type": "indoor_cycling",
+        "name": "Sweet spot 2x20",
+        "description": "2 x 20 min sweet spot on the trainer",
+        "purpose": "Sweet-spot work to lift FTP without full-threshold fatigue",
+        "duration_mins": 65,
+        "intensity": "sweet_spot",
+        "structure": [
+          {
+            "phase": "warmup",
+            "duration_mins": 10,
+            "power_watts": [
+              120,
+              150
+            ]
+          },
+          {
+            "phase": "repeat",
+            "iterations": 2,
+            "steps": [
+              {
+                "phase": "interval",
+                "duration_mins": 20,
+                "power_watts": [
+                  229,
+                  242
+                ]
+              },
+              {
+                "phase": "recovery",
+                "duration_mins": 5,
+                "power_watts": [
+                  120,
+                  140
+                ]
+              }
+            ]
+          },
+          {
+            "phase": "cooldown",
+            "duration_mins": 5,
+            "power_watts": [
+              100,
+              120
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ride_ftp_test",
+      "sport": "cycling",
+      "brief": "PURPOSE: re-anchor the power zones before the build block.\nSESSION: 20-minute FTP test on the indoor trainer using the server's built-in protocol (session type ftp_test, no custom structure). Name it 'FTP test'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): cycling 8 rides, longest 120 min, typical 60-75 min, one hard ride a week; running 6 sessions.\nATHLETE FACTS: FTP 260 W (last tested 8 weeks ago); max HR 185; threshold pace 5:00/km; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "cycling",
+        "estimated_mins": [
+          49,
+          51
+        ],
+        "steps_count": 9,
+        "steps_match": [
+          "^1[.] Warm-up 15:00 @ cadence 90-100",
+          "ALL OUT 3/3",
+          "^8[.] Interval 20:00 @ cadence 85-95",
+          "^9[.] Cool-down 5:00"
+        ]
+      },
+      "golden": {
+        "type": "ftp_test",
+        "name": "FTP test",
+        "description": "20-minute FTP test, built-in protocol",
+        "purpose": "Re-anchor the power zones before the build block",
+        "duration_mins": 60,
+        "intensity": "max_effort"
+      }
+    },
+    {
+      "id": "gym_lower_physio",
+      "sport": "strength",
+      "brief": "PURPOSE: lower-body strength per the physio's program, session 1 of 2 this week.\nSESSION: 5-minute warm-up block first. Then: Bulgarian split squat 3 x 8 each side at 10 kg, cue 'Knee over toe, slow down'; single-leg Romanian deadlift 3 x 10 each side at 8 kg, cue 'Hips square'; seated calf raise 3 x 15 at 20 kg, cue 'Full range'. Timed 60-second rests between sets. Name it 'Lower body physio'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min, last lower session completed at these loads; running 6 sessions; cycling 8 rides.\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "^1\\. \\[Warm Up\\] 5:00",
+          "BULGARIAN_SPLIT_SQUAT 8 reps @ 10 kg .*each side: knee over toe",
+          "ROMANIAN_DEADLIFT.* 10 reps @ 8 kg .*each side: hips square",
+          "CALF_RAISE 15 reps @ 20 kg .*full range",
+          {
+            "pattern": "Rest 1:00",
+            "min": 3
+          }
+        ],
+        "warnings_absent": [
+          "states no load",
+          "no warm-up"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Lower body physio",
+        "description": "Physio lower-body program, session 1",
+        "purpose": "Lower-body strength per the physio program, session 1 of 2",
+        "duration_mins": 40,
+        "warmup_mins": 5,
+        "exercises": [
+          {
+            "name": "DUMBBELL_BULGARIAN_SPLIT_SQUAT",
+            "category": "LUNGE",
+            "sets": 3,
+            "reps": 8,
+            "each_side": true,
+            "weight_kg": 10,
+            "rest_secs": 60,
+            "notes": "Knee over toe, slow down"
+          },
+          {
+            "name": "SINGLE_LEG_ROMANIAN_DEADLIFT_WITH_DUMBBELL",
+            "category": "DEADLIFT",
+            "sets": 3,
+            "reps": 10,
+            "each_side": true,
+            "weight_kg": 8,
+            "rest_secs": 60,
+            "notes": "Hips square"
+          },
+          {
+            "name": "WEIGHTED_SEATED_CALF_RAISE",
+            "category": "CALF_RAISE",
+            "sets": 3,
+            "reps": 15,
+            "weight_kg": 20,
+            "rest_secs": 60,
+            "notes": "Full range"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gym_holds",
+      "sport": "strength",
+      "brief": "PURPOSE: trunk stability after the long ride; holds, not reps, per the physio.\nSESSION: plank 3 x 45-second holds; side plank 3 x 30 seconds each side; dead bug 3 x 10 reps, cue 'Low back flat'. Lap-button rests (no timed rests). No warm-up block (done on the bike). Name it 'Core holds'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week; the last core session held 40-second planks; cycling 8 rides; running 6 sessions.\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "PLANK 0:45",
+          "SIDE_PLANK 0:30 .*each side",
+          "DEAD_BUG 10 reps .*low back flat",
+          {
+            "pattern": "Rest lap button",
+            "min": 3
+          }
+        ],
+        "steps_absent": [
+          "Rest [0-9]",
+          "Warm Up"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Core holds",
+        "description": "Trunk stability: planks and dead bugs",
+        "purpose": "Trunk stability after the long ride; holds per the physio",
+        "duration_mins": 20,
+        "exercises": [
+          {
+            "name": "PLANK",
+            "category": "PLANK",
+            "sets": 3,
+            "duration_secs": 45
+          },
+          {
+            "name": "SIDE_PLANK",
+            "category": "PLANK",
+            "sets": 3,
+            "duration_secs": 30,
+            "each_side": true
+          },
+          {
+            "name": "DEAD_BUG",
+            "category": "HIP_STABILITY",
+            "sets": 3,
+            "reps": 10,
+            "notes": "Low back flat"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gym_circuit",
+      "sport": "strength",
+      "brief": "PURPOSE: full-body strength endurance in a short slot; circuit format to keep the heart rate up.\nSESSION: 5-minute warm-up block, then a circuit of 3 rounds: goblet squat 10 reps at 20 kg, push-up 12 reps, inverted row 10 reps; 90 seconds rest after each round and no rest between the movements. Name it 'Circuit 3 rounds'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min, last circuit 3 rounds completed; running 6 sessions; cycling 8 rides.\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "^1\\. \\[Warm Up\\] 5:00",
+          "^[0-9]+[.] 3 x",
+          "^   [0-9]+[.]1[.] GOBLET_SQUAT 10 reps @ 20 kg",
+          "^   [0-9]+[.]2[.] PUSH_UP 12 reps",
+          "^   [0-9]+[.]3[.] INVERTED_ROW 10 reps",
+          "^   [0-9]+[.]4[.] Rest 1:30"
+        ],
+        "warnings_absent": [
+          "states no load"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Circuit 3 rounds",
+        "description": "Full-body circuit, 3 rounds",
+        "purpose": "Full-body strength endurance in a short slot",
+        "duration_mins": 30,
+        "warmup_mins": 5,
+        "exercises": [
+          {
+            "rounds": 3,
+            "rest_secs": 90,
+            "exercises": [
+              {
+                "name": "GOBLET_SQUAT",
+                "category": "SQUAT",
+                "reps": 10,
+                "weight_kg": 20
+              },
+              {
+                "name": "PUSH_UP",
+                "category": "PUSH_UP",
+                "reps": 12
+              },
+              {
+                "name": "INVERTED_ROW",
+                "category": "ROW",
+                "reps": 10
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "gym_open_reps",
+      "sport": "strength",
+      "brief": "PURPOSE: pulling strength; sets to technical failure because the rep count is unknown at this stage.\nSESSION: pull-ups 3 sets to technical failure, each set ended with the lap button (open reps), 2-minute timed rests; then hanging knee raise 3 x 10 with lap-button rests. No warm-up block (done on the bike). Name it 'Pull-up strength'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week; last pull-up session 3 sets of 5-7; running 6 sessions; cycling 8 rides.\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "^1[.] 3 x$",
+          "^   1[.]1[.] PULL_UP lap button",
+          "^   1[.]2[.] Rest 2:00",
+          "HANGING_KNEE_RAISE 10 reps"
+        ],
+        "steps_absent": [
+          "Warm Up"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Pull-up strength",
+        "description": "Pull-ups to technical failure, knee raises",
+        "purpose": "Pulling strength; sets to technical failure",
+        "duration_mins": 25,
+        "exercises": [
+          {
+            "name": "PULL_UP",
+            "category": "PULL_UP",
+            "sets": 3,
+            "reps": "open",
+            "rest_secs": 120,
+            "notes": "To technical failure"
+          },
+          {
+            "name": "HANGING_KNEE_RAISE",
+            "category": "LEG_RAISE",
+            "sets": 3,
+            "reps": 10
+          }
+        ]
+      }
+    },
+    {
+      "id": "rehab_no_jump_lunge",
+      "sport": "strength",
+      "brief": "PURPOSE: pre-court activation before padel, inside the ankle restrictions.\nSESSION: strength type. Side lunge to balance 2 x 8 each side with NO jump, cue 'No jump. Push off through the toe'; single-leg balance 3 x 30 seconds each side on the floor, cue 'Toe down'. Lap-button rests, no warm-up block. Name it 'Pre-court activation'.\nRESTRICTIONS: active injury 'left ankle sprain' (status improving) with restricted_activities: ['jumping', 'plyometrics', 'running'] - verbatim. Never pick a Garmin exercise key that names a jump; use an off-catalogue readable name with its category instead.\nCAPACITY (demonstrated, last 28 days): strength 2 sessions a week; this activation set done 4 times without ankle pain; cycling 8 rides; running 0 (restricted).\nATHLETE FACTS: strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "lunge.* 8 reps",
+          "0:30 .*each side",
+          "no jump"
+        ],
+        "steps_absent": [
+          "JUMP_",
+          "_JUMP",
+          "PLYO",
+          "Warm Up"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Pre-court activation",
+        "description": "Pre-padel activation inside the ankle restrictions",
+        "purpose": "Pre-court activation before padel, inside the ankle restrictions",
+        "duration_mins": 10,
+        "exercises": [
+          {
+            "name": "Side lunge to balance",
+            "category": "LUNGE",
+            "sets": 2,
+            "reps": 8,
+            "each_side": true,
+            "notes": "No jump. Push off through the toe"
+          },
+          {
+            "name": "Single leg balance",
+            "category": "HIP_STABILITY",
+            "sets": 3,
+            "duration_secs": 30,
+            "each_side": true,
+            "notes": "Toe down"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gym_missing_load",
+      "sport": "strength",
+      "expect_missing_brief": true,
+      "brief": "PURPOSE: lower-body strength maintenance.\nSESSION: 5-minute warm-up block; goblet squat 3 x 10 - the load has NOT been decided and is not given here, do not assume one; push-up 3 x 12; lap-button rests. Name it 'Lower maintenance'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min.\nATHLETE FACTS: strength baseline: not provided; FTP 260 W; threshold pace 5:00/km; max HR 185."
+    },
+    {
+      "id": "yoga_30",
+      "sport": "mobility",
+      "brief": "PURPOSE: hip flexor length for the bike position; sleep-friendly evening downshift.\nSESSION: 30-minute evening yoga flow at recovery intensity: couch stretch 2 min per side, 90/90 x 10, pigeon 2 min per side, box breathing 5 min. One timed block with the flow in the notes. Name it 'Hip mobility 30'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): mobility 20-30 min twice a week, evening sessions followed by better sleep scores; cycling 8 rides; running 6 sessions.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "yoga",
+        "estimated_mins": [
+          29,
+          31
+        ],
+        "steps_count": 1,
+        "steps_match": [
+          "^1[.] Interval 30:00"
+        ]
+      },
+      "golden": {
+        "type": "yoga",
+        "name": "Hip mobility 30",
+        "description": "Evening hip mobility flow",
+        "purpose": "Hip flexor length for the bike position; sleep-friendly downshift",
+        "duration_mins": 30,
+        "intensity": "recovery",
+        "notes": "Couch stretch 2 min/side, 90/90 x 10, pigeon 2 min/side, box breathing 5 min"
+      }
+    },
+    {
+      "id": "rehab_pilates_itemised",
+      "sport": "mobility",
+      "brief": "PURPOSE: peroneal strength and single-leg balance, physio set 3 of the week.\nSESSION: ankle rehab tracked as Pilates (session type rehab): banded ankle eversion 2 x 20 each side, cue 'Slow'; single-leg balance on the BOSU 3 x 30-second holds, cue 'Toe down, not on the rim'; heel raises off a step 2 x 15. Lap-button rests. Name it 'Ankle rehab'.\nRESTRICTIONS: active injury 'left ankle sprain' (status improving) with restricted_activities: ['jumping', 'plyometrics', 'running'] - verbatim.\nCAPACITY (demonstrated, last 28 days): mobility and rehab sets 15 min, 3 times a week, all completed; cycling 8 rides; running 0 (restricted).\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "pilates",
+        "steps_match": [
+          "20 reps",
+          "0:30 .*toe down",
+          "15 reps"
+        ]
+      },
+      "golden": {
+        "type": "rehab",
+        "name": "Ankle rehab",
+        "description": "Physio ankle set tracked as Pilates",
+        "purpose": "Peroneal strength and single-leg balance, physio set 3 of the week",
+        "duration_mins": 15,
+        "intensity": "easy",
+        "exercises": [
+          {
+            "name": "Banded ankle eversion",
+            "sets": 2,
+            "reps": 20,
+            "each_side": true,
+            "notes": "Slow"
+          },
+          {
+            "name": "Single leg balance on BOSU",
+            "sets": 3,
+            "duration_secs": 30,
+            "notes": "Toe down, not on the rim"
+          },
+          {
+            "name": "Heel raises off step",
+            "sets": 2,
+            "reps": 15
+          }
+        ]
+      }
+    },
+    {
+      "id": "stretching_15",
+      "sport": "mobility",
+      "brief": "PURPOSE: post-ride stretching to keep the hip flexors and calves long during the cycling block.\nSESSION: 15-minute stretching, untargeted single block (intensity none): quads, hip flexors, calves, 60 seconds each side, in the notes. Name it 'Post-ride stretch'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): mobility 20-30 min twice a week; cycling 8 rides; running 6 sessions.\nATHLETE FACTS: FTP 260 W; threshold pace 5:00/km; max HR 185; strength baseline: goblet squat 20 kg.",
+      "checks": {
+        "ok": true,
+        "workout_type": "yoga",
+        "estimated_mins": [
+          14,
+          16
+        ],
+        "steps_count": 1,
+        "steps_match": [
+          "^1[.] Interval 15:00"
+        ]
+      },
+      "golden": {
+        "type": "stretching",
+        "name": "Post-ride stretch",
+        "description": "Post-ride stretching",
+        "purpose": "Keep the hip flexors and calves long during the cycling block",
+        "duration_mins": 15,
+        "intensity": "none",
+        "notes": "Quads, hip flexors, calves: 60 s each side"
+      }
+    }
+  ]
+}

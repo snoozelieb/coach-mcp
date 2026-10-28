@@ -20,7 +20,7 @@ from ..schemas import (WeeklyPlan as WeeklyPlanSchema,
                      TrainingProgram as TrainingProgramSchema)
 from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS, is_known_type
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
-from ..authoring import contract_document
+from ..authoring import contract_document, exercise_matches_restriction
 from ..workout_builder import build_workout_report, get_workout_type_name
 from datetime import date, timedelta
 from pydantic import ValidationError
@@ -97,18 +97,6 @@ def _iter_plan_sessions(day_data: dict):
                     yield sub
 
 
-def _restriction_stems(restriction: str) -> set[str]:
-    """Comparable forms of a movement restriction: 'jumping' -> {'jumping',
-    'jump'}, 'overhead pressing' -> {'overhead_pressing', 'overhead_press'}."""
-    base = _norm_type(restriction)
-    stems = {base}
-    if base.endswith('ing') and len(base) > 6:
-        stems.add(base[:-3])
-    if base.endswith('s') and len(base) > 4:
-        stems.add(base[:-1])
-    return {s for s in stems if len(s) >= 4}
-
-
 def _iter_session_exercises(session: dict):
     """(name, category) for every exercise in a session, circuits included."""
     for item in session.get('exercises') or []:
@@ -121,21 +109,21 @@ def _iter_session_exercises(session: dict):
 
 
 def _exercise_restriction_hits(session: dict, restrictions: list) -> list[dict]:
-    """Movement-level matches: an active injury's restriction word ('jump',
-    'overhead', 'shoulder_press', 'plyo') found in an exercise's Garmin key or
-    category. Sport words ('running', 'cycling') are judged on the session
-    type, not on exercise names, so a 'cycling' restriction never trips on a
-    core movement that happens to carry the word."""
+    """Movement-level matches: every content word of an active injury's
+    restriction ('no jumping' -> jump; 'overhead pressing' -> overhead, press)
+    found among the tokens of an exercise's Garmin key or category
+    (coach.authoring.exercise_matches_restriction: stemmed tokens, Garmin
+    synonyms such as PLYO for 'jumping', qualifiers like 'heavy' dropped so
+    the gate fails safe). Sport words ('running', 'cycling') are judged on
+    the session type, not on exercise names, so a 'cycling' restriction never
+    trips on a core movement that happens to carry the word."""
     movement_restrictions = [r for r in restrictions if not is_known_type(r)]
     if not movement_restrictions:
         return []
     hits = []
     for name, category in _iter_session_exercises(session):
-        matched = []
-        for restriction in movement_restrictions:
-            if any(stem in name or (category and stem in category)
-                   for stem in _restriction_stems(restriction)):
-                matched.append(restriction)
+        matched = [r for r in movement_restrictions
+                   if exercise_matches_restriction(name, category, r)]
         if matched:
             hits.append({'exercise': name.upper(), 'matched_restrictions': matched})
     return hits
@@ -145,6 +133,12 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
     """Find non-rest sessions whose type intersects an active/improving injury's
     restricted_activities, and strength exercises whose Garmin key or category
     carries a restricted movement word.
+
+    Types are checked on every session, nested lists included. Exercises are
+    checked on the sessions exactly as the push expands them
+    (_expand_push_sessions: a container's exercises land on its nested
+    strength session), so a 'rest'-typed container that carries a gym list
+    cannot smuggle a restricted movement past the gate.
 
     Returns a list of {date, session_type, injury, injury_status,
     matched_restrictions[, exercise]} dicts — empty when the plan is safe.
@@ -177,6 +171,10 @@ def _injury_gate_violations(plan_days: dict, injuries: list) -> list[dict]:
                         'injury_status': injury['status'],
                         'matched_restrictions': matched,
                     })
+        if not isinstance(day_data, dict):
+            continue
+        for session in _expand_push_sessions(copy.deepcopy(day_data)):
+            for injury in gating:
                 for hit in _exercise_restriction_hits(session, injury['restricted_activities']):
                     violations.append({
                         'date': day_str,
@@ -374,7 +372,8 @@ def _missing_purpose_sessions(plan_days: dict) -> list[dict]:
     """Non-rest sessions whose 'purpose' is missing or blank.
 
     This is the PURPOSE GATE (Phase 3): update_weekly_plan rejects the save
-    when this list is non-empty, unless override_purpose_gate=True. Every
+    when this list is non-empty; there is no bypass (override_purpose_gate is
+    deprecated and ignored). Every
     non-rest session must say WHY it exists. Wrapper sessions that just hold
     a nested 'sessions' list are skipped — their leaf sessions are checked
     instead.
@@ -1139,16 +1138,6 @@ def update_weekly_plan(plan: dict | None = None,
                          "and preview_workout() returns the full contract."),
             }
 
-        purpose_gate_note = None
-        if missing_purpose:  # only reachable with override_purpose_gate=True
-            logger.warning(
-                "Purpose gate OVERRIDDEN in update_weekly_plan: %s",
-                missing_purpose,
-            )
-            purpose_gate_note = {
-                'purpose_gate_overridden': True,
-                'missing_purpose': missing_purpose,
-            }
         injury_gate_note = None
         if violations:  # only reachable with override_injury_gate=True
             logger.warning(
@@ -1161,8 +1150,9 @@ def update_weekly_plan(plan: dict | None = None,
 
         save_weekly_plan(plan, today=today)
         # Computed AFTER save: save_weekly_plan prunes stale days in place, so
-        # warnings only cover days that actually remain in the plan. Non-empty
-        # only when the purpose gate was overridden.
+        # warnings only cover days that actually remain in the plan. Always
+        # empty now that the purpose gate has no bypass; kept in the response
+        # for older clients.
         purpose_warnings = _missing_purpose_sessions(plan.get('days', {}))
         # VERIFY BEFORE PRESCRIBING: longest planned session per sport vs
         # the athlete's demonstrated capacity. Warn-only by design.
@@ -1195,8 +1185,6 @@ def update_weekly_plan(plan: dict | None = None,
                 "capacity. Address every grounding_warnings entry with the "
                 "athlete before pushing to Garmin."
             )
-        if purpose_gate_note:
-            result['purpose_gate'] = purpose_gate_note
         if injury_gate_note:
             result['injury_gate'] = injury_gate_note
             # Consent trail: the athlete's words and the coach's reasoning
@@ -1308,7 +1296,7 @@ def _expand_push_sessions(day_data: dict) -> list[dict]:
                     sub['description'] = (f"{focus.replace('_', ' ').title()} Strength"
                                           if focus else "Strength Training")
                 elif sub_type == 'rehab' and 'description' not in sub:
-                    sub['description'] = "Ankle Rehab"
+                    sub['description'] = sub.get('purpose') or "Rehab"
                 elif 'description' not in sub:
                     sub['description'] = sub.get('notes', session.get('description', ''))
                 if 'intensity' not in sub and parent_intensity is not None:
@@ -1360,7 +1348,7 @@ def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict], list[dict]
                 continue
             if report['workout'] is None:
                 skipped.append({'date': date_str, 'type': session.get('type'),
-                                'reason': 'could not convert to workout'})
+                                'reason': 'nothing to render: no duration_mins, structure or exercises'})
                 continue
             to_push.append({
                 'date': date_str,
@@ -1404,8 +1392,9 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
     cycling, strength, yoga, pilates, swimming, padel; rest days skipped —
     a profile or catalogue change after the preview cannot alter what the
     athlete approved), schedules each to its date and records the new
-    workout ids on the plan. 'status' is 'partial' when anything the preview
-    listed did not land (see errors). A token is rejected
+    workout ids on the plan. 'status' is 'partial' when any session of the
+    plan is not on the watch: an upload or scheduling failure, or an
+    unrenderable session (all listed under errors). A token is rejected
     when it is unknown or already used ('confirm_token_invalid'), older than
     10 minutes ('confirm_token_expired'), or when the plan's sessions or its
     pushed ids changed since the preview ('confirm_token_mismatch') — ask for
@@ -1519,6 +1508,20 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
         # ---------------- STEP 2: confirm ----------------
         # Uploads the manifest rendered at preview time — the step trees the
         # athlete approved — never a fresh render.
+        # The library read comes first: a transient Garmin failure must not
+        # consume the token the athlete's approval is bound to.
+        existing_workouts = None
+        if previous_ids:
+            try:
+                existing_workouts = garmin_api_call(lambda c: c.get_workouts())
+            except Exception as e:
+                logger.warning("Confirm: could not read the Garmin workout library", exc_info=True)
+                return {
+                    'error': 'garmin_library_unavailable',
+                    'message': (f"Could not read the Garmin workout library ({e}); nothing was "
+                                "pushed and the confirm_token is still valid."),
+                    'hint': 'Retry the confirm with the same token, or preview again.',
+                }
         token_error, manifest = _consume_push_token(confirm_token, digest)
         if token_error:
             return token_error
@@ -1536,7 +1539,6 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
         delete_failures: list = []
         gone_externally: list = []
         if previous_ids:
-            existing_workouts = garmin_api_call(lambda c: c.get_workouts())
             existing_ids = {w.get('workoutId') for w in (existing_workouts or [])}
             for wid in previous_ids:
                 if wid not in existing_ids:
@@ -1638,8 +1640,11 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
             types_pushed = sorted({p['type'] for p in results['pushed']})
             results['summary'] = (f"Pushed {pushed_count} workout(s) to Garmin "
                                   f"({', '.join(types_pushed)}): {dates[0]} to {dates[-1]}")
+        elif to_push:
+            results['summary'] = (f"No workouts pushed: {len(to_push)} upload(s) failed "
+                                  "(see errors)")
         else:
-            results['summary'] = "No workouts pushed (all sessions were rest days)"
+            results['summary'] = "No workouts pushed (nothing to push: rest days or skipped sessions)"
         if unrenderable:
             results['summary'] += (f"; {len(unrenderable)} session(s) NOT pushed — contract "
                                    "errors listed under errors")

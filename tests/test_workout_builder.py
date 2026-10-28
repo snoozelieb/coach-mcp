@@ -208,10 +208,15 @@ class TestBuildWorkoutDispatch:
         result = build_workout(session, "2025-01-01")
         assert result is None
 
-    def test_returns_none_for_zero_duration(self):
+    def test_zero_duration_is_a_contract_error_not_a_placeholder(self):
         session = {"type": "easy_run", "duration_mins": 0}
-        result = build_workout(session, "2025-01-01")
-        assert result is None
+        with pytest.raises(WorkoutAuthoringError) as exc:
+            build_workout(session, "2025-01-01")
+        assert "more than 0 minutes" in str(exc.value)
+
+    def test_returns_none_for_a_placeholder_without_duration(self):
+        session = {"type": "easy_run", "purpose": "placeholder"}
+        assert build_workout(session, "2025-01-01") is None
 
     def test_returns_none_for_unknown_type(self):
         session = {"type": "basketball", "duration_mins": 60}
@@ -1178,10 +1183,11 @@ class TestBuildPilatesWorkout:
         assert result["sportType"] == PILATES_SPORT
         assert result["estimatedDurationInSecs"] == 20 * 60
 
-    def test_rehab_type_gets_ankle_rehab_name(self):
+    def test_rehab_type_gets_a_neutral_name_or_its_purpose(self):
         session = {"type": "rehab", "duration_mins": 15}
-        result = build_pilates_workout(session, "2025-01-01")
-        assert result["workoutName"] == "Ankle Rehab"
+        assert build_pilates_workout(session, "2025-01-01")["workoutName"] == "Rehab"
+        session = {"type": "rehab", "duration_mins": 15, "purpose": "Shoulder rehab set 2"}
+        assert build_pilates_workout(session, "2025-01-01")["workoutName"] == "Shoulder rehab set 2"
 
     def test_custom_description_used(self):
         session = {"type": "pilates", "duration_mins": 20, "description": "Core Stability"}

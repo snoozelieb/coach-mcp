@@ -19,6 +19,7 @@ from .fitness import get_athlete_hr_zones
 from .taxonomy import types_in_family, workout_family_for
 from .authoring import (
     COMPOUND_CATEGORIES,
+    PLAIN_SPLIT,
     INTENSITY_ZONES,
     STEP_NOTE_MAX_CHARS,
     WORKOUT_NAME_MAX_CHARS,
@@ -435,6 +436,11 @@ def _discretion_note(session: dict) -> str:
     return _smart_truncate(f"Your call: {text}" if text else "Your call", STEP_NOTE_MAX_CHARS)
 
 
+def _split_default(total_secs: float, fraction: float, cap_mins: int) -> float:
+    """Seconds for a default warm-up/cool-down: a fraction of the session, capped."""
+    return min(cap_mins * 60.0, total_secs * fraction)
+
+
 def _plain_split(session: dict, total_secs: float, warmup_default: float, cooldown_default: float
                  ) -> tuple[float, float, float]:
     """(warmup, main, cooldown) seconds for a plain session: the plan's
@@ -467,20 +473,24 @@ def build_workout(session: dict, date: str, report: AuthoringReport | None = Non
     session_type = session.get("type", "").lower()
     duration_mins = session.get("duration_mins", 0)
 
-    # Skip rest days, and plain sessions with nothing to draw
+    # Skip rest days
     if session_type in SKIP_TYPES:
         return None
+
+    # The contract first: a session that says something wrong (0 minutes,
+    # text where a number belongs) is an error, not a placeholder.
+    if report is None:
+        report = validate_session(session, load_exercise_db(), load_strength_baseline())
+    if report.errors:
+        raise WorkoutAuthoringError(report.errors, report.warnings)
+
+    # Plain sessions with nothing to draw (type + purpose only) stay off the watch
     if not duration_mins and not _has_structure(session):
         return None
 
     # Determine sport via taxonomy workout family (substring fallbacks keep
     # free-form plan types like "morning_run" working)
     family = workout_family_for(session_type)
-
-    if report is None:
-        report = validate_session(session, load_exercise_db(), load_strength_baseline())
-    if report.errors:
-        raise WorkoutAuthoringError(report.errors, report.warnings)
 
     if session_type in TEST_TYPES or "ftp_test" in session_type:
         return build_ftp_test_workout(session, date)
@@ -545,6 +555,11 @@ def build_workout_report(session: dict, date: str) -> dict:
     result['ok'] = True
     result['workout'] = workout
     result.update(describe_workout(workout))
+    if (workout_type in ('running', 'cycling') and not get_athlete_hr_zones()
+            and any('@ HR ' in line for line in result['steps'])):
+        result['warnings'].append({'field': 'intensity', 'message': (
+            'the profile has no HR zones (personal.hr_zones), so the HR targets on these steps '
+            'are the generic defaults, not this athlete\'s — set the zones or state hr_target')})
     return result
 
 
@@ -864,6 +879,10 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     description = session.get("name") or session.get("description", "Cycling workout")
     intensity = session.get("intensity", "")
     discretion = _is_discretion(session)
+    # No usable intensity word (none / missing / unknown): every step is
+    # untargeted — the warm-up and cool-down do not get a recovery target the
+    # session never asked for.
+    untargeted = discretion or normalise_intensity(intensity) is None
 
     # Calculate total duration
     total_secs = duration_mins * 60
@@ -894,7 +913,7 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     # Get targets based on indoor/outdoor. A discretion day states no
     # intensity: the main block is untargeted and carries the constraints,
     # and the warm-up/cool-down are untargeted too (the plan granted choice).
-    if discretion:
+    if untargeted:
         main_target = warmup_target = None
         target_type = warmup_target_type = TARGET_NONE
     elif indoor:
@@ -937,7 +956,8 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
         # Regular ride: warmup + main + cooldown (the plan's warmup_mins /
         # cooldown_mins when stated; else 10 % up to 10 min / 5 % up to 5 min)
         warmup_secs, main_secs, cooldown_secs = _plain_split(
-            session, total_secs, min(600, total_secs * 0.1), min(300, total_secs * 0.05))
+            session, total_secs, _split_default(total_secs, *PLAIN_SPLIT['indoor_cycling']['warmup']),
+            _split_default(total_secs, *PLAIN_SPLIT['indoor_cycling']['cooldown']))
 
         # Build warmup step
         warmup_step = ExecutableStep(
@@ -1056,18 +1076,20 @@ def build_running_workout(session: dict, date: str, report: AuthoringReport | No
     duration_mins = session.get("duration_mins") or 0
     intensity = session.get("intensity", "")
     discretion = _is_discretion(session)
+    untargeted = discretion or normalise_intensity(intensity) is None  # see build_cycling_workout
 
     # Segment durations: the plan's warmup_mins / cooldown_mins when stated,
     # else 10 % each up to 5 min
     total_secs = duration_mins * 60
     warmup_secs, main_secs, cooldown_secs = _plain_split(
-        session, total_secs, min(300, total_secs * 0.1), min(300, total_secs * 0.1))
+        session, total_secs, _split_default(total_secs, *PLAIN_SPLIT['running']['warmup']),
+        _split_default(total_secs, *PLAIN_SPLIT['running']['cooldown']))
 
     workout_name = _workout_name(session, "Running workout")
 
     # Try pace targets first (preferred for running), fall back to HR. A
     # discretion day is untargeted throughout and carries its constraints.
-    if discretion:
+    if untargeted:
         main_pace = warmup_pace = hr_target = warmup_hr = None
     else:
         main_pace = get_pace_target_for_intensity(intensity)
@@ -1102,6 +1124,7 @@ def build_running_workout(session: dict, date: str, report: AuthoringReport | No
 
     return RunningWorkout(
         workoutName=workout_name,
+        description=str(session.get("notes") or session.get("purpose") or "")[:255],
         estimatedDurationInSecs=int(total_secs),
         workoutSegments=[
             WorkoutSegment(
@@ -1140,6 +1163,7 @@ def build_structured_running_workout(session: dict, date: str, report: Authoring
 
     return RunningWorkout(
         workoutName=workout_name,
+        description=str(session.get("notes") or session.get("purpose") or "")[:255],
         estimatedDurationInSecs=int(total_secs),
         workoutSegments=[
             WorkoutSegment(
@@ -1309,7 +1333,7 @@ def build_pilates_workout(session: dict, date: str) -> dict:
     # Generate proper name if not provided or if it's just notes
     if not description or description in ["Rehab/Mobility", "Do at pool or after", "3rd rehab session of week"]:
         if session_type == "rehab":
-            description = "Ankle Rehab"
+            description = str(session.get("purpose") or "Rehab")
         else:
             description = "Mobility Session"
 
@@ -1677,6 +1701,7 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
             step["description"] = _smart_truncate(str(notes), STEP_NOTE_MAX_CHARS)
         return {
             "workoutName": workout_name,
+            "description": str(session.get("notes") or session.get("purpose") or "")[:255],
             "sportType": STRENGTH_SPORT,
             "estimatedDurationInSecs": int(total_secs),
             "workoutSegments": [
@@ -1754,6 +1779,7 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
 
     return {
         "workoutName": workout_name,
+        "description": str(session.get("notes") or session.get("purpose") or "")[:255],
         "sportType": STRENGTH_SPORT,
         "estimatedDurationInSecs": int(total_time),
         "workoutSegments": [

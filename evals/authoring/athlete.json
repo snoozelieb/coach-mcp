@@ -1,0 +1,30 @@
+{
+  "name": "Eval Athlete",
+  "personal": {
+    "ftp": 260,
+    "threshold_pace_sec_per_km": 300,
+    "max_hr": 185,
+    "hr_zones": {
+      "z1_recovery": [0, 125],
+      "z2_aerobic": [125, 140],
+      "z3_tempo": [140, 155],
+      "z4_threshold": [155, 168],
+      "z5_max": [168, 185]
+    },
+    "power_zones": {
+      "z1_recovery": [0, 143],
+      "z2_endurance": [143, 195],
+      "z3_tempo": [195, 234],
+      "z4_threshold": [234, 273],
+      "z5_vo2max": [273, 312],
+      "z6_anaerobic": [312, 390]
+    }
+  },
+  "strength_baseline": {
+    "exercises": {
+      "squat": {"preferred_variation": "GOBLET_SQUAT", "current": {"weight_kg": 20}},
+      "lunge": {"preferred_variation": "DUMBBELL_BULGARIAN_SPLIT_SQUAT", "current": {"weight_kg": 10}}
+    }
+  },
+  "injury_history": []
+}

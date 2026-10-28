@@ -1,0 +1,766 @@
+{
+ "_readme": "A slice of the Garmin exercise catalogue (Garmin keys and categories, not athlete data) so the authoring eval and its CI test resolve the same keys everywhere.",
+ "exercises": {
+  "BACK_SQUAT": {
+   "category": "SANDBAG",
+   "garmin_category": "SANDBAG",
+   "garmin_name": "BACK_SQUAT",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes"
+   ],
+   "secondary_muscles": [
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "BANDED_ANKLE_EVERSION": {
+   "category": "BANDED_EXERCISES",
+   "garmin_category": "BANDED_EXERCISES",
+   "garmin_name": "BANDED_ANKLE_EVERSION",
+   "muscles": [
+    "peroneals",
+    "ankle"
+   ],
+   "primary_muscles": [
+    "peroneals",
+    "ankle"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": [
+    "peroneal",
+    "ankle"
+   ],
+   "custom": true
+  },
+  "BOX_JUMP": {
+   "category": "PLYO",
+   "garmin_category": "PLYO",
+   "garmin_name": "BOX_JUMP",
+   "muscles": [
+    "quads",
+    "calves",
+    "hips",
+    "glutes",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "quads",
+    "calves"
+   ],
+   "secondary_muscles": [
+    "hips",
+    "glutes",
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "BURPEE": {
+   "category": "TOTAL_BODY",
+   "garmin_category": "TOTAL_BODY",
+   "garmin_name": "BURPEE",
+   "muscles": [
+    "abs",
+    "chest",
+    "calves",
+    "glutes",
+    "hips",
+    "quads",
+    "shoulders",
+    "triceps",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "abs",
+    "chest",
+    "calves",
+    "glutes",
+    "hips",
+    "quads"
+   ],
+   "secondary_muscles": [
+    "shoulders",
+    "triceps",
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "CYCLING_RUSSIAN_TWIST": {
+   "category": "CORE",
+   "garmin_category": "CORE",
+   "garmin_name": "CYCLING_RUSSIAN_TWIST",
+   "muscles": [
+    "obliques",
+    "abs",
+    "hips"
+   ],
+   "primary_muscles": [
+    "obliques",
+    "abs"
+   ],
+   "secondary_muscles": [
+    "hips"
+   ],
+   "injury_prevention": []
+  },
+  "DEAD_BUG": {
+   "category": "HIP_STABILITY",
+   "garmin_category": "HIP_STABILITY",
+   "garmin_name": "DEAD_BUG",
+   "muscles": [
+    "abs",
+    "shoulders",
+    "hips",
+    "quads",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "abs",
+    "shoulders",
+    "hips"
+   ],
+   "secondary_muscles": [
+    "quads",
+    "hamstrings"
+   ],
+   "injury_prevention": [
+    "back"
+   ]
+  },
+  "DUMBBELL_BULGARIAN_SPLIT_SQUAT": {
+   "category": "LUNGE",
+   "garmin_category": "LUNGE",
+   "garmin_name": "DUMBBELL_BULGARIAN_SPLIT_SQUAT",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes"
+   ],
+   "secondary_muscles": [
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "DUMBBELL_STEP_UP": {
+   "category": "SQUAT",
+   "garmin_category": "SQUAT",
+   "garmin_name": "DUMBBELL_STEP_UP",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings",
+    "calves",
+    "hips"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "calves",
+    "hips"
+   ],
+   "injury_prevention": [
+    "knee"
+   ]
+  },
+  "FACE_PULL_WITH_EXTERNAL_ROTATION": {
+   "category": "ROW",
+   "garmin_category": "ROW",
+   "garmin_name": "FACE_PULL_WITH_EXTERNAL_ROTATION",
+   "muscles": [
+    "shoulders",
+    "traps",
+    "biceps",
+    "lats"
+   ],
+   "primary_muscles": [
+    "shoulders",
+    "traps"
+   ],
+   "secondary_muscles": [
+    "biceps",
+    "lats"
+   ],
+   "injury_prevention": [
+    "shoulder"
+   ]
+  },
+  "GOBLET_SQUAT": {
+   "category": "SQUAT",
+   "garmin_category": "SQUAT",
+   "garmin_name": "GOBLET_SQUAT",
+   "muscles": [
+    "glutes",
+    "quads",
+    "abs",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "glutes",
+    "quads"
+   ],
+   "secondary_muscles": [
+    "abs",
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "HANGING_KNEE_RAISE": {
+   "category": "LEG_RAISE",
+   "garmin_category": "LEG_RAISE",
+   "garmin_name": "HANGING_KNEE_RAISE",
+   "muscles": [
+    "abs",
+    "quads",
+    "hips",
+    "forearm",
+    "shoulders"
+   ],
+   "primary_muscles": [
+    "abs",
+    "quads"
+   ],
+   "secondary_muscles": [
+    "hips",
+    "forearm",
+    "shoulders"
+   ],
+   "injury_prevention": []
+  },
+  "HIP_THRUST": {
+   "category": "HIP_RAISE",
+   "garmin_category": "HIP_RAISE",
+   "garmin_name": "HIP_THRUST",
+   "muscles": [
+    "glutes",
+    "hamstrings",
+    "lower_back",
+    "abs"
+   ],
+   "primary_muscles": [
+    "glutes",
+    "hamstrings"
+   ],
+   "secondary_muscles": [
+    "lower_back",
+    "abs"
+   ],
+   "injury_prevention": [
+    "knee",
+    "hip"
+   ],
+   "custom": true
+  },
+  "INCLINE_DUMBBELL_BENCH_PRESS": {
+   "category": "BENCH_PRESS",
+   "garmin_category": "BENCH_PRESS",
+   "garmin_name": "INCLINE_DUMBBELL_BENCH_PRESS",
+   "muscles": [
+    "chest",
+    "shoulders",
+    "triceps"
+   ],
+   "primary_muscles": [
+    "chest"
+   ],
+   "secondary_muscles": [
+    "shoulders",
+    "triceps"
+   ],
+   "injury_prevention": []
+  },
+  "INCLINE_Y_RAISE": {
+   "category": "SHOULDER_STABILITY",
+   "garmin_category": "SHOULDER_STABILITY",
+   "garmin_name": "INCLINE_Y_RAISE",
+   "muscles": [
+    "shoulders",
+    "traps"
+   ],
+   "primary_muscles": [
+    "shoulders"
+   ],
+   "secondary_muscles": [
+    "traps"
+   ],
+   "injury_prevention": []
+  },
+  "INDOOR_ROW": {
+   "category": "ROW",
+   "garmin_category": "ROW",
+   "garmin_name": "INDOOR_ROW",
+   "muscles": [
+    "lats",
+    "traps",
+    "quads",
+    "biceps",
+    "lower_back",
+    "shoulders"
+   ],
+   "primary_muscles": [
+    "lats",
+    "traps",
+    "quads"
+   ],
+   "secondary_muscles": [
+    "biceps",
+    "lower_back",
+    "shoulders"
+   ],
+   "injury_prevention": []
+  },
+  "INVERTED_ROW": {
+   "category": "ROW",
+   "garmin_category": "ROW",
+   "garmin_name": "INVERTED_ROW",
+   "muscles": [
+    "traps",
+    "lats",
+    "shoulders",
+    "chest"
+   ],
+   "primary_muscles": [
+    "traps",
+    "lats"
+   ],
+   "secondary_muscles": [
+    "shoulders",
+    "chest"
+   ],
+   "injury_prevention": []
+  },
+  "JUMP_ROPE": {
+   "category": "CARDIO",
+   "garmin_category": "CARDIO",
+   "garmin_name": "JUMP_ROPE",
+   "muscles": [
+    "calves",
+    "hamstrings",
+    "glutes"
+   ],
+   "primary_muscles": [
+    "calves"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "glutes"
+   ],
+   "injury_prevention": []
+  },
+  "KNEELING_CRUNCH": {
+   "category": "BANDED_EXERCISES",
+   "garmin_category": "BANDED_EXERCISES",
+   "garmin_name": "KNEELING_CRUNCH",
+   "muscles": [
+    "abs"
+   ],
+   "primary_muscles": [
+    "abs"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": []
+  },
+  "LEG_PRESS": {
+   "category": "SQUAT",
+   "garmin_category": "SQUAT",
+   "garmin_name": "LEG_PRESS",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "quads"
+   ],
+   "secondary_muscles": [
+    "glutes",
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "LOW_SIDE_TO_SIDE_LUNGE": {
+   "category": "LUNGE",
+   "garmin_category": "LUNGE",
+   "garmin_name": "LOW_SIDE_TO_SIDE_LUNGE",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings",
+    "adductors",
+    "abductors"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "adductors",
+    "abductors"
+   ],
+   "injury_prevention": []
+  },
+  "OVERHEAD_PRESS": {
+   "category": "SANDBAG",
+   "garmin_category": "SANDBAG",
+   "garmin_name": "OVERHEAD_PRESS",
+   "muscles": [
+    "shoulders",
+    "triceps",
+    "chest",
+    "traps"
+   ],
+   "primary_muscles": [
+    "shoulders"
+   ],
+   "secondary_muscles": [
+    "triceps",
+    "chest",
+    "traps"
+   ],
+   "injury_prevention": []
+  },
+  "OVERHEAD_SQUAT": {
+   "category": "SQUAT",
+   "garmin_category": "SQUAT",
+   "garmin_name": "OVERHEAD_SQUAT",
+   "muscles": [
+    "quads",
+    "glutes",
+    "shoulders",
+    "traps",
+    "hamstrings",
+    "abs",
+    "triceps"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes",
+    "shoulders",
+    "traps"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "abs",
+    "triceps"
+   ],
+   "injury_prevention": []
+  },
+  "PISTOL_SQUAT": {
+   "category": "SQUAT",
+   "garmin_category": "SQUAT",
+   "garmin_name": "PISTOL_SQUAT",
+   "muscles": [
+    "glutes",
+    "quads",
+    "hamstrings"
+   ],
+   "primary_muscles": [
+    "glutes",
+    "quads"
+   ],
+   "secondary_muscles": [
+    "hamstrings"
+   ],
+   "injury_prevention": []
+  },
+  "PLANK": {
+   "category": "SUSPENSION",
+   "garmin_category": "SUSPENSION",
+   "garmin_name": "PLANK",
+   "muscles": [
+    "abs",
+    "glutes"
+   ],
+   "primary_muscles": [
+    "abs"
+   ],
+   "secondary_muscles": [
+    "glutes"
+   ],
+   "injury_prevention": [
+    "back"
+   ]
+  },
+  "PULL_APART": {
+   "category": "BANDED_EXERCISES",
+   "garmin_category": "BANDED_EXERCISES",
+   "garmin_name": "PULL_APART",
+   "muscles": [
+    "shoulders",
+    "traps"
+   ],
+   "primary_muscles": [
+    "shoulders",
+    "traps"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": [
+    "shoulder"
+   ]
+  },
+  "PULL_UP": {
+   "category": "SUSPENSION",
+   "garmin_category": "SUSPENSION",
+   "garmin_name": "PULL_UP",
+   "muscles": [
+    "lats",
+    "traps",
+    "biceps",
+    "forearm",
+    "shoulders"
+   ],
+   "primary_muscles": [
+    "lats",
+    "traps"
+   ],
+   "secondary_muscles": [
+    "biceps",
+    "forearm",
+    "shoulders"
+   ],
+   "injury_prevention": []
+  },
+  "PUSH_UP": {
+   "category": "SUSPENSION",
+   "garmin_category": "SUSPENSION",
+   "garmin_name": "PUSH_UP",
+   "muscles": [
+    "chest",
+    "abs",
+    "triceps",
+    "shoulders",
+    "forearm"
+   ],
+   "primary_muscles": [
+    "chest",
+    "abs",
+    "triceps"
+   ],
+   "secondary_muscles": [
+    "shoulders",
+    "forearm"
+   ],
+   "injury_prevention": []
+  },
+  "RUNNERS_LUNGE_TO_BALANCE": {
+   "category": "LUNGE",
+   "garmin_category": "LUNGE",
+   "garmin_name": "RUNNERS_LUNGE_TO_BALANCE",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings",
+    "hamstrings",
+    "adductors",
+    "abductors"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes",
+    "hamstrings"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "adductors",
+    "abductors"
+   ],
+   "injury_prevention": []
+  },
+  "SIDE_LUNGE_JUMP_OFF": {
+   "category": "LUNGE",
+   "garmin_category": "LUNGE",
+   "garmin_name": "SIDE_LUNGE_JUMP_OFF",
+   "muscles": [
+    "quads",
+    "glutes",
+    "hamstrings",
+    "adductors",
+    "abductors",
+    "calves"
+   ],
+   "primary_muscles": [
+    "quads",
+    "glutes"
+   ],
+   "secondary_muscles": [
+    "hamstrings",
+    "adductors",
+    "abductors",
+    "calves"
+   ],
+   "injury_prevention": []
+  },
+  "SIDE_PLANK": {
+   "category": "SUSPENSION",
+   "garmin_category": "SUSPENSION",
+   "garmin_name": "SIDE_PLANK",
+   "muscles": [
+    "obliques",
+    "abs",
+    "shoulders"
+   ],
+   "primary_muscles": [
+    "obliques"
+   ],
+   "secondary_muscles": [
+    "abs",
+    "shoulders"
+   ],
+   "injury_prevention": [
+    "back"
+   ]
+  },
+  "SINGLE_LEG_ROMANIAN_DEADLIFT_WITH_DUMBBELL": {
+   "category": "DEADLIFT",
+   "garmin_category": "DEADLIFT",
+   "garmin_name": "SINGLE_LEG_ROMANIAN_DEADLIFT_WITH_DUMBBELL",
+   "muscles": [
+    "hamstrings",
+    "lower_back",
+    "traps",
+    "lats",
+    "glutes",
+    "adductors"
+   ],
+   "primary_muscles": [
+    "hamstrings",
+    "lower_back"
+   ],
+   "secondary_muscles": [
+    "traps",
+    "lats",
+    "glutes",
+    "adductors"
+   ],
+   "injury_prevention": [
+    "hamstring"
+   ]
+  },
+  "SINGLE_LEG_STANDING_CALF_RAISE": {
+   "category": "CALF_RAISE",
+   "garmin_category": "CALF_RAISE",
+   "garmin_name": "SINGLE_LEG_STANDING_CALF_RAISE",
+   "muscles": [
+    "calves"
+   ],
+   "primary_muscles": [
+    "calves"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": [
+    "ankle",
+    "peroneal"
+   ]
+  },
+  "TRIANGLE_HIP_PRESS": {
+   "category": "CORE",
+   "garmin_category": "CORE",
+   "garmin_name": "TRIANGLE_HIP_PRESS",
+   "muscles": [
+    "abs"
+   ],
+   "primary_muscles": [
+    "abs"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": []
+  },
+  "WEIGHTED_SEATED_CALF_RAISE": {
+   "category": "CALF_RAISE",
+   "garmin_category": "CALF_RAISE",
+   "garmin_name": "WEIGHTED_SEATED_CALF_RAISE",
+   "muscles": [
+    "calves"
+   ],
+   "primary_muscles": [
+    "calves"
+   ],
+   "secondary_muscles": [],
+   "injury_prevention": [
+    "ankle",
+    "peroneal"
+   ]
+  },
+  "WEIGHTED_SIDE_PLANK": {
+   "category": "PLANK",
+   "garmin_category": "PLANK",
+   "garmin_name": "WEIGHTED_SIDE_PLANK",
+   "muscles": [
+    "obliques",
+    "abs",
+    "shoulders"
+   ],
+   "primary_muscles": [
+    "obliques"
+   ],
+   "secondary_muscles": [
+    "abs",
+    "shoulders"
+   ],
+   "injury_prevention": [
+    "back"
+   ]
+  }
+ },
+ "categories": [
+  "BANDED_EXERCISES",
+  "BATTLE_ROPE",
+  "BENCH_PRESS",
+  "BIKE_OUTDOOR",
+  "CALF_RAISE",
+  "CARDIO",
+  "CARRY",
+  "CHOP",
+  "CORE",
+  "CRUNCH",
+  "CURL",
+  "DEADLIFT",
+  "ELLIPTICAL",
+  "FLOOR_CLIMB",
+  "FLYE",
+  "HIP_RAISE",
+  "HIP_STABILITY",
+  "HIP_SWING",
+  "HYPEREXTENSION",
+  "INDOOR_BIKE",
+  "LADDER",
+  "LATERAL_RAISE",
+  "LEG_CURL",
+  "LEG_RAISE",
+  "LUNGE",
+  "OLYMPIC_LIFT",
+  "PLANK",
+  "PLYO",
+  "PULL_UP",
+  "PUSH_UP",
+  "ROW",
+  "RUN",
+  "RUN_INDOOR",
+  "SANDBAG",
+  "SHOULDER_PRESS",
+  "SHOULDER_STABILITY",
+  "SHRUG",
+  "SIT_UP",
+  "SLED",
+  "SLEDGE_HAMMER",
+  "SQUAT",
+  "STAIR_STEPPER",
+  "SUSPENSION",
+  "TIRE",
+  "TOTAL_BODY",
+  "TRICEPS_EXTENSION",
+  "WARM_UP"
+ ]
+}

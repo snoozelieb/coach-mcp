@@ -111,9 +111,13 @@ error 'purpose_gate'; there is no bypass (override_purpose_gate is
 deprecated and ignored) — a session you can't explain shouldn't be on the
 plan. (3) INJURY — sessions matching an active/improving injury's
 restricted_activities reject the save (taxonomy-aware: 'long_ride' is
-caught by a 'cycling' restriction; free-text restrictions match by
-substring; a strength exercise whose Garmin key or category carries a
-restricted movement word such as 'jump' or 'overhead' is caught too);
+caught by a 'cycling' restriction; free-text restrictions match session
+types by substring, and strength exercises by movement word: every word
+of the restriction after 'no'/'avoid' and qualifiers like 'heavy' must
+appear in the exercise's Garmin key or category — 'no jumping' catches
+BOX_JUMP and every PLYO movement, 'overhead pressing' catches
+SHOULDER_PRESS and OVERHEAD_PRESS, not LEG_PRESS; a container's gym list
+is checked on the session it is pushed with);
 override_injury_gate=True bypasses only with the athlete's own words
 (athlete_statement) and a logged rationale. A plan failing purpose AND
 injury reports both in one error. (4) SESSION CONTRACT — a session whose

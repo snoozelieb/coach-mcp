@@ -68,8 +68,8 @@ def weekly_planning_prompt(notes: str = "") -> PromptResult:
                 f"5. Each session needs a PURPOSE (why this session, this day)\n"
                 f"6. Use update_weekly_plan(plan=...) to save — it takes a structured "
                 f"plan dict (not a JSON string), and every non-rest session needs a "
-                f"purpose string. The response lists `purpose_warnings` for sessions "
-                f"missing one — fix them before pushing to Garmin.\n"
+                f"purpose string — a session without one rejects the save "
+                f"(error 'purpose_gate'); fix it and save again before pushing.\n"
                 f"7. Log significant decisions with log_coaching_decision()"
             )
         ],

@@ -7,8 +7,10 @@ severity assessment, and research content for the LLM to reason about.
 
 from ..mcp_app import mcp
 from ..web_utils import fetch_page_text_validated, untrusted_envelope_from_text, UNTRUSTED_NOTICE
-from ..planner import save_json_file, load_athlete, update_json_file, append_decision
+from ..planner import save_json_file, load_athlete, update_json_file, append_decision, load_json_file
 from ..rules import normalize_injury
+from ..authoring import exercise_matches_restriction
+from ..taxonomy import is_known_type
 from ..session_state import require_snapshot
 from ..config import (INJURY_ASSESSMENT_QUESTIONS, INJURY_SEVERITY_LEVELS,
                     INJURY_STATUS_OPTIONS, ATHLETE_FILE,
@@ -615,6 +617,26 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         return json.dumps({"error": str(e)})
 
 
+def _restriction_coverage(restrictions: list[str]) -> dict[str, dict]:
+    """How many cached Garmin exercise keys each movement restriction would
+    gate — a zero tells the coach the phrasing is one the exercise gate
+    cannot see. Sport words are left out (they gate session types)."""
+    try:
+        catalogue = (load_json_file('exercises.json') or {}).get('exercises') or {}
+    except Exception:
+        return {}
+    if not catalogue:
+        return {}
+    coverage = {}
+    for restriction in restrictions:
+        if is_known_type(restriction):
+            continue
+        hits = sum(1 for key, entry in catalogue.items()
+                   if exercise_matches_restriction(key, (entry or {}).get('category'), restriction))
+        coverage[restriction] = {'catalogue_keys': hits}
+    return coverage
+
+
 @mcp.tool(meta={"anthropic/alwaysLoad": True}, annotations={'readOnlyHint': False, 'destructiveHint': False,
                        'idempotentHint': True, 'openWorldHint': False})
 def update_injury_status(
@@ -778,6 +800,17 @@ def update_injury_status(
                 and not normalize_injury(updated)['restricted_activities']):
             result['warning'] = ('This injury has no restricted_activities — the injury '
                                  'gate is not armed. Set them.')
+        if new_restricted:
+            coverage = _restriction_coverage(new_restricted)
+            if coverage:
+                result['restriction_coverage'] = coverage
+                dead = [r for r, c in coverage.items() if c['catalogue_keys'] == 0]
+                if dead:
+                    result['hint'] = (
+                        f"{dead} match no Garmin exercise key or category, so the exercise-level "
+                        "injury gate cannot act on them (session types still are). Use a movement "
+                        "word Garmin uses — jump, plyo, hop, overhead, press, squat, lunge, row, "
+                        "twist, kneel — or the sport word for a whole sport.")
         return json.dumps(result, indent=2)
 
     except Exception as e:

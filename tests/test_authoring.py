@@ -317,18 +317,25 @@ class TestPhaseContract:
         assert warnings_of({**bare, "intensity": "easy"}) == []
         assert warnings_of({"type": "running", "structure": [{"phase": "warmup", "duration_mins": 10}]}) == []
 
-    def test_interval_prose_without_structure_warns_on_runs_and_rides(self):
-        """Regression: '5 x 3 min at vo2' in a description rendered as one easy block, silently."""
+    def test_interval_prose_without_structure_is_caught_on_runs_and_rides(self):
+        """Regression: '5 x 3 min at vo2' in a description rendered as one easy block,
+        silently. A numeric rep scheme is now an error (as for strength); interval
+        words alone are a warning; a negated mention is neither."""
         for session in (
             {"type": "running", "duration_mins": 45, "intensity": "easy",
              "description": "5 x 3 min at vo2 with 2 min jog"},
             {"type": "wattbike", "duration_mins": 60, "intensity": "threshold", "description": "4x4 threshold"},
-            {"type": "running", "duration_mins": 40, "intensity": "easy", "notes": "6 strides at the end"},
         ):
-            (message,) = [w["message"] for w in validate_session(session).warnings if w["field"] == "structure"]
+            (message,) = [e["message"] for e in validate_session(session).errors if e["field"] == "structure"]
             assert "no 'structure'" in message and "ONE block" in message, session
+        (message,) = [w["message"] for w in validate_session(
+            {"type": "running", "duration_mins": 40, "intensity": "easy", "notes": "6 strides at the end"}
+        ).warnings if w["field"] == "structure"]
+        assert "no 'structure'" in message and "ONE block" in message
         assert warnings_of({"type": "running", "duration_mins": 45, "intensity": "easy",
                             "description": "Easy run, chat pace"}) == []
+        assert warnings_of({"type": "running", "duration_mins": 45, "intensity": "easy",
+                            "description": "Easy run. No intervals today."}) == []
 
     def test_session_intensity_outside_the_vocabulary_warns(self):
         (message,) = warnings_of({"type": "cycling", "duration_mins": 60, "intensity": "moderate"})

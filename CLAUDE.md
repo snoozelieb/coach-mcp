@@ -74,6 +74,8 @@ python scripts/garmin_login.py                # Manual Garmin token recovery (na
 python scripts/setup_wizard.py                # Interactive first-run profile setup
 garmin-coach-setup / garmin-coach-login       # Same two helpers as console scripts (installed copies)
 python scripts/backfill_history.py --since YYYY-MM-DD --check   # Diary-hole repair (dry run; --apply to write)
+python scripts/authoring_eval.py --check      # Render the authoring eval's golden sessions (no model, CI runs it)
+python scripts/authoring_eval.py --run --model sonnet --budget-usd 6   # Owner-run: the model authors every brief (costs money)
 ```
 
 ## MCP Framework
@@ -131,6 +133,8 @@ coach/
 scripts/                   # daily_loop, garmin_login, capture_fixtures,
                            # recompute_acwr_history, setup_wizard, ... (non-exhaustive)
 tests/                     # pytest suite (see Testing below)
+evals/authoring/           # authoring eval: briefs, checks, golden sessions, a synthetic
+                           #   athlete and a slice of the Garmin catalogue (scripts/authoring_eval.py)
 ```
 
 `get_coaching_snapshot()` is a **read-modify-write pipeline**, not a read: every
@@ -187,7 +191,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,692 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
+1,762 tests across 52 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
@@ -232,7 +236,8 @@ ACWR history migration), and the four sport authoring skills
 in the session contract; their JSON examples are validated by
 `tests/test_skills.py`). `.claude/agents/workout-author.md` is the Claude Code
 agent that authors one session against `preview_workout` until the step tree
-matches the brief; it never saves or pushes. The same skills are meant to be
+matches the brief; its `tools` list is an allowlist of read and preview tools,
+so it cannot save, push or ingest. The same skills are meant to be
 uploaded to claude.ai as custom skills (they then sync into Claude Code and
 cover Claude Desktop).
 
@@ -246,7 +251,12 @@ plan states is defaulted — no 3x10, no category weights, no library cue or
 baseline load without a flag; plain runs and indoor rides split warm-up and
 cool-down by documented percentages unless `warmup_mins`/`cooldown_mins` are
 stated, and the contract document says so). The injury gate also reads
-strength exercises (a restricted movement word in a Garmin key or category).
+strength exercises on the sessions exactly as the push expands them: every
+content word of a free-text restriction, stemmed, with negations and
+qualifiers dropped, must appear in the exercise's Garmin key or category
+('no jumping' catches BOX_JUMP and every PLYO movement; sport words stay on
+the session type; `coach/authoring.py` holds the vocabulary and
+`update_injury_status` reports how many catalogue keys a restriction reaches).
 `update_weekly_plan` rejects contract violations (`authoring_error`),
 `push_plan_to_garmin`'s preview carries the rendered step tree per session and
 lists `unrenderable` sessions (never uploaded), and `preview_workout(session)`

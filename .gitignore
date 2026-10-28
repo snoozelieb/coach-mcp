@@ -74,3 +74,6 @@ wheels/
 Thumbs.db
 nul
 garmin_tokens.json
+
+# Authoring eval runs (owner-run, cost money; the cases and goldens are committed)
+evals/authoring/results/

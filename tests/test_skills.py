@@ -105,10 +105,18 @@ class TestWorkoutAuthorAgent:
         text = AGENT_FILE.read_text(encoding='utf-8')
         assert 'never call update_weekly_plan or push_plan_to_garmin' in text
         meta = _frontmatter(text)
-        # Prompt-only "never" decays; the tools that write or push are denied in code
+        # Prompt-only "never" decays; the agent holds an ALLOWLIST of read and
+        # preview tools, so the tools that write, push or ingest do not exist for it
+        allowed = {t.strip() for t in meta.get('tools', '').split(',') if t.strip()}
+        assert 'mcp__coach-mcp__preview_workout' in allowed
+        assert 'mcp__coach-mcp__list_exercises' in allowed
+        assert 'disallowedTools' not in meta
         for tool in ('update_weekly_plan', 'push_plan_to_garmin', 'update_injury_status',
-                     'training_program', 'get_coaching_snapshot'):
-            assert tool in meta.get('disallowedTools', ''), tool
+                     'training_program', 'get_coaching_snapshot', 'update_athlete',
+                     'diagnose_injury', 'approve_proposal', 'update_phase', 'remove_race'):
+            assert not any(tool in t for t in allowed), tool
+        for tool in ('Edit', 'Write', 'Bash'):
+            assert tool not in allowed, tool
         assert 'missing_brief' in text
 
     def test_gitignore_tracks_only_this_agent(self):

@@ -247,7 +247,7 @@ class TestPlanGroundingWarnings:
 
         assert result['status'] == 'success'
         assert result['grounding_warnings'] == []
-        assert result['message'] == 'Weekly plan saved'
+        assert result['message'].startswith('Weekly plan saved')
 
     def test_no_history_sport_flagged(self, data_env):
         _seed_history(data_env, RUN_HISTORY)

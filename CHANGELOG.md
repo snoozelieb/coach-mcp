@@ -14,6 +14,39 @@ written, a strict session contract rejects what it cannot draw with errors
 that teach, and the push preview shows the step tree before anything lands.
 
 ### Fixed
+- **Second review round (red team + intent guardian, 2026-10-28).** The
+  injury gate now checks exercises on the sessions exactly as the push
+  expands them, so a rest-typed container carrying a gym list cannot smuggle
+  a restricted movement past it; restriction words match the Garmin keys
+  the way a physio writes them — every content word of the restriction,
+  stemmed, with negations and qualifiers dropped ('no jumping' catches
+  BOX_JUMP and every PLYO movement, 'overhead pressing' catches
+  SHOULDER_PRESS and OVERHEAD_PRESS but not LEG_PRESS, 'knee' no longer trips
+  KNEELING_CRUNCH) and `update_injury_status` reports how many catalogue keys
+  each restriction reaches, with a hint when it reaches none. Minutes must be
+  real positive numbers in every lane (a text "30", a negative or a boolean
+  duration rendered garbage with a success status); a `power_watts` band
+  under 30 W is rejected as W/kg; session-level `intensity: none` is accepted
+  as explicitly untargeted and an untargeted plain session gets no recovery
+  target on its warm-up or cool-down either; a numeric rep scheme in a run or
+  ride description without `structure` is an error like it is for strength,
+  interval words stay a warning and a negated mention ("no intervals today")
+  is neither; names the exercise cache files under SUSPENSION (PULL_UP, ROW,
+  SQUAT, LUNGE, FACE_PULL …) keep their category and name by exact match.
+  The push confirm reads the Garmin library before consuming the token, so a
+  transient read failure returns `garmin_library_unavailable` and the athlete
+  need not re-approve; the summary says when every upload failed; the
+  placeholder skip reason uses the save warning's words; `partial` is
+  documented as "any session of the plan is not on the watch". Generic HR
+  zones never land silently: a profile without `personal.hr_zones` gets a
+  warning on every HR-targeted step. Running and strength workouts carry the
+  session purpose as their Garmin description like rides already did; the
+  legacy nested-day lane no longer names a body part ("Ankle Rehab" is the
+  session's purpose or "Rehab"). The workout-author agent is an allowlist of
+  read and preview tools instead of a denylist. Hygiene: the dead
+  purpose-override branches are gone, the plain-session split percentages
+  live in one constant the renderer and the contract document share, and the
+  weekly-planning prompt no longer promises `purpose_warnings`.
 - **A running server can no longer half-load an update.** On 2026-10-27
   `push_plan_to_garmin` crashed with `ImportError: cannot import name
   'sanitize_text'` in a server process started before that evening's
@@ -47,6 +80,16 @@ that teach, and the push preview shows the step tree before anything lands.
   `duration_mins` are no longer skipped.
 
 ### Added
+- **Authoring eval** (`scripts/authoring_eval.py`, `evals/authoring/`): 17
+  coaching briefs across running, cycling, strength and mobility, each with
+  the checks its rendering must satisfy and a golden session that does.
+  `--check` renders the goldens (CI runs it through
+  `tests/test_authoring_eval.py`, which also proves every check rejects the
+  other cases' renderings); `--run` has `claude -p --agent workout-author`
+  author each brief against a hermetic coach server (synthetic athlete, a
+  committed slice of the Garmin catalogue, dummy credentials, only preview
+  and lookup tools) and measures how often the step tree matches — the
+  probability claim is measured, not asserted.
 - **Session contract** (`coach/authoring.py`): strict pydantic models for
   `structure` phases and repeat blocks (shared by runs and rides) and for
   strength `exercises` and circuits, with teaching errors — an unknown key
