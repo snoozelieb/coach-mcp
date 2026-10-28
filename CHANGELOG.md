@@ -115,6 +115,11 @@ that teach, and the push preview shows the step tree before anything lands.
   the brief.
 
 ### Changed
+- The "10-15 % a week" progression figure lives in one place
+  (`SAFE_WEEKLY_PROGRESSION_PCT` in `coach/config.py`); the grounding warning,
+  the prescription note and the program-design prompt render it from there
+  instead of restating it. `CTL_TARGETS` are documented as advisory until
+  recalibrated to the Garmin load scale (CLAUDE.md, Known Issues).
 - CI and release workflows run the Node 24 action majors (checkout@v7,
   setup-python@v7, upload-artifact@v7, download-artifact@v8); the Node 20
   deprecation notices are gone before Node 20 actions stop running.

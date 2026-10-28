@@ -130,7 +130,11 @@ ACWR_HIGH_THRESHOLD = 1.3   # Above this = injury risk elevated
 ACWR_DANGER_THRESHOLD = 1.5 # Above this = high injury risk
 
 # CTL targets by race type (based on typical demands)
-# These are target CTL values to be race-ready
+# These are target CTL values to be race-ready.
+# KNOWN ISSUE (CLAUDE.md, Known Issues): these numbers are on the TRIMP scale
+# while daily loads are Garmin EPOC activityTrainingLoad (6-8x larger per
+# session), so the targets read low against the athlete's actual CTL. They
+# are advisory until recalibrated from the athlete's own history.
 CTL_TARGETS = {
     "multi_day_mtb": {"min": 55, "ideal": 65, "description": "3-day MTB stage race (e.g., sani2c)"},
     "road_cycling": {"min": 45, "ideal": 55, "description": "Road race 80-120km"},
@@ -147,8 +151,11 @@ CTL_TARGETS = {
 # TSS to hours approximation (varies by intensity, this is average)
 TSS_PER_HOUR_ESTIMATE = 50  # Typical Z2 endurance work
 
-# Safe load increase limits (injury prevention)
+# Safe load increase limits (injury prevention). The band is the ONE place the
+# '10-15 % a week' progression figure lives; grounding warnings, the
+# prescription note and the program-design prompt render it from here.
 MAX_WEEKLY_LOAD_INCREASE_PCT = 15  # Don't increase > 15% week over week
+SAFE_WEEKLY_PROGRESSION_PCT = (10, MAX_WEEKLY_LOAD_INCREASE_PCT)  # (low, high) per week
 
 # Minimum data requirements
 MIN_DAYS_FOR_CTL = 14      # Need at least 2 weeks for meaningful CTL

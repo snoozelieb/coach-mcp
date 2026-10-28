@@ -267,6 +267,13 @@ corrections) stay in `coach/authoring.py`.
 
 ## Known Issues / TODO
 
+- **`CTL_TARGETS` are on the wrong scale.** The race-type CTL targets in
+  `coach/config.py` were written for TRIMP-style loads, while `daily_loads`
+  carry Garmin's EPOC `activityTrainingLoad` (6-8x larger per session), so a
+  target like 65 reads low against the athlete's real CTL (the Aug 2026 incident
+  quoted CTL 103 against it). The snapshot's `ctl_target` is advisory until the
+  targets are recalibrated from the athlete's own history; that is a coaching
+  decision for the owner, not a code fix.
 - **Padel workouts have no sport type on Garmin.** Garmin's workout service has
   no padel/racket sport (`workout-service/workout/types` lists 12 sports), so
   padel pushes are stored with sport `(0, None)`. Recorded padel activities are

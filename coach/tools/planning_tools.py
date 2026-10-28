@@ -19,7 +19,7 @@ from ..fitness import (load_fitness_history, calculate_fitness_metrics,
 from ..schemas import (WeeklyPlan as WeeklyPlanSchema,
                      TrainingProgram as TrainingProgramSchema)
 from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS, is_known_type
-from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
+from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE, SAFE_WEEKLY_PROGRESSION_PCT
 from ..authoring import contract_document, exercise_matches_restriction
 from ..workout_builder import build_workout_report, get_workout_type_name
 from datetime import date, timedelta
@@ -288,7 +288,8 @@ def _grounding_warnings(plan_days: dict, today: date) -> list[dict]:
                     f"{planned_max:.0f} min vs {demonstrated:.0f} min "
                     f"demonstrated in the {window_label}. Large "
                     f"single-session jumps drive injury risk — progress "
-                    f"~10-15% per week from demonstrated capacity."),
+                    f"~{SAFE_WEEKLY_PROGRESSION_PCT[0]}-{SAFE_WEEKLY_PROGRESSION_PCT[1]}% per week "
+                    f"from demonstrated capacity."),
             })
     return warnings
 
@@ -760,8 +761,8 @@ def get_weekly_prescription() -> dict:
                          "(VERIFY BEFORE PRESCRIBING). The volume target "
                          "above sizes the week's LOAD; every individual "
                          "session duration anchors HERE — e.g. a long run "
-                         "progresses 10-15%/week from the demonstrated "
-                         "longest recent run, wherever that is."),
+                         f"progresses {SAFE_WEEKLY_PROGRESSION_PCT[0]}-{SAFE_WEEKLY_PROGRESSION_PCT[1]}%/week "
+                         "from the demonstrated longest recent run, wherever that is."),
             },
             'pillar_priorities': pillar_priorities if pillar_priorities else ["All pillars on track"],
             'constraints': {

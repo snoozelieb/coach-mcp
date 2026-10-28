@@ -5,6 +5,7 @@ for structured coaching interactions.
 """
 
 from .mcp_app import mcp
+from .config import SAFE_WEEKLY_PROGRESSION_PCT
 from .planner import load_athlete
 from .rules import load_training_config, get_upcoming_events
 from fastmcp.prompts import PromptResult, Message
@@ -258,7 +259,7 @@ def race_program_prompt(race_name: str = "", notes: str = "") -> PromptResult:
                 f"3. races(action='list') — confirm the target event exists "
                 f"(add it if not); note priority and weeks until race day.\n\n"
                 f"## Design the program\n"
-                f"4. Ladder the key session ~10-15%/week from the "
+                f"4. Ladder the key session ~{SAFE_WEEKLY_PROGRESSION_PCT[0]}-{SAFE_WEEKLY_PROGRESSION_PCT[1]}%/week from the "
                 f"demonstrated anchor; place recovery weeks and a taper; "
                 f"respect the load hierarchy (overall ACWR > sport ACWR > "
                 f"sport CTL) and every active injury restriction. If week 1 "
