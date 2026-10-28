@@ -129,6 +129,21 @@ def test_checks_fail_on_the_wrong_rendering(harness, cases, eval_athlete):
             f"{case['id']}: its checks accept another case's rendering — too loose")
 
 
+def test_extract_answer_reads_structured_output_or_a_fenced_block(harness):
+    session = {"type": "yoga", "duration_mins": 30, "purpose": "x"}
+    structured = {"structured_output": {"session": session, "missing_brief": None, "notes": ""}, "result": ""}
+    assert harness.extract_answer(structured)["session"] == session
+    prose = {"result": "Here it is.\n\n```json\n" + json.dumps({"session": session, "missing_brief": None,
+                                                                 "notes": "none"}) + "\n```\n"}
+    assert harness.extract_answer(prose)["session"] == session
+    pasted = {"result": "**Session**\n```json\n" + json.dumps(session) + "\n```\nPreview steps: ..."}
+    assert harness.extract_answer(pasted)["session"] == session
+    refused = {"result": "missing_brief: the load for the goblet squat was not given."}
+    assert harness.extract_answer(refused)["session"] is None
+    assert harness.extract_answer(refused)["missing_brief"]
+    assert harness.extract_answer({"result": "I could not do this."}) == {}
+
+
 def test_apply_checks_semantics(harness):
     report = {"ok": True, "workout_type": "running", "estimated_mins": 42,
               "steps": ["1. Warm-up 10:00", "2. 6 x", "   2.1. Interval 3:00 @ pace 4:35/km to 4:25/km",

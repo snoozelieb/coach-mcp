@@ -74,14 +74,48 @@ OUTPUT_SCHEMA = {
 PROMPT_TEMPLATE = """\
 Author ONE plan session from the brief below, following your procedure (read the
 sport skill, load the contract with preview_workout(), compose, preview, fix
-until the step tree matches the brief). When you are done, return the
-structured output: `session` holds the final session dict exactly as it would
-sit under a plan day's `planned`; when the brief is incomplete per your
-contract, set `session` to null and list the gaps in `missing_brief`. Put
-assumptions and residual warnings in `notes`.
+until the step tree matches the brief).
+
+End your reply with ONE fenced ```json block and nothing after it, of the shape
+{{"session": <the final session dict exactly as it would sit under a plan day's
+`planned`, or null>, "missing_brief": <list of what the brief lacks, or null>,
+"notes": "<assumptions and residual warnings, one line each>"}}. When the brief
+is incomplete per your contract, `session` is null and `missing_brief` names
+the gaps.
 
 {brief}
 """
+
+
+def extract_answer(payload: dict) -> dict:
+    """The agent's answer as {session, missing_brief, notes}.
+
+    Prefers the CLI's structured_output; falls back to the last fenced JSON
+    block (or bare JSON object) in the reply text, which is how an agent run
+    with --agent tends to answer."""
+    structured = payload.get("structured_output") or {}
+    if isinstance(structured, dict) and ("session" in structured or "missing_brief" in structured):
+        return structured
+    text = str(payload.get("result") or "")
+    candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if not candidates:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            candidates = [text[start:end + 1]]
+    for raw in reversed(candidates):
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if "session" in obj or "missing_brief" in obj:
+            return obj
+        if "type" in obj:  # the agent pasted the session itself
+            return {"session": obj, "missing_brief": None, "notes": None}
+    if "missing_brief" in text:
+        return {"session": None, "missing_brief": ["(see the reply text)"], "notes": None}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -269,12 +303,7 @@ def author_with_claude(case: dict, model: str, mcp_config: Path, per_case_usd: f
         payload = json.loads(proc.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return {"error": f"unparseable output: {proc.stdout[-800:]}", "seconds": seconds}
-    structured = payload.get("structured_output") or {}
-    if not structured and payload.get("result"):
-        try:
-            structured = json.loads(payload["result"])
-        except ValueError:
-            structured = {}
+    structured = extract_answer(payload)
     return {
         "session": structured.get("session"),
         "missing_brief": structured.get("missing_brief"),
@@ -282,7 +311,11 @@ def author_with_claude(case: dict, model: str, mcp_config: Path, per_case_usd: f
         "cost_usd": payload.get("total_cost_usd"),
         "turns": payload.get("num_turns"),
         "is_error": payload.get("is_error"),
+        "stop_reason": payload.get("stop_reason"),
+        "subtype": payload.get("subtype"),
+        "terminal_reason": payload.get("terminal_reason"),
         "denials": payload.get("permission_denials"),
+        "raw_result": str(payload.get("result") or "")[:3000],  # what the agent said when no session came back
         "seconds": seconds,
     }
 
