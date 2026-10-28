@@ -8,6 +8,7 @@ from .mcp_app import mcp
 from .parsers import build_current_time_context
 from .planner import load_athlete, get_current_plan, load_coaching_log
 from .rules import load_training_config
+from .authoring import contract_document
 import json
 import logging
 
@@ -484,5 +485,4 @@ def coaching_doctrine_resource() -> str:
 )
 def session_contract_resource() -> str:
     """What a plan session may say and how the watch shows it (coach/authoring.py)."""
-    from .authoring import contract_document
     return contract_document()

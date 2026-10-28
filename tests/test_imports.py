@@ -67,3 +67,63 @@ def test_server_imports_cleanly():
     module = importlib.import_module("server")
     # Sanity: the shared FastMCP app must be reachable through the entry point.
     assert hasattr(module, "mcp")
+
+
+# Modules that are console-script entry points of their own and are never part
+# of the running server. Everything else under coach/ must be loaded by the
+# time coach.server has been imported.
+STARTUP_EXEMPT: dict[str, str] = {
+    "coach.garmin_login": "garmin-coach-login console script; never imported by the server",
+    "coach.setup_wizard": "garmin-coach-setup console script; never imported by the server",
+}
+
+
+def test_server_startup_loads_every_coach_module(tmp_path):
+    """The running server must never import a coach module for the first time
+    inside a tool call.
+
+    Function-local imports (``from . import storage`` to break a cycle) are
+    fine only while the module is already in sys.modules. Otherwise a code
+    update underneath a long-running server process loads the NEW file
+    against OLD siblings: on 2026-10-27 push_plan_to_garmin crashed with
+    ``ImportError: cannot import name 'sanitize_text' from 'coach.web_utils'``
+    because coach.workout_builder was first imported at push time, hours after
+    the process had started. A fresh interpreter imports the real entry point
+    (coach.server, what server.py and the console scripts run) and reports
+    what is loaded; every module on disk must be in that set.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import json, sys\n"
+        "import coach.server\n"
+        "print(json.dumps(sorted(m for m in sys.modules "
+        "if m == 'coach' or m.startswith('coach.'))))\n"
+    )
+    env = {
+        **os.environ,
+        "COACH_DATA_DIR": str(tmp_path / "data"),
+        "COACH_TOKEN_DIR": str(tmp_path / "tokens"),
+        "FASTMCP_MCP_CAMELCASE_COMPAT": "false",
+    }
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=str(COACH_DIR.parent), env=env,
+        capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    loaded = set(json.loads(proc.stdout.strip().splitlines()[-1]))
+
+    on_disk = set(_discover_coach_modules())
+    stale_exemptions = sorted(set(STARTUP_EXEMPT) - on_disk)
+    assert not stale_exemptions, f"STARTUP_EXEMPT names modules that no longer exist: {stale_exemptions}"
+
+    missing = sorted(on_disk - set(STARTUP_EXEMPT) - loaded)
+    assert not missing, (
+        "These coach modules are not imported when the server starts, so a tool "
+        "call would import them lazily from disk — after a code update that mixes "
+        f"old and new modules in one process: {missing}. Import them at module "
+        "level, or preload them in coach/server.py."
+    )

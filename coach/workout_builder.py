@@ -18,6 +18,7 @@ from .web_utils import sanitize_text
 from .fitness import get_athlete_hr_zones
 from .taxonomy import types_in_family, workout_family_for
 from .authoring import (
+    COMPOUND_CATEGORIES,
     INTENSITY_ZONES,
     STEP_NOTE_MAX_CHARS,
     WORKOUT_NAME_MAX_CHARS,
@@ -1614,7 +1615,6 @@ def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library
 def _rest_estimate(category: str | None) -> int:
     """Seconds assumed for a lap-button rest in the duration ESTIMATE only:
     loaded compounds rest longer than accessories. Never sent to Garmin."""
-    from .authoring import COMPOUND_CATEGORIES
     return 120 if category in COMPOUND_CATEGORIES else DEFAULT_REST_SECS
 
 

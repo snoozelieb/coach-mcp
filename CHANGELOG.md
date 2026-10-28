@@ -14,6 +14,17 @@ written, a strict session contract rejects what it cannot draw with errors
 that teach, and the push preview shows the step tree before anything lands.
 
 ### Fixed
+- **A running server can no longer half-load an update.** On 2026-10-27
+  `push_plan_to_garmin` crashed with `ImportError: cannot import name
+  'sanitize_text'` in a server process started before that evening's
+  commits: the renderer was imported lazily on the first push, so the new
+  file loaded against old siblings. Every module under `coach/` is now
+  imported when the server starts (`coach.storage` preloaded in
+  `coach/server.py`; the renderer and the contract imported at module
+  level) and `tests/test_imports.py` starts the real entry point in a fresh
+  interpreter and fails when a module on disk is reachable only through a
+  function-local import. A code update still needs a server restart; it
+  cannot crash a tool call in between any more.
 - **Strength sessions render what was written.** Exercise `notes` reach the
   step description (the coach's cue wins over the researched library cue);
   `duration_secs` renders a timed hold instead of 10 reps; `rest_secs`

@@ -21,7 +21,10 @@ different FastMCP and will mislead you).
    `logger.exception()` — always `except Exception:`, never a bare `except:`
    (it swallows KeyboardInterrupt/SystemExit). Writes go through
    `coach.storage` (atomic + locked; a lint test forbids bare file I/O in
-   `coach/`). A tool with side effects (like the snapshot's ingestion) must
+   `coach/`). Imports sit at module level: a function-local import only
+   breaks a cycle, and its target must already be loaded at startup
+   (`tests/test_imports.py` diffs the started server's modules against
+   `coach/` on disk). A tool with side effects (like the snapshot's ingestion) must
    NOT claim readOnlyHint. Tools that prescribe or write plans sit behind the
    snapshot gate (`require_snapshot`, `coach/session_state.py`); consequential
    writes that lift protection need the athlete's own words

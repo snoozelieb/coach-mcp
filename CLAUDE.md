@@ -187,7 +187,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,691 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
+1,692 tests across 50 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
@@ -205,6 +205,14 @@ a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
   banned outside the AST-lint allowlist (`tests/test_clock_discipline.py`).
   Resolve the clock once at the tool boundary, thread `today: date` through.
   In tests use relative dates — hardcoded dates rot.
+- **Startup imports** — every module under `coach/` is imported when
+  `coach.server` is: `tests/test_imports.py` starts the real entry point in
+  a fresh interpreter and diffs `sys.modules` against the files on disk.
+  Function-local imports exist only to break cycles and must resolve from
+  modules already loaded; a long-running server that imports a file for
+  the first time inside a tool call loads it against old siblings after a
+  code update (the 2026-10-27 push crash). Restart the server after
+  changing code.
 
 Import coach modules as `import coach.planner as planner`, never
 `from coach.planner import f` — otherwise monkeypatch targets go stale and

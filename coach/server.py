@@ -47,6 +47,14 @@ import coach.tools.interactive_tools
 import coach.prompts
 import coach.resources
 
+# Preload the modules the code above reaches only through function-local
+# (cycle-breaking) imports. A long-running server must never import a
+# coach module for the first time inside a tool call: a code update under
+# a running process would load the new file against old siblings
+# (2026-10-27: push_plan_to_garmin died with ImportError on the first lazy
+# import of coach.workout_builder). tests/test_imports.py pins the set.
+import coach.storage  # noqa: F401 — fitness/rules/planner import it lazily
+
 CODE_MODE_INSTALL_HINT = 'pip install "garmin-coach-mcp[code-mode]"'
 
 

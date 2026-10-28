@@ -82,8 +82,13 @@ registry refuses duplicates. Tag only when the user has said so.
   lists the version (`/v0.1/` is the stable API; without `version=latest`
   superseded versions come back first). A lagging registry version is cosmetic — installs come
   from PyPI.
-- MCP clients must reconnect to see a changed tool surface (Claude Desktop
-  restarts the server; Claude Code `/mcp` reconnect).
+- MCP clients must reconnect to see a changed tool surface, and the server
+  must be restarted after ANY code change under `coach/`: it is a
+  long-running process of this checkout (Claude Desktop: quit and reopen;
+  Claude Code: `/mcp` reconnect). A process started before an update keeps
+  the old modules in memory; the startup-import test only guarantees it
+  cannot half-load the new ones (2026-10-27: a stale process crashed the
+  push with an ImportError).
 
 ## 5. Manual registry fallback (only if the CI job fails)
 

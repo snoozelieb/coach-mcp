@@ -20,8 +20,11 @@ from ..schemas import (WeeklyPlan as WeeklyPlanSchema,
                      TrainingProgram as TrainingProgramSchema)
 from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAPACITY_BUCKETS, is_known_type
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE
+from ..authoring import contract_document
+from ..workout_builder import build_workout_report, get_workout_type_name
 from datetime import date, timedelta
 from pydantic import ValidationError
+import copy
 import hashlib
 import json
 import logging
@@ -351,8 +354,6 @@ def _authoring_problems(plan_days: dict) -> tuple[list[dict], list[dict]]:
     Each entry: {date, session (type/name), field, message}. Sessions Garmin
     has no sport for (skipped at push) are not errors here.
     """
-    import copy
-    from ..workout_builder import build_workout_report
     errors, warnings = [], []
     for day_str, day_data in sorted((plan_days or {}).items()):
         if not isinstance(day_data, dict) or not day_data.get('planned'):
@@ -1335,7 +1336,6 @@ def _build_push_manifest(plan: dict) -> tuple[list[dict], list[dict], list[dict]
     entries carry the built workout; unrenderable entries carry the
     contract errors (they are never uploaded).
     """
-    from ..workout_builder import build_workout_report, get_workout_type_name
     to_push, skipped, unrenderable = [], [], []
     for date_str, day_data in sorted((plan.get('days') or {}).items()):
         if not isinstance(day_data, dict) or not day_data.get('planned'):
@@ -1676,8 +1676,6 @@ def preview_workout(session: dict | None = None, include_payload: bool = False) 
         'estimated_mins', 'steps'} — or {'contract': markdown} when no
         session was given.
     """
-    from ..authoring import contract_document
-    from ..workout_builder import build_workout_report
     try:
         if session is None or session == {}:
             return {'contract': contract_document(),
