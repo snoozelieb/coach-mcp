@@ -11,7 +11,7 @@ keep their own registration so destructiveHint applies per-tool.
 from typing import Literal
 
 from ..mcp_app import mcp
-from ..web_utils import fetch_page_text, untrusted_envelope_from_text
+from ..web_utils import fetch_untrusted_page, untrusted_envelope
 from ..planner import save_json_file
 from ..rules import load_training_config
 from ..taxonomy import race_sport_for
@@ -60,7 +60,8 @@ def _research_race(name: str = None, url: str = None) -> dict:
             return {'error': 'Provide either a race name or URL'}
 
         # Fetch the page and extract text
-        page_text = fetch_page_text(url)
+        page = fetch_untrusted_page(url)
+        page_text = page['retrieved_text']
 
         # Build research summary
         # Look for key patterns in the text
@@ -69,7 +70,7 @@ def _research_race(name: str = None, url: str = None) -> dict:
         research = {
             'url': url,
             'raw_content_preview': page_text[:500] + '...',
-            'untrusted_content': untrusted_envelope_from_text(url, page_text),
+            'untrusted_content': untrusted_envelope(page),
             'detected_info': {},
             'training_relevance': []
         }

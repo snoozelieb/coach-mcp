@@ -1,6 +1,6 @@
 """web_utils: the SSRF-safe fetcher and the untrusted-content shape.
 
-No network: DNS resolution and requests.get are monkeypatched.
+No network: DNS resolution and the pinned session are monkeypatched.
 """
 import socket
 
@@ -41,15 +41,23 @@ def public_dns(monkeypatch):
 
 
 def _get_returning(monkeypatch, responses):
-    """requests.get stub that returns the given responses in order and records calls."""
+    """Pinned-session stub: returns the given responses in order and records
+    (url, kwargs) per GET, with the pinned hostname and address in kwargs."""
     calls = []
     queue = list(responses)
 
-    def fake_get(url, **kwargs):
-        calls.append((url, kwargs))
-        return queue.pop(0) if len(queue) > 1 else queue[0]
+    class FakeSession:
+        def __init__(self, hostname, address):
+            self.hostname, self.address = hostname, address
 
-    monkeypatch.setattr(web.requests, 'get', fake_get)
+        def get(self, url, **kwargs):
+            calls.append((url, dict(kwargs, hostname=self.hostname, address=self.address)))
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(web, '_pinned_session', FakeSession)
     return calls
 
 
@@ -122,9 +130,17 @@ class TestFetch:
         assert 'Content' in text and 'Menu' not in text and 'Foot' not in text
 
     def test_network_and_http_errors_propagate(self, public_dns, monkeypatch):
-        def boom(url, **kwargs):
-            raise requests.RequestException('Connection refused')
-        monkeypatch.setattr(web.requests, 'get', boom)
+        class Down:
+            def __init__(self, hostname, address):
+                pass
+
+            def get(self, url, **kwargs):
+                raise requests.RequestException('Connection refused')
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(web, '_pinned_session', Down)
         with pytest.raises(requests.RequestException, match='Connection refused'):
             web.fetch_page_text('https://down.example.com')
 
@@ -165,6 +181,11 @@ class TestFetch:
         with pytest.raises(web.UnsafeURLError, match='content type'):
             web.fetch_untrusted_page('https://example.com/file.pdf')
 
+    def test_missing_content_type_is_refused(self, public_dns, monkeypatch):
+        _get_returning(monkeypatch, [FakeResponse(headers={})])
+        with pytest.raises(web.UnsafeURLError, match='content type'):
+            web.fetch_untrusted_page('https://example.com/unknown')
+
     def test_oversized_bodies_are_capped(self, public_dns, monkeypatch):
         huge = b'<p>' + b'Z' * (web.MAX_RESPONSE_BYTES + 100_000) + b'</p>'
         _get_returning(monkeypatch, [FakeResponse(body=huge)])
@@ -175,6 +196,95 @@ class TestFetch:
     def test_control_characters_are_stripped(self, public_dns, monkeypatch):
         _get_returning(monkeypatch, [FakeResponse(body=b'<p>ok\x00\x07 fine</p>')])
         assert '\x00' not in web.fetch_page_text('https://example.com')
+
+
+# ---------------------------------------------------------------------------
+# DNS pinning
+# ---------------------------------------------------------------------------
+
+def _capture_send(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(web.HTTPAdapter, 'send',
+                        lambda self, request, **kwargs: sent.update(url=request.url,
+                                                                    host=request.headers.get('Host')))
+    return sent
+
+
+class TestPinning:
+    def test_fetch_connects_to_the_validated_address(self, public_dns, monkeypatch):
+        calls = _get_returning(monkeypatch, [FakeResponse()])
+        web.fetch_untrusted_page('https://example.com/race')
+        url, kwargs = calls[0]
+        assert kwargs['hostname'] == 'example.com' and kwargs['address'] == PUBLIC_IP
+
+    def test_a_changed_dns_answer_cannot_steer_the_fetch(self, monkeypatch):
+        answers = iter([PUBLIC_IP, '10.0.0.9', '10.0.0.9', '10.0.0.9'])
+        monkeypatch.setattr(web.socket, 'getaddrinfo',
+                            lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (next(answers), 443))])
+        calls = _get_returning(monkeypatch, [FakeResponse()])
+        page = web.fetch_untrusted_page('https://rebind.example/')
+        assert page['final_url'] == 'https://rebind.example/'
+        assert [c[1]['address'] for c in calls] == [PUBLIC_IP]   # resolved once, connected there
+
+    def test_each_redirect_hop_is_pinned_to_its_own_address(self, monkeypatch):
+        table = {'example.com': PUBLIC_IP, 'cdn.example.net': '93.184.216.35'}
+        monkeypatch.setattr(web.socket, 'getaddrinfo',
+                            lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (table[host], 443))])
+        calls = _get_returning(monkeypatch, [
+            FakeResponse(status=302, headers={'Location': 'https://cdn.example.net/final'}),
+            FakeResponse(),
+        ])
+        web.fetch_untrusted_page('https://example.com/start')
+        assert [(c[1]['hostname'], c[1]['address']) for c in calls] == [
+            ('example.com', PUBLIC_IP), ('cdn.example.net', '93.184.216.35')]
+
+    def test_a_refused_address_falls_through_to_the_next(self, monkeypatch):
+        monkeypatch.setattr(web.socket, 'getaddrinfo',
+                            lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, 443))
+                                                   for ip in ('93.184.216.30', PUBLIC_IP)])
+        tried = []
+
+        class Session:
+            def __init__(self, hostname, address):
+                self.address = address
+
+            def get(self, url, **kwargs):
+                tried.append(self.address)
+                if self.address == '93.184.216.30':
+                    raise requests.ConnectionError('refused')
+                return FakeResponse()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(web, '_pinned_session', Session)
+        assert 'Race Info' in web.fetch_page_text('https://example.com/')
+        assert tried == ['93.184.216.30', PUBLIC_IP]
+
+    def test_adapter_sends_to_the_address_with_tls_for_the_hostname(self, monkeypatch):
+        sent = _capture_send(monkeypatch)
+        adapter = web.PinnedAdapter('example.com', PUBLIC_IP)
+        adapter.send(requests.Request('GET', 'https://example.com/race?x=1').prepare())
+        assert sent == {'url': f'https://{PUBLIC_IP}/race?x=1', 'host': 'example.com'}
+        pool_kwargs = adapter.poolmanager.connection_pool_kw
+        assert pool_kwargs['server_hostname'] == 'example.com'   # SNI + certificate check
+        assert 'assert_hostname' not in pool_kwargs   # would flip check_hostname off on the shared context
+        assert pool_kwargs.get('ssl_context') is None and pool_kwargs.get('cert_reqs') is None
+
+    def test_adapter_keeps_explicit_ports_and_brackets_ipv6(self, monkeypatch):
+        sent = _capture_send(monkeypatch)
+        adapter = web.PinnedAdapter('example.com', '2606:2800:220:1:248:1893:25c8:1946')
+        adapter.send(requests.Request('GET', 'https://example.com:8443/p').prepare())
+        assert sent == {'url': 'https://[2606:2800:220:1:248:1893:25c8:1946]:8443/p',
+                        'host': 'example.com:8443'}
+
+    def test_pinned_session_ignores_environment_proxies(self):
+        session = web._pinned_session('example.com', PUBLIC_IP)
+        try:
+            assert session.trust_env is False
+            assert isinstance(session.get_adapter('https://example.com/'), web.PinnedAdapter)
+        finally:
+            session.close()
 
 
 def test_sanitize_text_cleans_and_caps():

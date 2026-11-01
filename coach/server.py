@@ -19,6 +19,12 @@ Environment variables:
                           ("sse" is legacy — HTTP+SSE was deprecated by MCP spec 2026-07-28)
     FASTMCP_HOST=0.0.0.0 HTTP host (default: 127.0.0.1)
     FASTMCP_PORT=8000     HTTP port (default: 8000)
+    COACH_HTTP_TOKEN=...  Bearer token every HTTP request must carry (16+ chars).
+                          Required by the HTTP transports; COACH_HTTP_INSECURE=1
+                          waives it for a loopback bind only. Host and Origin
+                          headers are validated on every request;
+                          COACH_HTTP_ALLOWED_HOSTS / COACH_HTTP_ALLOWED_ORIGINS
+                          extend the allowed lists (comma-separated).
 
 The FastMCP startup banner is disabled: it would query PyPI for a newer
 FastMCP release on every start, and this server makes no network calls
@@ -27,7 +33,11 @@ besides Garmin Connect and the explicit research tools.
 import os
 import sys
 
+import fastmcp
+
 from coach.mcp_app import mcp
+from coach.http_security import (HTTP_TRANSPORTS, HttpSecurityError, describe, http_security,
+                                 run_kwargs, token_verifier)
 from coach.parsers import check_setup
 
 # Import tool modules to register all @mcp.tool() decorators
@@ -42,6 +52,7 @@ import coach.tools.strength_tools
 import coach.tools.research_tools
 import coach.tools.decision_tools
 import coach.tools.interactive_tools
+import coach.tools.weather_tools
 
 # Import prompt templates and resources
 import coach.prompts
@@ -114,6 +125,19 @@ def main() -> None:
         _enable_code_mode()
 
     transport = os.environ.get("COACH_TRANSPORT", "stdio").strip().lower()
+    if transport in HTTP_TRANSPORTS:
+        # A socket anyone can reach is every tool: bearer token plus Host and
+        # Origin checks, or no server at all (coach/http_security.py).
+        try:
+            security = http_security(os.environ, host=fastmcp.settings.host, port=fastmcp.settings.port)
+        except HttpSecurityError as exc:
+            print(f"coach-mcp: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if security.token:
+            mcp.auth = token_verifier(security.token)
+        print(f"coach-mcp: {describe(security, transport)}", file=sys.stderr)
+        mcp.run(transport=transport, show_banner=False, **run_kwargs(security))
+        return
     mcp.run(transport=transport, show_banner=False)
 
 

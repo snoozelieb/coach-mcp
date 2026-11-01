@@ -1,21 +1,33 @@
 """
-Fetch exercise database from Garmin Connect.
+Fetch the exercise catalogue from Garmin Connect into data/exercises.json.
 
-This script fetches all exercises from Garmin's public API and creates
-a local exercise library with muscle groups and injury prevention mappings.
+Garmin files some names under several categories (SIDE_PLANK under PLANK and
+SUSPENSION, ROW under five). Every category is kept in `categories` and the
+primary one — the category sent when a plan states none — in `category`
+(coach.authoring.primary_catalogue_category). `is_bodyweight` and
+`counterpart` (the loaded or bodyweight twin: SIDE_PLANK <-> WEIGHTED_SIDE_PLANK)
+come straight from Garmin. Custom entries the athlete added with add_exercise
+survive a refresh, and the previous file is copied to data/backups first.
+
+A one-category-per-name cache (the output of this script before 2026-10) is
+flagged by get_coaching_snapshot under data_quality.exercise_catalogue and by
+list_exercises; running this script replaces it.
 """
 import json
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from coach.config import DATA_DIR
+from coach.authoring import primary_catalogue_category  # noqa: E402
+from coach.config import DATA_DIR  # noqa: E402
 
 GARMIN_EXERCISES_URL = "https://connect.garmin.com/web-data/exercises/Exercises.json"
 OUTPUT_FILE = Path(DATA_DIR) / "exercises.json"
+CATALOGUE_SCHEMA = 2  # 1: one category per name; 2: categories, is_bodyweight, counterpart
 
 # Injury prevention mappings - which exercises help which injuries
 INJURY_PREVENTION = {
@@ -78,72 +90,146 @@ def get_injury_prevention_for_exercise(exercise_name: str) -> list:
     return prevention
 
 
-def process_garmin_exercises(raw_data: dict) -> dict:
-    """Process raw Garmin data into our exercise library format."""
-    exercises = {}
+def _ordered_union(*lists) -> list:
+    out: list = []
+    for items in lists:
+        for item in items or []:
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def process_garmin_exercises(raw_data: dict, existing: dict | None = None) -> dict:
+    """Process raw Garmin data into the catalogue format.
+
+    Garmin data structure: {'categories': {CATEGORY: {'exercises': {EXERCISE: {...}}}}}
+    with the same EXERCISE allowed under several categories. One entry per
+    name: every category in `categories`, the primary in `category`, muscles
+    merged, `is_bodyweight` / `counterpart` when Garmin states them. Custom
+    entries from `existing` (add_exercise) are carried over when Garmin has
+    no entry of that name.
+    """
+    merged: dict[str, dict] = {}
     categories_found = set()
 
-    # Garmin data structure: {'categories': {CATEGORY: {'exercises': {EXERCISE: {...}}}}}
-    categories_data = raw_data.get('categories', {})
-
-    for category_name, category_data in categories_data.items():
+    for category_name, category_data in (raw_data.get('categories', {}) or {}).items():
         categories_found.add(category_name)
+        for exercise_name, exercise_data in (category_data.get('exercises', {}) or {}).items():
+            exercise_data = exercise_data or {}
+            entry = merged.setdefault(exercise_name, {
+                'categories': [], 'primary_muscles': [], 'secondary_muscles': [],
+            })
+            if category_name not in entry['categories']:
+                entry['categories'].append(category_name)
+            entry['primary_muscles'] = _ordered_union(
+                entry['primary_muscles'], [str(m).lower() for m in exercise_data.get('primaryMuscles', []) or []])
+            entry['secondary_muscles'] = _ordered_union(
+                entry['secondary_muscles'], [str(m).lower() for m in exercise_data.get('secondaryMuscles', []) or []])
+            if exercise_data.get('isBodyWeight') is not None:
+                entry['is_bodyweight'] = bool(exercise_data.get('isBodyWeight'))
+            if exercise_data.get('counterpart'):
+                entry['counterpart'] = str(exercise_data['counterpart'])
 
-        # Get exercises from category
-        category_exercises = category_data.get('exercises', {})
+    exercises: dict[str, dict] = {}
+    for exercise_name, entry in merged.items():
+        categories = sorted(entry['categories'])
+        primary = primary_catalogue_category(exercise_name, categories)
+        record = {
+            "category": primary,
+            "categories": categories,
+            "garmin_category": primary,  # the field the pre-2026-10 tools read
+            "garmin_name": exercise_name,
+            "muscles": _ordered_union(entry['primary_muscles'], entry['secondary_muscles']),
+            "primary_muscles": entry['primary_muscles'],
+            "secondary_muscles": entry['secondary_muscles'],
+            "injury_prevention": get_injury_prevention_for_exercise(exercise_name),
+        }
+        if 'is_bodyweight' in entry:
+            record["is_bodyweight"] = entry['is_bodyweight']
+        if 'counterpart' in entry:
+            record["counterpart"] = entry['counterpart']
+        exercises[exercise_name] = record
 
-        for exercise_name, exercise_data in category_exercises.items():
-            # Garmin provides primaryMuscles and secondaryMuscles
-            primary = exercise_data.get('primaryMuscles', [])
-            secondary = exercise_data.get('secondaryMuscles', [])
-
-            # Combine and normalize muscle names
-            all_muscles = [m.lower() for m in primary + secondary]
-
-            exercises[exercise_name] = {
-                "category": category_name,
-                "garmin_category": category_name,
-                "garmin_name": exercise_name,
-                "muscles": all_muscles,
-                "primary_muscles": [m.lower() for m in primary],
-                "secondary_muscles": [m.lower() for m in secondary],
-                "injury_prevention": get_injury_prevention_for_exercise(exercise_name),
-            }
+    # Custom entries survive a refresh (Garmin wins when it now has the name)
+    custom_names: list[str] = []
+    existing_exercises = (existing or {}).get('exercises') or {}
+    candidates = _ordered_union(
+        (existing or {}).get('custom_exercises') or [],
+        [n for n, e in existing_exercises.items() if isinstance(e, dict) and e.get('custom')])
+    for name in candidates:
+        entry = existing_exercises.get(name)
+        if name in exercises or not isinstance(entry, dict):
+            continue
+        entry = dict(entry)
+        entry['custom'] = True
+        if not entry.get('categories'):
+            entry['categories'] = [entry['category']] if entry.get('category') else []
+        exercises[name] = entry
+        custom_names.append(name)
 
     return {
         "exercises": exercises,
-        "categories": sorted(list(categories_found)),
+        "categories": sorted(categories_found),
         "injury_mappings": INJURY_PREVENTION,
-        "custom_exercises": [],
+        "custom_exercises": custom_names,
         "metadata": {
             "source": GARMIN_EXERCISES_URL,
+            "schema": CATALOGUE_SCHEMA,
+            "fetched_on": date.today().isoformat(),
             "exercise_count": len(exercises),
             "category_count": len(categories_found),
+            "multi_category_count": sum(1 for e in exercises.values() if len(e.get('categories') or []) > 1),
+            "bodyweight_count": sum(1 for e in exercises.values() if e.get('is_bodyweight')),
+            "counterpart_count": sum(1 for e in exercises.values() if e.get('counterpart')),
+            "custom_count": len(custom_names),
         }
     }
 
 
-def main():
-    """Main function to fetch and save exercise library."""
+def load_existing(path: Path) -> dict | None:
+    if not path.exists():
+        return None
     try:
-        # Fetch from Garmin
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"Existing catalogue unreadable, custom entries cannot be carried over: {exc}")
+        return None
+
+
+def backup_existing(path: Path) -> Path | None:
+    """Copy the current catalogue into data/backups before it is replaced."""
+    if not path.exists():
+        return None
+    backups = path.parent / "backups"
+    backups.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = backups / f"{path.name}.{stamp}.bak"
+    target.write_bytes(path.read_bytes())
+    return target
+
+
+def main():
+    """Fetch the catalogue, merge custom entries, back up and save."""
+    try:
         raw_data = fetch_garmin_exercises()
+        existing = load_existing(OUTPUT_FILE)
+        library = process_garmin_exercises(raw_data, existing)
 
-        # Process into our format
-        library = process_garmin_exercises(raw_data)
-
-        # Ensure data directory exists
         DATA_DIR.mkdir(exist_ok=True)
+        backup = backup_existing(OUTPUT_FILE)
+        if backup:
+            print(f"Previous catalogue backed up to {backup}")
 
-        # Save to file
-        with open(OUTPUT_FILE, 'w') as f:
+        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(library, f, indent=2)
 
-        print(f"Saved {library['metadata']['exercise_count']} exercises "
-              f"in {library['metadata']['category_count']} categories")
+        meta = library['metadata']
+        print(f"Saved {meta['exercise_count']} exercises in {meta['category_count']} categories "
+              f"({meta['multi_category_count']} filed under more than one category, "
+              f"{meta['bodyweight_count']} bodyweight, {meta['counterpart_count']} with a counterpart, "
+              f"{meta['custom_count']} custom carried over)")
         print(f"Output: {OUTPUT_FILE}")
-
-        # Print some stats
         print(f"\nCategories: {', '.join(library['categories'][:10])}...")
         print(f"Injury prevention mappings: {list(INJURY_PREVENTION.keys())}")
 

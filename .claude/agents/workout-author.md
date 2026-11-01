@@ -35,6 +35,9 @@ A brief must carry all of:
   kind of session.
 - Athlete facts the targets need: FTP for `power_pct`, threshold pace for pace
   targets, current loads from `get_strength_baseline`, the physio's cue text.
+- For a gym session, the gym: commercial (shared stations) or home, from the
+  caller's `get_athlete` (`preferences.gym_access`), and any station the brief
+  names. You never guess where a movement is done.
 
 When any of these is missing, return `missing_brief: [...]` naming the items
 and stop. Do not fill a gap with a plausible number: a load, a key or a rep
@@ -64,8 +67,12 @@ missing purpose, is a `missing_brief` item.
    condition, every target, every cue, every load. Decide on each `warnings`
    entry; keep the ones that are facts about Garmin (an off-catalogue name
    shows as category plus readable name) and fix the ones that are yours (a
-   cue over 50 characters, a missing target, a loaded movement with no load
-   when the brief gave one, no warm-up before loaded compounds).
+   cue over 50 characters, a missing target, an HR band on a step under 3
+   minutes — HR lags, so use pace, `hr_max` or a cue there — a loaded movement
+   with no load when the brief gave one, no warm-up before loaded compounds, a
+   return to a station already left or a circuit whose rounds change spot —
+   reorder by station or state the station the movement is really done at —
+   and a movement with no station when you know the spot).
 5. Repeat 3–4 until the step tree matches the brief. Three rounds is normal;
    more means the brief is ambiguous — ask.
 
@@ -74,9 +81,11 @@ missing purpose, is a `missing_brief` item.
 - The final session dict, as JSON, ready to drop under a plan day's `planned`.
 - The preview `steps` exactly as the tool returned them, so the caller can show
   the athlete the watch view without re-rendering.
+- For a gym session, the `Stations:` line and `station_walk` from the preview:
+  the walk the athlete will make, each station once.
 - Residual `warnings` and what each means for the athlete, in one line each.
 - Anything you had to assume (say so plainly) or could not fit in the contract
-  (a rep range went into notes; a per-side hold shows as "each side").
+  (a rep range went into notes; a per-side exercise shows as a Left step and a Right step).
 - `missing_brief` instead of a session when the brief was incomplete.
 
 ## Rules

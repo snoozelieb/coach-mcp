@@ -360,11 +360,11 @@ class TestBuildCyclingWorkout:
 
     @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(124, 145))
     def test_outdoor_ride_step_has_hr_description(self, mock_hr):
-        """Outdoor ride main step should show HR range in description."""
+        """Outdoor ride main step names the HR shape in its cue: easy is a ceiling."""
         session = {"type": "easy_ride", "duration_mins": 90, "intensity": "easy"}
         result = build_cycling_workout(session, "2025-01-01")
         main_step = result.workoutSegments[0].workoutSteps[0]
-        assert main_step.description == "HR 124-145 bpm"
+        assert main_step.description == "HR under 145 bpm"
 
     @patch("coach.workout_builder.get_power_target_for_intensity", return_value=(130, 160))
     @patch("coach.workout_builder.get_hr_target_for_intensity", return_value=(120, 140))
@@ -920,14 +920,40 @@ class TestBuildStrengthWorkout:
         "DEAD_BUG": {"category": "HIP_STABILITY", "custom": False}
     })
     @patch("coach.workout_builder.load_exercise_library", return_value={})
-    def test_each_side_is_said_on_the_cue(self, mock_library, mock_db):
+    def test_each_side_renders_a_left_and_a_right_step(self, mock_library, mock_db):
+        """One step used to say "each side" in its cue and the watch counted
+        one side; now every set holds a Left step and a Right step."""
         session = {
             "type": "strength", "duration_mins": 20,
             "exercises": [{"name": "DEAD_BUG", "sets": 3, "reps": 8, "each_side": True, "notes": "slow"}],
         }
         result = build_strength_workout(session, "2025-01-01")
-        step = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
-        assert step["description"] == "each side: slow"
+        group = result["workoutSegments"][0]["workoutSteps"][0]
+        left, right, rest = group["workoutSteps"]
+        assert (left["description"], right["description"]) == ("Left: slow", "Right: slow")
+        assert left["exerciseName"] == right["exerciseName"] == "DEAD_BUG"
+        assert left["endConditionValue"] == right["endConditionValue"] == 8.0
+        assert rest["stepType"] == STEP_REST
+        orders = [s["stepOrder"] for s in group["workoutSteps"]]
+        assert orders == list(range(orders[0], orders[0] + 3))
+
+    @patch("coach.workout_builder.load_exercise_db", return_value={
+        "SIDE_PLANK": {"category": "PLANK", "categories": ["PLANK", "SUSPENSION"]}
+    })
+    @patch("coach.workout_builder.load_exercise_library", return_value={})
+    def test_each_side_hold_is_timed_twice_and_estimated_twice(self, mock_library, mock_db):
+        session = {
+            "type": "strength", "duration_mins": 10,
+            "exercises": [{"name": "SIDE_PLANK", "sets": 3, "duration_secs": 30, "each_side": True,
+                           "rest_secs": 30}],
+        }
+        result = build_strength_workout(session, "2025-01-01")
+        left, right, rest = result["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"]
+        assert left["endCondition"] == right["endCondition"] == END_TIME
+        assert left["endConditionValue"] == right["endConditionValue"] == 30.0
+        assert (left["description"], right["description"]) == ("Left", "Right")
+        assert rest["endConditionValue"] == 30.0
+        assert result["estimatedDurationInSecs"] == 3 * (30 + 30 + 30)
 
     @patch("coach.workout_builder.load_exercise_db", return_value={
         "PUSH_UP": {"category": "PUSH_UP", "custom": False},
@@ -949,11 +975,11 @@ class TestBuildStrengthWorkout:
         assert group["numberOfIterations"] == 3
         assert group["description"] == "Core finisher"
         inner = group["workoutSteps"]
-        assert [s["stepType"] for s in inner] == [STEP_INTERVAL, STEP_INTERVAL, STEP_REST]
-        assert inner[0]["exerciseName"] == "PUSH_UP"
-        assert inner[1]["exerciseName"] == "DEAD_BUG"
-        assert inner[2]["endConditionValue"] == 60.0
-        assert result["exercise_count"] == 2
+        assert [s["stepType"] for s in inner] == [STEP_INTERVAL, STEP_INTERVAL, STEP_INTERVAL, STEP_REST]
+        assert [s["exerciseName"] for s in inner[:3]] == ["PUSH_UP", "DEAD_BUG", "DEAD_BUG"]
+        assert [s.get("description") for s in inner[1:3]] == ["Left", "Right"]
+        assert inner[3]["endConditionValue"] == 60.0
+        assert result["exercise_count"] == 2  # per movement, not per side
 
     @patch("coach.workout_builder.load_exercise_library", return_value={})
     def test_name_with_spaces_is_normalised_to_a_garmin_key(self, mock_library):
@@ -1653,22 +1679,32 @@ class TestBuildStructuredIndoorWorkout:
 # ─── get_hr_target_for_intensity ────────────────────────────────────
 
 class TestGetHrTargetForIntensity:
+    @patch("coach.workout_builder.get_aerobic_floor_bpm", return_value=None)
     @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
-    def test_uses_default_zones_when_none(self, mock_zones):
+    def test_uses_default_zones_when_none(self, mock_zones, mock_floor):
+        """easy is a ceiling: the top of the default z2, above the contract floor
+        (no profile here, so no aerobic floor)."""
+        from coach.authoring import AEROBIC_FLOOR_FALLBACK_BPM
         result = get_hr_target_for_intensity("easy")
-        assert result == (DEFAULT_HR_ZONES["z2_aerobic"][0], DEFAULT_HR_ZONES["z2_aerobic"][1])
+        assert result == (AEROBIC_FLOOR_FALLBACK_BPM, DEFAULT_HR_ZONES["z2_aerobic"][1])
 
+    @patch("coach.workout_builder.get_aerobic_floor_bpm", return_value=100)
     @patch("coach.workout_builder.get_athlete_hr_zones", return_value={
         "z2_aerobic": [115, 145],
     })
-    def test_uses_athlete_zones(self, mock_zones):
+    def test_uses_athlete_zones(self, mock_zones, mock_floor):
+        """The athlete's zone top and the athlete's aerobic floor, never the defaults."""
         result = get_hr_target_for_intensity("easy")
-        assert result == (115, 145)
+        assert result == (100, 145)
 
+    @patch("coach.workout_builder.get_aerobic_floor_bpm", return_value=None)
     @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
-    def test_recovery_maps_to_z1(self, mock_zones):
+    def test_recovery_is_a_ceiling_on_z1(self, mock_zones, mock_floor):
+        """recovery alerts only above the top of z1; the low bound is the aerobic
+        floor (the contract fallback here: no resting HR on this profile)."""
+        from coach.authoring import AEROBIC_FLOOR_FALLBACK_BPM
         result = get_hr_target_for_intensity("recovery")
-        assert result == (DEFAULT_HR_ZONES["z1_recovery"][0], DEFAULT_HR_ZONES["z1_recovery"][1])
+        assert result == (AEROBIC_FLOOR_FALLBACK_BPM, DEFAULT_HR_ZONES["z1_recovery"][1])
 
     @patch("coach.workout_builder.get_athlete_hr_zones", return_value=None)
     def test_threshold_maps_to_z4(self, mock_zones):

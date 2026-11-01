@@ -22,7 +22,9 @@ def update_athlete(
 
     Args:
         section: Which section to update. One of:
-            - 'personal': name, age, max_hr, resting_hr, hr_zones, ftp, weight_kg
+            - 'personal': name, age, max_hr, resting_hr, hr_zones, ftp, weight_kg,
+              aerobic_floor_pct_hrr (share of heart-rate reserve under every easy/recovery
+              ceiling; default from methodology targets), location (set_location fills it)
             - 'life_constraints': recurring_commitments, preferred_training_times, work_schedule
             - 'preferences': likes, dislikes, equipment, notes
             - 'coaching_notes': free-form coaching notes (string, not object)
@@ -689,6 +691,12 @@ def update_methodology(
             - 'safety_constraints': training limits (max_consecutive_hard_days, etc.)
             - 'add_race_template': add a new race type template
             - 'update_race_template': update existing race template
+            - 'weather': outdoor_ride_gust_limit_kmh (daylight gusts above it send a ride indoors)
+            - 'targets': aerobic_floor_pct_hrr, hr_lag_min_step_secs, pace_floor_factor,
+              ceiling_intensities — how intensity words become watch alerts for this athlete
+            - 'strength': station_order off | warn | error — a gym session that returns to a
+              station it left (the preview's 'returns to' warning) passes unchecked, warns,
+              or is rejected at save
         data: JSON string with the data to update/add
 
     Examples:
@@ -734,9 +742,16 @@ def update_methodology(
             methodology['race_templates'][template_name].update(parsed_data)
             updated = {template_name: methodology['race_templates'][template_name]}
 
+        elif section in ('weather', 'targets', 'strength'):
+            if not isinstance(parsed_data, dict):
+                return json.dumps({'error': f'{section} data must be an object'})
+            methodology.setdefault(section, {}).update(parsed_data)
+            updated = methodology[section]
+
         else:
             return json.dumps({
-                'error': f"Unknown section '{section}'. Use: pillars, safety_constraints, add_race_template, update_race_template"
+                'error': f"Unknown section '{section}'. Use: pillars, safety_constraints, add_race_template, "
+                         "update_race_template, weather, targets, strength"
             })
 
         # Save updated methodology

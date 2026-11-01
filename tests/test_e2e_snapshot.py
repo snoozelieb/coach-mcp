@@ -48,7 +48,7 @@ CORE_MANDATED_KEYS = [
     'current_time_context', 'snapshot_date', 'day_of_week', 'sections',
     'flags', 'week_grid', 'week_grid_today', 'weekly_plan', 'plan_adherence',
     'planned_vs_actual', 'fitness_metrics', 'acwr_warnings', 'capacity',
-    'injuries', 'coaching_memory', 'sleep_gate', 'data_quality',
+    'injuries', 'coaching_memory', 'sleep_gate', 'data_quality', 'weather_outlook',
 ]
 
 FULL_ONLY_KEYS = [

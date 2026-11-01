@@ -85,6 +85,8 @@ IDEMPOTENT_WRITE_TOOLS = {
     'refresh_athlete_baseline',
     'refresh_fitness_history',
     'research_exercise',
+    'get_weather_outlook',  # caches the fetched forecast (a write); same args, same result
+    'set_location',         # keyed write: personal.location
 }
 
 NON_IDEMPOTENT_WRITE_TOOLS = {
@@ -121,6 +123,9 @@ OPEN_WORLD_TOOLS = {
     'research_exercise',
     'research_injury',
     'research_sport',
+    # Open-Meteo (forecast, geocoding)
+    'get_weather_outlook',
+    'set_location',
 }
 
 ALL_CLASSIFIED = READ_ONLY_TOOLS | IDEMPOTENT_WRITE_TOOLS | NON_IDEMPOTENT_WRITE_TOOLS

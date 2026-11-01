@@ -1109,5 +1109,17 @@
       }
     }
   },
+  "weather": {
+    "outdoor_ride_gust_limit_kmh": 50
+  },
+  "targets": {
+    "ceiling_intensities": ["recovery", "easy"],
+    "aerobic_floor_pct_hrr": 30,
+    "hr_lag_min_step_secs": 180,
+    "pace_floor_factor": 2.0
+  },
+  "strength": {
+    "station_order": "warn"
+  },
   "schema_version": 1
 }

@@ -13,14 +13,22 @@ Uses the garminconnect.workout models for running and cycling and plain
 dicts for the sports garminconnect uploads generically.
 """
 
-from .config import DATA_DIR, ATHLETE_FILE, EXERCISE_LIBRARY_FILE
+from .config import DATA_DIR, ATHLETE_FILE, EXERCISE_LIBRARY_FILE, METHODOLOGY_FILE, FITNESS_HISTORY_FILE
 from .web_utils import sanitize_text
-from .fitness import get_athlete_hr_zones
+from .fitness import get_athlete_hr_zones, walking_hr_evidence
 from .taxonomy import types_in_family, workout_family_for
 from .authoring import (
     COMPOUND_CATEGORIES,
     PLAIN_SPLIT,
     INTENSITY_ZONES,
+    CEILING_INTENSITIES,
+    AEROBIC_FLOOR_PCT_HRR,
+    AEROBIC_FLOOR_FALLBACK_BPM,
+    PACE_FLOOR_FACTOR,
+    HR_LAG_MIN_STEP_SECS,
+    STATION_ORDER_DEFAULT,
+    STATION_ORDER_LEVELS,
+    station_walk_line,
     STEP_NOTE_MAX_CHARS,
     WORKOUT_NAME_MAX_CHARS,
     VALID_WORKOUT_CATEGORIES,
@@ -33,6 +41,7 @@ from .authoring import (
     RepeatBlock,
     normalise_intensity,
     resolve_exercise_category,
+    step_description,
     validate_exercises,
     validate_session,
     validate_structure,
@@ -45,6 +54,7 @@ from garminconnect.workout import (
     RepeatGroup,
 )
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +232,56 @@ DEFAULT_HR_ZONES = {
 }
 
 
+# The target-shape rules the renderer applies. Code holds the defaults
+# (coach/authoring.py); methodology.json `targets` holds this athlete's.
+TARGET_RULE_DEFAULTS = {
+    "ceiling_intensities": sorted(CEILING_INTENSITIES),
+    "aerobic_floor_pct_hrr": AEROBIC_FLOOR_PCT_HRR,
+    "hr_lag_min_step_secs": HR_LAG_MIN_STEP_SECS,
+    "pace_floor_factor": PACE_FLOOR_FACTOR,
+}
+
+
+def target_rules() -> dict:
+    """TARGET_RULE_DEFAULTS overridden by methodology.json `targets`
+    (update_methodology('targets', ...)): numbers replace numbers,
+    ceiling_intensities must be vocabulary words; anything else is ignored."""
+    rules = dict(TARGET_RULE_DEFAULTS)
+    block = (_read_data_json(METHODOLOGY_FILE) or {}).get("targets")
+    if isinstance(block, dict):
+        for key in ("aerobic_floor_pct_hrr", "hr_lag_min_step_secs", "pace_floor_factor"):
+            value = block.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                rules[key] = value
+        words = block.get("ceiling_intensities")
+        if isinstance(words, list):
+            cleaned = [normalise_intensity(w) for w in words]
+            if all(cleaned):
+                rules["ceiling_intensities"] = sorted(set(cleaned))
+    return rules
+
+
+def ceiling_words() -> frozenset:
+    """The intensity words that render as ceilings for this athlete."""
+    return frozenset(target_rules()["ceiling_intensities"])
+
+
+STATION_RULE_DEFAULTS = {"station_order": STATION_ORDER_DEFAULT}
+
+
+def station_rules() -> dict:
+    """STATION_RULE_DEFAULTS overridden by methodology.json `strength`
+    (update_methodology('strength', ...)): station_order must be one of
+    off | warn | error; anything else is ignored."""
+    rules = dict(STATION_RULE_DEFAULTS)
+    block = (_read_data_json(METHODOLOGY_FILE) or {}).get("strength")
+    if isinstance(block, dict):
+        level = str(block.get("station_order") or "").strip().lower()
+        if level in STATION_ORDER_LEVELS:
+            rules["station_order"] = level
+    return rules
+
+
 def _read_data_json(filename: str) -> dict:
     """Locked read of a data-dir JSON file ({} when missing).
 
@@ -233,15 +293,53 @@ def _read_data_json(filename: str) -> dict:
     return storage.read_json(filename, data_dir=DATA_DIR) or {}
 
 
+def get_aerobic_floor_bpm() -> int | None:
+    """The athlete's aerobic floor: resting HR + AEROBIC_FLOOR_PCT_HRR % of
+    heart-rate reserve (personal.aerobic_floor_pct_hrr overrides the share).
+
+    The low bound of every HR ceiling (easy, recovery, hr_max): below it the
+    athlete has stopped, not eased off. None when the profile has no
+    resting_hr, or no max_hr (personal.max_hr, hr_zones.max_hr or the top
+    of z5).
+    """
+    personal = _read_data_json(ATHLETE_FILE).get("personal", {}) or {}
+    hr_zones = personal.get("hr_zones") or {}
+    max_hr = personal.get("max_hr") or hr_zones.get("max_hr")
+    if not max_hr:
+        z5 = hr_zones.get("z5_max")
+        max_hr = z5[1] if isinstance(z5, (list, tuple)) and len(z5) == 2 else None
+    try:
+        resting = float(personal.get("resting_hr"))
+        max_hr = float(max_hr)
+        pct = float(personal.get("aerobic_floor_pct_hrr", target_rules()["aerobic_floor_pct_hrr"]))
+    except (TypeError, ValueError):
+        return None
+    if resting <= 0 or max_hr <= resting or not (0 <= pct <= 100):
+        return None
+    return int(round(resting + pct / 100.0 * (max_hr - resting)))
+
+
+def hr_ceiling(top: float) -> tuple[int, int]:
+    """(aerobic floor, top): the two numbers Garmin needs for a ceiling. The
+    contract fallback stands in when the profile cannot give a floor."""
+    floor = get_aerobic_floor_bpm()
+    if floor is None:
+        floor = AEROBIC_FLOOR_FALLBACK_BPM
+    return (min(floor, int(top)), int(top))
+
+
 def get_hr_target_for_intensity(intensity: str) -> tuple[int, int] | None:
-    """HR range (low, high) for an intensity word; None when the word is not
-    in the vocabulary or the zone is not configured."""
+    """HR target (low, high) for an intensity word: the zone band, or for a
+    ceiling word (easy, recovery) the aerobic floor and the zone top. None
+    when the word is not in the vocabulary or the zone is not configured."""
     word = normalise_intensity(intensity)
     if word is None:
         return None
     hr_zones = get_athlete_hr_zones() or DEFAULT_HR_ZONES
     zone_range = hr_zones.get(INTENSITY_ZONES[word][0])
     if zone_range and len(zone_range) == 2:
+        if word in ceiling_words():
+            return hr_ceiling(zone_range[1])
         return (zone_range[0], zone_range[1])
     return None
 
@@ -400,9 +498,25 @@ def _pace_pair_to_mps(slow_sec_per_km: float, fast_sec_per_km: float) -> tuple[f
     return (1000.0 / slow_sec_per_km, 1000.0 / fast_sec_per_km)
 
 
+def _pace_floor_sec_per_km(pace_zones: dict) -> float | None:
+    """A pace ceiling's slow bound: PACE_FLOOR_FACTOR x the threshold pace (a
+    walk); without a threshold pace, the same factor on the easy zone's slow bound."""
+    personal = _read_data_json(ATHLETE_FILE).get("personal", {}) or {}
+    factor = float(target_rules()["pace_floor_factor"])
+    threshold = personal.get("threshold_pace_sec_per_km")
+    if threshold:
+        return float(threshold) * factor
+    easy = pace_zones.get("z2_easy")
+    if easy and len(easy) == 2:
+        return float(max(easy)) * factor
+    return None
+
+
 def get_pace_target_for_intensity(intensity: str) -> tuple[float, float] | None:
-    """Pace range (slow_mps, fast_mps) for an intensity word; None when the
-    word is unknown or no threshold pace / pace zones are configured."""
+    """Pace target (slow_mps, fast_mps) for an intensity word: the zone band,
+    or for a ceiling word (easy, recovery) a slow bound at walking pace and the
+    zone's fast bound. None when the word is unknown or no threshold pace /
+    pace zones are configured."""
     word = normalise_intensity(intensity)
     if word is None:
         return None
@@ -411,7 +525,12 @@ def get_pace_target_for_intensity(intensity: str) -> tuple[float, float] | None:
         return None
     zone_range = pace_zones.get(INTENSITY_ZONES[word][2])
     if zone_range and len(zone_range) == 2:
-        return _pace_pair_to_mps(float(zone_range[0]), float(zone_range[1]))
+        slow, fast = max(float(v) for v in zone_range), min(float(v) for v in zone_range)
+        if word in ceiling_words():
+            floor = _pace_floor_sec_per_km(pace_zones)
+            if floor:
+                slow = max(floor, slow)
+        return _pace_pair_to_mps(slow, fast)
     return None
 
 
@@ -480,7 +599,8 @@ def build_workout(session: dict, date: str, report: AuthoringReport | None = Non
     # The contract first: a session that says something wrong (0 minutes,
     # text where a number belongs) is an error, not a placeholder.
     if report is None:
-        report = validate_session(session, load_exercise_db(), load_strength_baseline())
+        report = validate_session(session, load_exercise_db(), load_strength_baseline(),
+                                  station_order=station_rules()['station_order'])
     if report.errors:
         raise WorkoutAuthoringError(report.errors, report.warnings)
 
@@ -531,7 +651,8 @@ def build_workout_report(session: dict, date: str) -> dict:
         result['errors'].append({'field': 'type', 'message':
                                  f"{session.get('type')!r} has no Garmin workout family; nothing can be pushed"})
         return result
-    report = validate_session(session, load_exercise_db(), load_strength_baseline())
+    report = validate_session(session, load_exercise_db(), load_strength_baseline(),
+                                  station_order=station_rules()['station_order'])
     try:
         workout = build_workout(session, date, report)
     except WorkoutAuthoringError as exc:
@@ -555,12 +676,69 @@ def build_workout_report(session: dict, date: str) -> dict:
     result['ok'] = True
     result['workout'] = workout
     result.update(describe_workout(workout))
+    # The station walk heads the step tree so the athlete sees it in the
+    # consent step of the push; printed only when the plan states stations.
+    walk = report.station_walk if workout_type == 'strength' else None
+    if walk and walk.get('blocks'):
+        result['station_walk'] = [f"{b['station']}: {', '.join(b['exercises'])}" for b in walk['blocks']]
+        result['steps'].insert(0, 'Stations: ' + station_walk_line(walk))
     if (workout_type in ('running', 'cycling') and not get_athlete_hr_zones()
             and any('@ HR ' in line for line in result['steps'])):
         result['warnings'].append({'field': 'intensity', 'message': (
             'the profile has no HR zones (personal.hr_zones), so the HR targets on these steps '
             'are the generic defaults, not this athlete\'s — set the zones or state hr_target')})
+    if (workout_type in ('running', 'cycling') and get_aerobic_floor_bpm() is None
+            and any(f'@ HR {AEROBIC_FLOOR_FALLBACK_BPM}-' in line for line in result['steps'])):
+        result['warnings'].append({'field': 'intensity', 'message': (
+            'the profile has no resting_hr / max_hr, so the easy and recovery ceilings on these '
+            f'steps start at {AEROBIC_FLOOR_FALLBACK_BPM} bpm instead of this athlete\'s aerobic '
+            "floor — set them with update_athlete('personal', ...)")})
+    # The floor is checked against the athlete's own record: the median HR
+    # of their walks. A floor above it would read 'too low' on every walk.
+    floor = get_aerobic_floor_bpm()
+    hr_lines = [line for line in result['steps'] if '@ HR ' in line]
+    if (workout_type in ('running', 'cycling') and floor is not None and hr_lines
+            and _session_uses_hr_ceiling(session)):
+        collapsed = [line for line in hr_lines if re.search(r'@ HR (\d+)-\1 bpm', line)]
+        if collapsed:
+            result['warnings'].append({'field': 'intensity', 'message': (
+                f"the aerobic floor ({floor} bpm) is not below the top of the zone, so the ceiling "
+                f"has no room ({collapsed[0].strip()}). Lower personal.aerobic_floor_pct_hrr "
+                "(update_athlete) or check resting_hr / max_hr on the profile")})
+        evidence = walking_hr_evidence((_read_data_json(FITNESS_HISTORY_FILE) or {}).get('daily_loads') or {})
+        median = evidence.get('median_bpm')
+        if median and evidence.get('count', 0) >= 3 and floor > median:
+            result['warnings'].append({'field': 'intensity', 'message': (
+                f"the aerobic floor ({floor} bpm) sits above this athlete's own walking HR "
+                f"(median {median} bpm over {evidence['count']} walks in the last "
+                f"{evidence['window_days']} days), so a walk step reads 'HR too low'. Lower "
+                "personal.aerobic_floor_pct_hrr (update_athlete) and log the decision")})
     return result
+
+
+def _session_uses_hr_ceiling(session: dict) -> bool:
+    """Does any step of this session resolve to a ceiling (easy/recovery word
+    or hr_max)? Structure phases first; an interval without a target and a
+    plain session fall back to the session intensity."""
+    words = ceiling_words()
+
+    def _phases_use(items) -> bool:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get('phase') == 'repeat' or 'steps' in item:
+                if _phases_use(item.get('steps')):
+                    return True
+                continue
+            if item.get('hr_max') is not None:
+                return True
+            if normalise_intensity(item.get('intensity')) in words:
+                return True
+        return False
+
+    if session.get('structure') and _phases_use(session.get('structure')):
+        return True
+    return normalise_intensity(session.get('intensity')) in words
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +921,9 @@ class _PhaseRenderer:
     def resolve_target(self, phase: Phase, path: str):
         key = phase.target_key()
         if key is None:
-            if self.session_intensity:
+            # Only an interval inherits the session intensity: a warm-up,
+            # cool-down, recovery or rest the plan left untargeted stays so.
+            if self.session_intensity and phase.phase == "interval":
                 return self._intensity_target(self.session_intensity, path)
             return TARGET_NONE, None, None
         if key == "intensity":
@@ -752,6 +932,9 @@ class _PhaseRenderer:
             return self._intensity_target(phase.intensity, path)
         if key == "hr_target":
             lo, hi = sorted(phase.hr_target)
+            return TARGET_HR, float(lo), float(hi)
+        if key == "hr_max":
+            lo, hi = hr_ceiling(phase.hr_max)
             return TARGET_HR, float(lo), float(hi)
         if key == "cadence":
             lo, hi = sorted(phase.cadence)
@@ -779,6 +962,22 @@ class _PhaseRenderer:
             return TARGET_PACE, lo, hi
         return TARGET_NONE, None, None
 
+    def _hr_shape(self, phase: Phase) -> str | None:
+        """'band' | 'ceiling' for the HR target this phase resolves to, else None."""
+        key = phase.target_key()
+        if key == "hr_max":
+            return "ceiling"
+        if key == "hr_target":
+            return "band"
+        word = None
+        if key == "intensity" and phase.intensity != "none":
+            word = phase.intensity
+        elif key is None and phase.phase == "interval":
+            word = self.session_intensity
+        if word is None:
+            return None
+        return "ceiling" if word in ceiling_words() else "band"
+
     def build_step(self, phase: Phase, path: str, inside_repeat: bool) -> tuple[ExecutableStep, int]:
         kind, value = phase.end_condition()
         target_type, lo, hi = self.resolve_target(phase, path)
@@ -792,6 +991,12 @@ class _PhaseRenderer:
         if kind == "time":
             step.endConditionValue = float(value)
             est_secs = int(round(value))
+            if (target_type == TARGET_HR and value < target_rules()["hr_lag_min_step_secs"]
+                    and self._hr_shape(phase) == "band"):
+                self.report.warn(path, (
+                    f"an HR band on a {_fmt_secs(value)} step: HR lags 1-2 minutes, so the watch reads "
+                    "'too low' for most of it. Use pace_sec_per_km, a cue in notes with intensity "
+                    "'none', or hr_max (a ceiling) there"))
         elif kind == "distance":
             step.endConditionValue = float(value)
         if lo is not None and hi is not None:
@@ -841,7 +1046,8 @@ class _PhaseRenderer:
 
 def _ensure_report(session: dict, report: AuthoringReport | None) -> AuthoringReport:
     if report is None:
-        report = validate_session(session, load_exercise_db(), load_strength_baseline())
+        report = validate_session(session, load_exercise_db(), load_strength_baseline(),
+                                  station_order=station_rules()['station_order'])
     if report.errors:
         raise WorkoutAuthoringError(report.errors, report.warnings)
     return report
@@ -860,6 +1066,13 @@ def _structure_items(session: dict, report: AuthoringReport, structure=None) -> 
 # ---------------------------------------------------------------------------
 # Cycling
 # ---------------------------------------------------------------------------
+
+def _hr_cue(intensity: str, target: tuple) -> str:
+    """The HR cue on a plain outdoor ride's main step: the shape the athlete rides to."""
+    if normalise_intensity(intensity) in ceiling_words():
+        return f"HR under {int(target[1])} bpm"
+    return f"HR {int(target[0])}-{int(target[1])} bpm"
+
 
 def build_cycling_workout(session: dict, date: str, report: AuthoringReport | None = None) -> CyclingWorkout:
     """
@@ -913,21 +1126,20 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
     # Get targets based on indoor/outdoor. A discretion day states no
     # intensity: the main block is untargeted and carries the constraints,
     # and the warm-up/cool-down are untargeted too (the plan granted choice).
+    # The warm-up and cool-down of a plain ride carry no target: the plan
+    # stated none for them (a structure states one per phase).
+    warmup_target, warmup_target_type = None, TARGET_NONE
     if untargeted:
-        main_target = warmup_target = None
-        target_type = warmup_target_type = TARGET_NONE
+        main_target = None
+        target_type = TARGET_NONE
     elif indoor:
-        # Indoor: use power zones
+        # Indoor: use power zones (always a band)
         main_target = get_power_target_for_intensity(intensity)
-        warmup_target = get_power_target_for_intensity("recovery")
         target_type = TARGET_POWER if main_target else TARGET_NONE
-        warmup_target_type = TARGET_POWER if warmup_target else TARGET_NONE
     else:
-        # Outdoor: use HR zones
+        # Outdoor: use HR zones (a ceiling for easy/recovery, a band otherwise)
         main_target = get_hr_target_for_intensity(intensity)
-        warmup_target = get_hr_target_for_intensity("recovery")
         target_type = TARGET_HR if main_target else TARGET_NONE
-        warmup_target_type = TARGET_HR if warmup_target else TARGET_NONE
 
     steps = []
     step_order = 1
@@ -947,7 +1159,7 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
             main_step.targetValueOne = main_target[0]
             main_step.targetValueTwo = main_target[1]
             if not indoor:
-                main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
+                main_step.description = _hr_cue(intensity, main_target)
         if discretion:
             main_step.description = _discretion_note(session)
 
@@ -985,7 +1197,7 @@ def build_cycling_workout(session: dict, date: str, report: AuthoringReport | No
             main_step.targetValueOne = main_target[0]
             main_step.targetValueTwo = main_target[1]
             if not indoor:
-                main_step.description = f"HR {main_target[0]}-{main_target[1]} bpm"
+                main_step.description = _hr_cue(intensity, main_target)
         if discretion:
             main_step.description = _discretion_note(session)
         steps.append(main_step)
@@ -1026,8 +1238,9 @@ def build_structured_cycling_workout(session: dict, workout_name: str, total_sec
     Shares the phase contract with running (coach/authoring.py): phases with
     one end condition (duration_secs / duration_mins / distance_m, or
     "open") and at most one target (power_watts, power_pct, hr_target,
-    cadence, intensity), plus repeat blocks that nest. A phase with no
-    target inherits the session intensity. Indoor rides resolve an
+    cadence, intensity, hr_max), plus repeat blocks that nest. An interval
+    with no target inherits the session intensity; other phases stay
+    untargeted unless they state one. Indoor rides resolve an
     intensity word to the power zone, outdoor rides to the HR zone.
     """
     report = _ensure_report(session, report)
@@ -1089,13 +1302,15 @@ def build_running_workout(session: dict, date: str, report: AuthoringReport | No
 
     # Try pace targets first (preferred for running), fall back to HR. A
     # discretion day is untargeted throughout and carries its constraints.
+    # The warm-up and cool-down carry no target: the plan stated none for
+    # them (a structure states one per phase). The main block carries the
+    # intensity — a ceiling for easy/recovery, a band for the rest.
+    warmup_pace = warmup_hr = None
     if untargeted:
-        main_pace = warmup_pace = hr_target = warmup_hr = None
+        main_pace = hr_target = None
     else:
         main_pace = get_pace_target_for_intensity(intensity)
-        warmup_pace = get_pace_target_for_intensity("recovery")
         hr_target = get_hr_target_for_intensity(intensity)
-        warmup_hr = get_hr_target_for_intensity("recovery")
 
     # Determine which target type to use
     use_pace = main_pace is not None
@@ -1145,9 +1360,10 @@ def build_structured_running_workout(session: dict, date: str, report: Authoring
       End condition (exactly one): distance_m, duration_secs, duration_mins;
         "open" => lap-button
       Target (at most one): pace_sec_per_km [slow, fast], pace [slow_mps,
-        fast_mps], hr_target [low, high], cadence [low, high], intensity
-        (pace zone when threshold pace is set, else HR zone). A phase
-        without a target inherits the session intensity.
+        fast_mps], hr_target [low, high], hr_max (a ceiling), cadence
+        [low, high], intensity (pace zone when threshold pace is set, else
+        HR zone; easy/recovery are ceilings). An interval without a target
+        inherits the session intensity; other phases stay untargeted.
       notes: the cue on the step (about 50 characters shown)
     """
     report = _ensure_report(session, report)
@@ -1581,9 +1797,12 @@ def _lap_rest_step(order: int, child: bool = False) -> dict:
     return step
 
 
-def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library: dict,
-                   path: str = "", report: AuthoringReport | None = None) -> tuple[dict, int]:
-    """One exercise step inside a repeat group, plus its estimated seconds."""
+def _exercise_steps(spec: CircuitExercise, order: int, exercise_db: dict, library: dict,
+                    path: str = "", report: AuthoringReport | None = None) -> tuple[list[dict], int]:
+    """The step(s) for one exercise inside a repeat group, plus their estimated
+    seconds. each_side renders a Left step and a Right step, each with the
+    stated reps or time (one step used to carry both sides in its cue, so the
+    watch timed a 30 s per-side hold once)."""
     category, garmin_exercise_name, _warning = resolve_exercise_category(spec, exercise_db)
     if not category:  # validate_session has already reported this; defensive
         raise WorkoutAuthoringError([{'field': spec.name, 'message': "category is required"}])
@@ -1596,16 +1815,6 @@ def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library
         if cue and report is not None:
             report.warn(path or spec.name, (f"{spec.name}: no notes in the plan; the researched "
                                             f"exercise-library cue goes on the watch: \"{cue}\""))
-    readable_name = spec.name.replace("_", " ").title()
-    side = "each side" if spec.each_side else ""
-    if garmin_exercise_name:
-        # Watch shows the exercise name already: description = cue (+ side)
-        parts = [p for p in (side, cue) if p]
-        description = ": ".join(parts) if len(parts) == 2 else "".join(parts)
-    else:
-        head = f"{readable_name} {side}".strip()
-        description = f"{head}: {cue}" if cue else head
-    description = _smart_truncate(description, STEP_NOTE_MAX_CHARS)
 
     if spec.duration_secs is not None:
         end_condition, end_value, est = END_TIME, float(spec.duration_secs), int(spec.duration_secs)
@@ -1613,27 +1822,30 @@ def _exercise_step(spec: CircuitExercise, order: int, exercise_db: dict, library
         end_condition, end_value, est = END_LAP_BUTTON, None, 45
     else:
         end_condition, end_value, est = END_REPS, float(spec.reps), max(25, int(spec.reps) * 4)
-    if spec.each_side:
-        est *= 2
 
-    step = {
-        "type": "ExecutableStepDTO",
-        "stepOrder": order,
-        "stepType": STEP_INTERVAL,
-        "childStepId": 1,
-        "endCondition": end_condition,
-        "targetType": TARGET_NONE,
-        "category": category,
-        "exerciseName": garmin_exercise_name,
-    }
-    if end_value is not None:
-        step["endConditionValue"] = end_value
-    if description:
-        step["description"] = description
-    if spec.weight_kg is not None:
-        step["weightValue"] = float(spec.weight_kg)
-        step["weightUnit"] = dict(WEIGHT_UNIT_KG)
-    return step, est
+    steps: list[dict] = []
+    for side in (("Left", "Right") if spec.each_side else (None,)):
+        description = _smart_truncate(step_description(spec, bool(garmin_exercise_name), cue, side),
+                                      STEP_NOTE_MAX_CHARS)
+        step = {
+            "type": "ExecutableStepDTO",
+            "stepOrder": order + len(steps),
+            "stepType": STEP_INTERVAL,
+            "childStepId": 1,
+            "endCondition": end_condition,
+            "targetType": TARGET_NONE,
+            "category": category,
+            "exerciseName": garmin_exercise_name,
+        }
+        if end_value is not None:
+            step["endConditionValue"] = end_value
+        if description:
+            step["description"] = description
+        if spec.weight_kg is not None:
+            step["weightValue"] = float(spec.weight_kg)
+            step["weightUnit"] = dict(WEIGHT_UNIT_KG)
+        steps.append(step)
+    return steps, est * len(steps)
 
 
 def _rest_estimate(category: str | None) -> int:
@@ -1668,7 +1880,9 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
     - Each exercise is a RepeatGroupDTO of `sets` iterations holding the
       exercise step (reps -> END_REPS, duration_secs -> END_TIME, "open"
       reps -> lap button) and a rest step (timed when rest_secs is given,
-      lap button otherwise; none when rest_secs is 0).
+      lap button otherwise; none when rest_secs is 0). each_side puts a
+      Left step and a Right step in the group, each with the stated reps
+      or time.
     - A circuit is one RepeatGroupDTO of `rounds` iterations holding every
       exercise step back to back, then the rest step.
     - The exercise `notes` cue is the step description; the researched
@@ -1732,10 +1946,10 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
         if isinstance(item, Circuit):
             children, round_secs = [], 0
             for j, spec in enumerate(item.exercises):
-                step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library,
-                                           path=f"exercises[{index}].exercises[{j}]", report=report)
-                children.append(step)
-                child_order += 1
+                ex_steps, est = _exercise_steps(spec, child_order, exercise_db, library=exercise_library,
+                                                path=f"exercises[{index}].exercises[{j}]", report=report)
+                children.extend(ex_steps)
+                child_order += len(ex_steps)
                 round_secs += est
                 exercise_count += 1
             if item.rest_secs is None:
@@ -1752,15 +1966,15 @@ def build_strength_workout(session: dict, date: str, report: AuthoringReport | N
             continue
 
         spec: Exercise = item
-        step, est = _exercise_step(spec, child_order, exercise_db, library=exercise_library,
-                                   path=f"exercises[{index}]", report=report)
-        children = [step]
-        child_order += 1
+        ex_steps, est = _exercise_steps(spec, child_order, exercise_db, library=exercise_library,
+                                        path=f"exercises[{index}]", report=report)
+        children = list(ex_steps)
+        child_order += len(ex_steps)
         set_secs = est
         if spec.rest_secs is None:
             children.append(_lap_rest_step(child_order, child=True))
             child_order += 1
-            set_secs += _rest_estimate(step.get("category"))
+            set_secs += _rest_estimate(ex_steps[0].get("category"))
         elif spec.rest_secs > 0:
             children.append(_timed_step(child_order, STEP_REST, spec.rest_secs, child=True))
             child_order += 1

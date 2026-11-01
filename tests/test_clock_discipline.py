@@ -117,6 +117,8 @@ ALLOWLIST = {
     ('coach/tools/strength_tools.py', 'sync_strength_session'),
     ('coach/tools/strength_tools.py', 'approve_progression'),
     ('coach/tools/strength_tools.py', 'generate_strength_workout'),
+    # [boundary] @mcp.tool body — resolves today/now once for the forecast cache
+    ('coach/tools/weather_tools.py', 'get_weather_outlook'),
 }
 
 

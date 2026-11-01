@@ -711,7 +711,7 @@ def generate_strength_workout(
 
                     workout_exercises.append({
                         "name": ex_name,
-                        "category": ex_data.get("garmin_category"),
+                        "category": ex_data.get("category") or ex_data.get("garmin_category"),
                         "primary_muscles": ex_data.get("primary_muscles", []),
                         "sets": sets,
                         "reps": reps,
@@ -826,6 +826,7 @@ def add_exercise(
         # Create exercise entry
         new_exercise = {
             "category": category.upper(),
+            "categories": [category.upper()],
             "garmin_category": category.upper(),
             "garmin_name": normalized_name,
             "muscles": primary + secondary,

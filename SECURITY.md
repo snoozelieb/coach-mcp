@@ -24,8 +24,11 @@ package is `methodology.json` (generic safety rules and race templates).
    or exercise, the server fetches public pages; the request reveals only
    the search target (e.g. a race name). Only `https` URLs that resolve to
    public addresses are fetched — never loopback, private or link-local
-   ranges, on the first request or on any redirect — with a 2 MB size cap,
-   and the text comes back to the model labelled as untrusted data.
+   ranges, on the first request or on any redirect — and each request is
+   sent to the address that passed that check (DNS pinning; TLS still
+   verifies the hostname), without proxies, with a 2 MB size cap, and the
+   text comes back to the model labelled as untrusted data. Names the model
+   supplies are URL-encoded into the fixed research hosts' paths.
 
 Nothing else. No analytics, no crash reporting. FastMCP would check PyPI for a newer version at startup; the server disables that banner check.
 
@@ -33,9 +36,14 @@ Nothing else. No analytics, no crash reporting. FastMCP would check PyPI for a n
 
 - One athlete per data directory by design — there is no auth layer between
   athletes. Run separate instances with separate `COACH_DATA_DIR`s.
-- The default transport is stdio (local only). If you opt into HTTP/SSE
-  transports, you are responsible for network exposure — bind to localhost
-  or put it behind your own auth.
+- The default transport is stdio (local only): nothing listens on the
+  network. The HTTP transports (`COACH_TRANSPORT=http`, `streamable-http`,
+  legacy `sse`) refuse to start without `COACH_HTTP_TOKEN` (16+ characters,
+  sent by the client as `Authorization: Bearer <token>`); every request's
+  `Host` and `Origin` headers are validated (DNS-rebinding protection), with
+  `COACH_HTTP_ALLOWED_HOSTS` / `COACH_HTTP_ALLOWED_ORIGINS` for extra names.
+  `COACH_HTTP_INSECURE=1` waives the token for a loopback bind only. There
+  is no TLS: keep HTTP on localhost or behind your own TLS proxy.
 
 ## Reporting a vulnerability
 

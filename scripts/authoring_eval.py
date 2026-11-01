@@ -160,6 +160,15 @@ def apply_checks(report: dict, checks: dict) -> list[str]:
         hits = sum(1 for line in steps if re.search(pattern, line, re.IGNORECASE))
         if hits < minimum:
             failures.append(f"missing step /{pattern}/ (found {hits}, need {minimum})")
+    last = -1
+    for pattern in checks.get("steps_order") or []:   # first matches in this order
+        index = next((i for i, line in enumerate(steps) if re.search(pattern, line, re.IGNORECASE)), None)
+        if index is None:
+            failures.append(f"missing ordered step /{pattern}/")
+        elif index <= last:
+            failures.append(f"step /{pattern}/ out of order: line {index + 1} comes before line {last + 1}")
+        else:
+            last = index
     for pattern in checks.get("steps_absent") or []:
         if re.search(pattern, joined, re.IGNORECASE):
             failures.append(f"forbidden step /{pattern}/ present")
@@ -424,7 +433,14 @@ def main(argv: list[str] | None = None) -> int:
         cases = [c for c in cases if c["id"] in wanted]
 
     if args.check:
-        return 1 if check_goldens(cases) else 0
+        # Render against the eval athlete, never the owner's data dir: the
+        # owner's strength baseline would add "states no load" warnings the
+        # cases do not expect (CI checks the goldens the same way).
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            seed_data_dir(data_dir)
+            os.environ["COACH_DATA_DIR"] = str(data_dir)
+            return 1 if check_goldens(cases) else 0
     summary = run_eval(cases, args.model, args.parallel, args.budget_usd, args.per_case_usd,
                        args.max_turns, args.timeout, args.keep_data)
     return 0 if summary["cases_run"] and summary["passed"] == summary["cases_run"] else 1

@@ -13,7 +13,98 @@ collapsing cycling repeats. The renderer now draws the session exactly as
 written, a strict session contract rejects what it cannot draw with errors
 that teach, and the push preview shows the step tree before anything lands.
 
+### Added
+- **Targets are alerts (2026-10-30).** The watch sounds whenever the athlete
+  is outside a step's target, both ways, so `easy` and `recovery` now render
+  as ceilings: the alert fires only above the zone top, and the low bound is
+  the athlete's aerobic floor (resting HR + 30 % of heart-rate reserve, the
+  ACSM boundary of light aerobic activity; `personal.aerobic_floor_pct_hrr`
+  or `methodology.targets` tune it). Bands stay bands; `hr_max` is an
+  explicit ceiling; only an `interval` phase inherits the session intensity
+  (walks, warm-ups, cool-downs and rests stay silent unless they state a
+  target); an HR band on a timed step under 3 minutes warns (HR lags).
+  `get_athlete().derived` shows the floor beside the median HR of the
+  athlete's recorded walks, and the preview warns when the floor sits above
+  it. Walk steps in run/walk ladders no longer beep "HR too low".
+- **Weather in planning (2026-10-30).** `get_weather_outlook` and the new
+  `weather_outlook` block in the snapshot and `get_week_constraints`: wind,
+  gusts, rain and daylight for the coming days at the profile location
+  (`set_location`, once), from Open-Meteo (no key, hourly cache). Per day:
+  the max gust inside daylight, the longest calm daylight block, the
+  preferred training windows, `calmest_day`. `update_weekly_plan` and the
+  push preview add a `wind_over_ride_limit` grounding warning for an outdoor
+  ride on a day whose daylight gusts exceed `methodology.weather.
+  outdoor_ride_gust_limit_kmh` (default 50). Runs carry no wind limit.
+- **Gym order by station (2026-10-30).** The athlete's gym session had its
+  bench work split in three places with three dumbbell pairs: the strength
+  skill ordered by muscle and nothing showed the walk. Every exercise and
+  circuit now takes an optional `station` (the spot: 'incline bench',
+  'cable', 'mat'; one label per spot; not sent to the watch). The preview
+  and the push preview print the station walk (`Stations:` ahead of the
+  steps, `station_walk` per block) and warn when a session returns to a
+  station it left, when a circuit's rounds change spot, and when stations
+  are unstated; `methodology.strength.station_order` (off | warn | error,
+  default warn) makes those save-time errors. `list_exercises` adds
+  `key_words`, the equipment words a Garmin key spells (a hint, not Garmin
+  data). The strength skill orders by station: a practitioner's order wins,
+  the main lift's station first, the rest by contention, one load finished
+  before the next, a movement that needs nothing done at the station it
+  sits between, circuits on one station only. The authoring eval gains an
+  order-sensitive `steps_order` check and a station-ordered golden.
+
+### Security
+- **HTTP transports are closed by default (2026-11-01).** `COACH_TRANSPORT=http`
+  (and `streamable-http`, legacy `sse`) now refuses to start without
+  `COACH_HTTP_TOKEN`, a bearer token of 16+ characters checked on every
+  request (FastMCP's static token verifier); `Host` and `Origin` headers are
+  validated on every request (FastMCP's guard in strict mode, its default is
+  off, so a page in the athlete's browser cannot reach the server through
+  DNS rebinding), with `COACH_HTTP_ALLOWED_HOSTS` / `COACH_HTTP_ALLOWED_ORIGINS`
+  for extra names and `COACH_HTTP_INSECURE=1` to waive the token on a
+  loopback bind only. The host and port checked are the ones FastMCP will
+  bind (its settings, which also read FastMCP's own `.env`), and the run call
+  binds exactly those, so the check and the bind cannot diverge. stdio is
+  unchanged.
+- **Research fetches are pinned to the address that passed the check.** The
+  page fetch resolved a hostname, checked every address against the
+  public-only policy, then let the HTTP library resolve the name again at
+  connect time; a DNS answer that changed in between could have pointed the
+  fetch at a private address. Each request now goes to the validated address
+  with TLS still verifying the hostname, each redirect hop the same, and no
+  proxy from the environment sits in between.
+- **Model-supplied names are URL-encoded** into the fixed research hosts'
+  paths (exercise, sport and injury lookups) instead of being spliced in raw,
+  and every sentence lifted from a page is sanitised (control characters out,
+  whitespace collapsed, capped) before it is returned, cached in the exercise
+  library or sent to the watch. Race and injury research return the same
+  untrusted envelope as the other research tools, with the fetch time and
+  final URL, and a page that declares no text content type is refused.
+- **Docs.** The Claude Desktop example no longer carries the Garmin password
+  (run `garmin-coach-login` once; the server logs in from the stored tokens),
+  the Cursor example uses `${env:GARMIN_PASSWORD}`, and SECURITY.md states
+  the transport rules.
+
 ### Fixed
+- **Seven bugs from a coaching session (2026-10-29).** Holds are timed by
+  contract: a PLANK, HOLD, HANG, CARRY, L_SIT or WALL_SIT name with a rep
+  count is a teaching error (`is_timed_hold`), and `each_side` renders a
+  Left and a Right step instead of one step carrying both sides in its cue.
+  The exercise catalogue moved to schema 2: `scripts/fetch_exercises.py`
+  keeps every Garmin category per name plus `is_bodyweight` and
+  `counterpart`, custom entries survive a refresh and a backup lands in the
+  data dir's `backups/`; the hand-written category correction tables are
+  gone (`primary_catalogue_category` decides), a WEIGHTED_* name without
+  `weight_kg` is an error when a bodyweight counterpart exists, and a legacy
+  one-category cache is flagged under `data_quality.exercise_catalogue` and
+  the `list_exercises` `catalogue_note`. The snapshot makes ONE Garmin
+  activities fetch, from the earliest of the ingest watermark, the plan
+  start, Monday and six days ago, feeding both ingestion and the week grid
+  (padel days no longer read as rest); a cache hit is reported under
+  `data_quality.activities_cache` and the doctrine asks for `force_refresh`
+  after a watch sync. `snapshot.compliance` is the trailing seven days, with
+  `window.basis` and `targets_per_week` beside the scaled requirement, and
+  `get_compliance_report`'s day count is no longer off by one. The authoring
+  eval seeds its own athlete, so an owner's baseline cannot fail a golden.
 - **Second review round (red team + intent guardian, 2026-10-28).** The
   injury gate now checks exercises on the sessions exactly as the push
   expands them, so a rest-typed container carrying a gym list cannot smuggle

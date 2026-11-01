@@ -63,6 +63,37 @@ INTENSITY_ALIASES: dict[str, str] = {
 
 INTENSITY_WORDS = tuple(INTENSITY_ZONES)
 
+# Target shape. A target is an ALERT: the watch sounds whenever the athlete is
+# outside it, in both directions. easy and recovery are CEILINGS — the alert
+# fires only above the zone top; the low bound is the athlete's aerobic floor
+# (below it the athlete has stopped, not eased off). The other words are BANDS
+# the athlete must hit. Power targets are always bands (no lag).
+CEILING_INTENSITIES = frozenset({'recovery', 'easy'})
+# Aerobic floor: resting HR + this share of heart-rate reserve (Karvonen).
+# 30 % of HRR is the ACSM boundary between very light and light aerobic
+# activity (Garber et al. 2011): a brisk walk sits above it, standing still
+# below it. personal.aerobic_floor_pct_hrr on the profile overrides the share.
+AEROBIC_FLOOR_PCT_HRR = 30
+AEROBIC_FLOOR_FALLBACK_BPM = 30  # no resting_hr / max_hr on the profile: the contract's plausibility floor
+PACE_FLOOR_FACTOR = 2.0  # a pace ceiling's slow bound: twice the threshold pace is a walk
+HR_LAG_MIN_STEP_SECS = 180  # an HR band on a shorter timed step reads 'too low' for most of it
+
+# Strength: the spot in the gym a movement is done at ('incline bench',
+# 'cable', 'mat'). The author states it — Garmin's catalogue carries no
+# equipment — and the preview prints the walk through the stations and
+# warns when a session returns to one it left. methodology.strength
+# .station_order sets whether that is a warning, an error or unchecked.
+STATION_MAX_CHARS = 30
+STATION_ORDER_LEVELS = ('off', 'warn', 'error')
+STATION_ORDER_DEFAULT = 'warn'
+# Equipment words a Garmin key may spell — words of the key, not Garmin
+# data: LAT_PULLDOWN spells none, DUMBBELL and BAND travel, BENCH_DIP's
+# bench is no press bench. A hint for the station label, never a decision.
+STATION_KEY_WORDS = ('BARBELL', 'DUMBBELL', 'KETTLEBELL', 'CABLE', 'BAND', 'BANDED', 'MACHINE', 'SMITH',
+                     'BENCH', 'INCLINE', 'DECLINE', 'SWISS_BALL', 'MEDICINE_BALL', 'BOSU', 'HANGING',
+                     'RING', 'SUSPENSION', 'TRX', 'BOX', 'WALL', 'EZ_BAR', 'TRAP_BAR', 'LANDMINE', 'SLED',
+                     'ROPE', 'PLATE', 'FOAM_ROLLER', 'WHEEL', 'PULL_UP', 'BAR')
+
 
 def normalise_intensity(value: Any) -> str | None:
     """Canonical intensity word, or None when the word is not in the vocabulary."""
@@ -109,34 +140,94 @@ CATALOGUE_CATEGORY_TO_WORKOUT: dict[str, str] = {
     "OTHER": "",
 }
 
-# The cached catalogue keeps ONE category per exercise name, and files the
-# plain bodyweight movements (PLANK, CRUNCH, PUSH_UP, SIT_UP) under
-# SUSPENSION, where Garmin also lists them. When the plan omits the category
-# these corrections pick the category the watch animates — only for an exact
-# name match, or for a name the cache files under SUSPENSION. Any other
-# cached category is trusted as is (a substring match used to override 31
-# valid categories silently). They never override a category the plan states.
-CATALOGUE_CATEGORY_CORRECTIONS: tuple[tuple[str, str], ...] = (
-    ("CRUNCH", "CRUNCH"),
-    ("PUSH_UP", "PUSH_UP"),
-    ("PUSHUP", "PUSH_UP"),
-    ("PLANK", "PLANK"),
-    ("SIT_UP", "SIT_UP"),
-    ("SITUP", "SIT_UP"),
-    ("LEG_RAISE", "LEG_RAISE"),
-    ("LEG_LIFT", "LEG_RAISE"),
-)
-# Exact names the cache files under SUSPENSION although Garmin lists them
-# under their own category too (one category per name in the cache). Exact
-# only: TRX_ROW or SUSPENSION_LUNGE really are suspension movements.
-CATALOGUE_EXACT_CORRECTIONS: dict[str, str] = {
-    "PULL_UP": "PULL_UP", "ROW": "ROW", "CURL": "CURL", "DIP": "TRICEPS_EXTENSION",
-    "SQUAT": "SQUAT", "SINGLE_LEG_SQUAT": "SQUAT", "SQUAT_JUMP": "PLYO",
-    "LUNGE": "LUNGE", "SIDE_LUNGE": "LUNGE", "SINGLE_LEG_DEADLIFT": "DEADLIFT",
-    "GLUTE_BRIDGE": "HIP_RAISE", "CHEST_PRESS": "BENCH_PRESS", "CHEST_FLY": "FLYE",
-    "FACE_PULL": "ROW",
-}
-MISFILED_CATEGORY = "SUSPENSION"
+# Garmin files 26 of its 1,495 exercise names under more than one category
+# (SIDE_PLANK under PLANK and SUSPENSION; ROW under five). The cached
+# catalogue (scripts/fetch_exercises.py) keeps every category in
+# `categories` and the primary one in `category`. When the plan states no
+# category the primary is sent; a stated category keeps the exercise name
+# whenever it is one of the listed ones. Equipment categories Garmin
+# cross-files bodyweight movements under never take the primary slot while
+# a movement category is listed (a one-category cache that called SIDE_PLANK
+# a suspension exercise is how "Weighted Side Plank" reached the watch for a
+# bodyweight hold, 2026-10).
+CROSS_FILED_CATEGORIES: frozenset[str] = frozenset({
+    "BANDED_EXERCISES", "SUSPENSION", "SANDBAG", "SLED", "TIRE", "BATTLE_ROPE",
+})
+
+
+def primary_catalogue_category(name: str, categories) -> str:
+    """The category sent for a catalogue name the plan states none for.
+
+    Data rules, not judgment: one listed category wins outright; then a
+    category whose tokens appear in the name (PLANK for SIDE_PLANK, ROW for
+    ROW); then the first workout-API category that is not an equipment
+    cross-filing; then the first workout-API category; then the first listed.
+    """
+    cats: list[str] = []
+    for raw in categories or []:
+        cat = normalise_category(raw)
+        if cat and cat not in cats:
+            cats.append(cat)
+    if not cats:
+        return ''
+    if len(cats) == 1:
+        return cats[0]
+    name_tokens = [t for t in normalise_exercise_name(name).split('_') if t]
+    for cat in cats:
+        parts = cat.split('_')
+        if any(name_tokens[i:i + len(parts)] == parts for i in range(len(name_tokens) - len(parts) + 1)):
+            return cat
+    for cat in cats:
+        if cat in VALID_WORKOUT_CATEGORIES and cat not in CROSS_FILED_CATEGORIES:
+            return cat
+    for cat in cats:
+        if cat in VALID_WORKOUT_CATEGORIES:
+            return cat
+    return cats[0]
+
+
+# A hold is timed. Garmin's catalogue carries no "static" flag, so the
+# contract reads the name: a name ending in PLANK, HOLD, HANG or CARRY, or
+# carrying L_SIT / WALL_SIT, is a hold and takes duration_secs, not a rep
+# count - unless the name says the movement moves (PLANK_JACKS,
+# ROLLING_SIDE_PLANK, SWISS_BALL_PLANK_LEG_LIFT_AND_HOLD). Calibrated on
+# Garmin's 43 *_PLANK keys (2026-10): the static planks are flagged, the
+# inching, rolling, plyometric, kicking and "to side plank" variants stay
+# on reps. reps "open" (lap button) is allowed: "hold as long as you can".
+HOLD_FINAL_TOKENS: frozenset[str] = frozenset({"PLANK", "HOLD", "HANG", "CARRY"})
+HOLD_TOKEN_PAIRS: frozenset[tuple[str, str]] = frozenset({("L", "SIT"), ("WALL", "SIT")})
+DYNAMIC_TOKENS: frozenset[str] = frozenset({
+    "JUMP", "JUMPS", "JUMPING", "JACK", "JACKS", "CLIMBER", "CLIMBERS", "CRAWL", "CRAWLING",
+    "TWIST", "TWISTS", "ROLL", "ROLLS", "ROLLING", "ROCK", "ROCKING", "WALK", "WALKS", "WALKING",
+    "WALKOUT", "WALKOUTS", "INCHING", "INCHWORM", "PLYO", "PLYOMETRIC", "SPIDERMAN", "DYNAMIC",
+    "TO", "AND", "WITH", "KICK", "KICKS", "TAP", "TAPS", "TOUCH", "TOUCHES", "REACH", "REACHES",
+    "CRUNCH", "CRUNCHES", "PIKE", "PIKES", "TUCK", "TUCKS", "LIFT", "LIFTS", "RAISE", "RAISES",
+    "ROTATION", "ROTATIONS", "DRAG", "DRAGS", "SLIDE", "SLIDES", "DIP", "DIPS", "UP", "UPS",
+    "DOWN", "DOWNS", "PUSH", "PULL", "ROW", "ROWS", "PRESS", "SHIFT", "SHIFTS", "STEP", "STEPS",
+})
+# Trailing qualifiers a coach appends ("Side plank left", "Plank 30s") are
+# stripped before the rule reads the last token.
+_HOLD_QUALIFIER = re.compile(r"^(LEFT|RIGHT|L|R|\d+(S|SEC|SECS|SECOND|SECONDS)?)$")
+
+
+def is_timed_hold(name: str) -> bool:
+    """True when the Garmin key (or off-catalogue name) names a static hold."""
+    tokens = [t for t in normalise_exercise_name(name).split('_') if t]
+    while len(tokens) > 1 and _HOLD_QUALIFIER.match(tokens[-1]):
+        tokens.pop()
+    if not tokens:
+        return False
+    if any((tokens[i], tokens[i + 1]) in HOLD_TOKEN_PAIRS for i in range(len(tokens) - 1)):
+        return True
+    last = tokens[-1]
+    if last not in HOLD_FINAL_TOKENS:
+        return False
+    if last == "HOLD":
+        # "..._WITH_STATIC_HOLD" / "..._LIFT_AND_HOLD" are reps with a pause
+        return not ({"WITH", "AND"} & set(tokens))
+    if last == "PLANK":
+        return not (DYNAMIC_TOKENS & set(tokens[:-1]))
+    return True
 
 # Injury restrictions are free text ("no jumping", "overhead pressing", "deep
 # squats"). The injury gate matches them against strength exercises by
@@ -240,7 +331,9 @@ def normalise_exercise_name(value: Any) -> str:
         text = text.replace(ch, '_')
     while '__' in text:
         text = text.replace('__', '_')
-    return text.strip('_')
+    text = text.strip('_')
+    # Garmin prefixes keys that would start with a digit: _45_DEGREE_PLANK
+    return f"_{text}" if text[:1].isdigit() else text
 
 
 def normalise_category(value: Any) -> str:
@@ -249,6 +342,44 @@ def normalise_category(value: Any) -> str:
 
 # Garmin shows roughly 50 characters of a step description on the watch
 # (our cap; Garmin's own limit is unverified) and 40 of a workout name.
+def normalise_station(value: Any) -> str | None:
+    """Casefold, collapse whitespace, strip; '' -> None. No synonym map: the
+    author reuses one label per spot, so 'bench' and 'incline bench' are two
+    spots until the plan says otherwise."""
+    if value is None:
+        return None
+    text = re.sub(r'\s+', ' ', str(value)).strip().casefold()
+    return text or None
+
+
+def _validate_station(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError("station must be a short text label of the spot ('incline bench', 'cable', "
+                         f"'mat'), got {value!r}")
+    text = normalise_station(value)
+    if text is None:
+        return None
+    if len(text) > STATION_MAX_CHARS:
+        raise ValueError(f"station {text!r} is {len(text)} characters; keep it a short label of the "
+                         f"spot (up to {STATION_MAX_CHARS}), e.g. 'incline bench'")
+    return text
+
+
+def key_words(name: str) -> list[str]:
+    """The equipment words a Garmin key spells, in key order (STATION_KEY_WORDS):
+    facts about the spelling of the key, not about the gym."""
+    key = normalise_exercise_name(name)
+    if not key:
+        return []
+    tokens = key.split('_')
+    padded = f'_{key}_'
+    found = [w for w in STATION_KEY_WORDS
+             if (f'_{w}_' in padded if '_' in w else w in tokens)]
+    return sorted(found, key=lambda w: padded.find(f'_{w}_'))
+
+
 STEP_NOTE_MAX_CHARS = 50
 WORKOUT_NAME_MAX_CHARS = 40
 
@@ -274,16 +405,19 @@ class Phase(StrictModel):
 
     End condition: exactly one of duration_secs, duration_mins, distance_m —
     a number, or the string "open" for a lap-button step.
-    Target: at most one of hr_target, pace_sec_per_km, pace, power_watts,
-    power_pct, cadence (Garmin shows one target per step); intensity may
-    accompany it as a label and is the target when no numeric one is given.
+    Target: at most one of hr_target, hr_max, pace_sec_per_km, pace,
+    power_watts, power_pct, cadence (Garmin shows one target per step);
+    intensity may accompany it as a label and is the target when no numeric
+    one is given. A target is an alert in both directions: hr_target is a
+    band, hr_max a ceiling above the athlete's aerobic floor.
     """
     phase: str = Field(description="warmup | interval | recovery | cooldown | rest")
     duration_secs: OpenOrNumber | None = Field(default=None, description="seconds, or \"open\"")
     duration_mins: OpenOrNumber | None = Field(default=None, description="minutes (fractions allowed), or \"open\"")
     distance_m: OpenOrNumber | None = Field(default=None, description="metres, or \"open\"")
     intensity: str | None = Field(default=None, description="recovery | easy | tempo | sweet_spot | threshold | vo2 | max_effort (z1-z6 accepted)")
-    hr_target: list[float] | None = Field(default=None, description="[low_bpm, high_bpm]")
+    hr_target: list[float] | None = Field(default=None, description="[low_bpm, high_bpm] — a band the athlete must hit")
+    hr_max: float | None = Field(default=None, description="ceiling in bpm: the watch alerts only above it (low bound = the athlete's aerobic floor)")
     pace_sec_per_km: list[float] | None = Field(default=None, description="[slow_sec_per_km, fast_sec_per_km], e.g. [330, 315] for 5:30-5:15/km")
     pace: list[float] | None = Field(default=None, description="[slow_mps, fast_mps] — prefer pace_sec_per_km")
     power_watts: list[float] | None = Field(default=None, description="[low_w, high_w] (cycling)")
@@ -301,7 +435,7 @@ class Phase(StrictModel):
     }
     # One numeric target per step (Garmin shows one); `intensity` may ride
     # along as a label and is the target only when no numeric one is given.
-    NUMERIC_TARGET_KEYS: ClassVar[tuple[str, ...]] = ('hr_target', 'pace_sec_per_km', 'pace',
+    NUMERIC_TARGET_KEYS: ClassVar[tuple[str, ...]] = ('hr_target', 'hr_max', 'pace_sec_per_km', 'pace',
                                                       'power_watts', 'power_pct', 'cadence')
     TARGET_KEYS: ClassVar[tuple[str, ...]] = NUMERIC_TARGET_KEYS + ('intensity',)
     END_KEYS: ClassVar[tuple[str, ...]] = ('duration_secs', 'duration_mins', 'distance_m')
@@ -368,6 +502,7 @@ class Phase(StrictModel):
 
     RANGES: ClassVar[dict[str, tuple[float, float, str]]] = {
         'hr_target': (30, 230, 'bpm'),
+        'hr_max': (30, 230, 'bpm'),
         'pace_sec_per_km': (120, 1200, 'sec/km (2:00-20:00 per km)'),
         'pace': (0.5, 10, 'm/s (prefer pace_sec_per_km)'),
         'power_watts': (0, 2000, 'W'),
@@ -461,11 +596,20 @@ class CircuitExercise(StrictModel):
     readable name in the step description."""
     name: str = Field(min_length=1, description="Garmin exercise key, e.g. GOBLET_SQUAT (spaces are normalised)")
     category: str | None = Field(default=None, description="Garmin workout category; required when the name is not in the catalogue")
-    reps: int | Literal["open"] | None = Field(default=None, description="reps per set, or \"open\" to end the set with the lap button")
-    duration_secs: float | None = Field(default=None, ge=1, description="hold/carry time per set in seconds — timed sets instead of reps")
-    each_side: bool = Field(default=False, description="reps/time are per side; the cue says so on the watch")
+    reps: int | Literal["open"] | None = Field(default=None, description="reps per set, or \"open\" to end the set with the lap button; a hold (PLANK, HOLD, HANG, CARRY, L_SIT, WALL_SIT names) is rejected with a rep count")
+    duration_secs: float | None = Field(default=None, ge=1, description="hold/carry time per set in seconds — timed sets instead of reps (required for a hold)")
+    each_side: bool = Field(default=False, description="reps/time are per side: the watch gets a Left step and a Right step per set (or per round), each with the stated reps or time")
     weight_kg: float | None = Field(default=None, gt=0, description="load; only an explicit value is sent")
     notes: str | None = Field(default=None, description=f"form cue shown on the step (about {STEP_NOTE_MAX_CHARS} characters visible)")
+    station: str | None = Field(default=None, description=(
+        "the spot in the gym where this movement is done ('incline bench', 'cable', 'mat'; up to "
+        f"{STATION_MAX_CHARS} characters, one label per spot reused verbatim). Not sent to the watch: the "
+        "preview prints the station walk and warns when the session returns to a station it left"))
+
+    @field_validator('station', mode='before')
+    @classmethod
+    def _station(cls, v):
+        return _validate_station(v)
 
     @field_validator('name', mode='before')
     @classmethod
@@ -514,6 +658,10 @@ class CircuitExercise(StrictModel):
             raise ValueError(
                 f"exercise {self.name}: give exactly one of reps (per set) or "
                 "duration_secs (timed hold/carry per set); neither is defaulted")
+        if isinstance(self.reps, int) and is_timed_hold(self.name):
+            raise ValueError(
+                f"exercise {self.name}: a hold is timed — give duration_secs (seconds per set) "
+                f"instead of reps {self.reps}; reps \"open\" ends the hold with the lap button")
         return self
 
 
@@ -530,6 +678,14 @@ class Circuit(StrictModel):
     rest_secs: float | None = Field(default=None, ge=0, description="rest after each round, in seconds")
     notes: str | None = None
     name: str | None = Field(default=None, description="label for the preview only")
+    station: str | None = Field(default=None, description=(
+        "the spot for every exercise of the circuit that states none ('mat'); a circuit whose "
+        "members state different stations walks between them every round, and the preview says so"))
+
+    @field_validator('station', mode='before')
+    @classmethod
+    def _station(cls, v):
+        return _validate_station(v)
 
 
 def _exercise_discriminator(value: Any) -> str:
@@ -576,6 +732,32 @@ PLAIN_SPLIT: dict[str, dict[str, tuple[float, int]]] = {
 }
 
 
+def targets_are_alerts_text() -> str:
+    """How a target behaves on the wrist. The contract document and the
+    doctrine resource both print this, so the rule has one home."""
+    return (
+        "A target is an alert: the watch sounds whenever the athlete is outside it, in both "
+        "directions. easy and recovery render as CEILINGS. The alert fires only above the zone "
+        "top. The low bound is the athlete's aerobic floor: resting HR plus "
+        f"{AEROBIC_FLOOR_PCT_HRR} % of heart-rate reserve (max HR minus resting HR), the ACSM "
+        "boundary of light aerobic activity; a brisk walk stays above it, standing still drops "
+        "below it. personal.aerobic_floor_pct_hrr on the profile changes the share. Without "
+        f"resting_hr and max_hr on the profile the low bound is {AEROBIC_FLOOR_FALLBACK_BPM} bpm "
+        f"and the preview warns. A pace ceiling's slow bound is {PACE_FLOOR_FACTOR:g} x the "
+        "threshold pace (a walk). tempo, sweet_spot, threshold, vo2 and max_effort render as the "
+        "full zone BAND, which the athlete must hit; hr_target is a band; power targets are always "
+        "bands. hr_max [bpm] is an explicit ceiling. Only an interval phase with no target "
+        "inherits the session intensity: warm-up, cool-down, recovery and rest phases render "
+        "untargeted unless they state one, and so do the warm-up and cool-down of a plain run or "
+        f"indoor ride. HR lags 1-2 minutes: an HR band on a timed step under "
+        f"{HR_LAG_MIN_STEP_SECS // 60} minutes is a warning, because the watch reads 'too low' "
+        "for most of the step. Use pace, a cue in notes, intensity 'none' or hr_max there. "
+        "These are defaults: the methodology 'targets' block (update_methodology) overrides the "
+        "floor share, the lag threshold, the pace factor and the ceiling words for this athlete, "
+        "and personal.aerobic_floor_pct_hrr wins for the share. get_athlete().derived shows the "
+        "floor next to the median HR of the athlete's recorded walks.")
+
+
 def plain_split_text() -> str:
     r, c = PLAIN_SPLIT["running"], PLAIN_SPLIT["indoor_cycling"]
     return (f"a plain run gets a warm-up and cool-down of {r['warmup'][0]:.0%} each "
@@ -604,6 +786,7 @@ class AuthoringReport:
     exercises: list[Exercise | Circuit] | None = None
     session_intensity: str | None = None
     family: str = 'other'
+    station_walk: dict | None = None   # strength: station_walk() of the exercises
 
     @property
     def ok(self) -> bool:
@@ -717,28 +900,55 @@ def _catalogue_entry(catalogue: dict | None, name: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+def catalogue_categories(name: str, entry: dict | None) -> list[str]:
+    """Every Garmin category a catalogue entry is filed under, primary first.
+    An entry from the one-category cache format has only `category`; a
+    current one carries `categories` and the primary is derived from them."""
+    if not entry:
+        return []
+    listed = [normalise_category(c) for c in (entry.get('categories') or []) if normalise_category(c)]
+    if listed:
+        primary = primary_catalogue_category(name, listed)
+        return [primary] + [c for c in listed if c != primary]
+    primary = normalise_category(entry.get('category'))
+    return [primary] if primary else []
+
+
+def readable_exercise_name(name: str) -> str:
+    """GOBLET_SQUAT -> 'Goblet Squat', _45_DEGREE_PLANK -> '45 Degree Plank'."""
+    return str(name or '').replace('_', ' ').title().strip()
+
+
+def step_description(spec: CircuitExercise, name_kept: bool, cue: str, side: str | None = None) -> str:
+    """The step text as the watch shows it, before the display cut. With the
+    exercise name kept, Garmin shows the name itself and the text is the side
+    and the cue ("Left: slow"); otherwise the readable name leads ("Banded
+    Ankle Eversion left: slow")."""
+    cue = str(cue or '').strip()
+    if name_kept:
+        parts = [p for p in (side, cue) if p]
+        return ': '.join(parts) if len(parts) == 2 else ''.join(parts)
+    head = readable_exercise_name(spec.name)
+    if side:
+        head = f"{head} {side.lower()}"
+    return f"{head}: {cue}" if cue else head
+
+
 def resolve_exercise_category(spec: CircuitExercise, catalogue: dict | None) -> tuple[str | None, str, str | None]:
     """(workout category or None, exercise name to send, warning or None).
 
     Rules (Garmin, not judgment):
     - a stated category wins; the catalogue only tells us whether Garmin will
-      keep the name (it keeps it only for non-custom catalogue entries whose
-      catalogue category equals the step category);
-    - no stated category: the catalogue category (mapped through the four
-      the workout API rejects, corrected for the cache's one-category-per-
-      name limit); none -> the caller must state one.
+      keep the name (it keeps it for a non-custom catalogue entry filed under
+      that category — any of the entry's categories);
+    - no stated category: the entry's primary category (mapped through the
+      catalogue categories the workout API rejects); none -> the caller must
+      state one.
     """
     entry = _catalogue_entry(catalogue, spec.name)
-    cat_category = normalise_category(entry.get('category')) if entry else ''
+    listed = catalogue_categories(spec.name, entry)
+    primary = listed[0] if listed else ''
     custom = bool(entry.get('custom')) if entry else False
-    corrected = None
-    if cat_category == MISFILED_CATEGORY and spec.name in CATALOGUE_EXACT_CORRECTIONS:
-        corrected = CATALOGUE_EXACT_CORRECTIONS[spec.name]
-    else:
-        for pattern, cat in CATALOGUE_CATEGORY_CORRECTIONS:
-            if spec.name == pattern or (cat_category == MISFILED_CATEGORY and pattern in spec.name):
-                corrected = cat
-                break
 
     if spec.category:
         category = spec.category
@@ -751,26 +961,24 @@ def resolve_exercise_category(spec: CircuitExercise, catalogue: dict | None) -> 
         if custom:
             return category, '', (f"{spec.name} is a custom catalogue entry; Garmin strips the name, "
                                   "the description carries it")
-        if cat_category == category or corrected == category:
+        if category in listed:
             return category, spec.name, None
-        return category, '', (f"{spec.name} is listed under {cat_category} in the catalogue, "
-                              f"not {category}; Garmin will strip the name (keep {category} "
-                              "for the animation, or use the catalogue category to keep the name)")
+        return category, '', (f"{spec.name} is listed under {', '.join(listed) or 'no category'} in the "
+                              f"catalogue, not {category}; Garmin will strip the name (keep {category} "
+                              f"for the animation, or use {primary or 'the catalogue category'} to keep the name)")
 
     # No category stated
     if entry is None:
         return None, '', None
     if custom:
-        mapped = CATALOGUE_CATEGORY_TO_WORKOUT.get(cat_category, cat_category)
+        mapped = CATALOGUE_CATEGORY_TO_WORKOUT.get(primary, primary)
         return (mapped or None), '', (f"{spec.name} is a custom catalogue entry; Garmin strips the name, "
                                       "the description carries it")
-    if corrected:
-        return corrected, spec.name, None
-    if cat_category in VALID_WORKOUT_CATEGORIES:
-        return cat_category, spec.name, None
-    mapped = CATALOGUE_CATEGORY_TO_WORKOUT.get(cat_category, '')
+    if primary in VALID_WORKOUT_CATEGORIES:
+        return primary, spec.name, None
+    mapped = CATALOGUE_CATEGORY_TO_WORKOUT.get(primary, '')
     if mapped:
-        return mapped, '', (f"{spec.name} is catalogued under {cat_category}, which the workout "
+        return mapped, '', (f"{spec.name} is catalogued under {primary}, which the workout "
                             f"API rejects; sent as {mapped} without the name")
     return None, '', None
 
@@ -793,9 +1001,32 @@ def _check_exercise(spec: CircuitExercise, path: str, catalogue: dict | None, re
                                 f"on this install to look it up). Allowed: {allowed}"))
     elif warning:
         report.warn(path, warning)
-    if spec.notes and len(spec.notes) > STEP_NOTE_MAX_CHARS:
-        report.warn(path, f"notes are {len(spec.notes)} characters; the watch shows about "
-                          f"{STEP_NOTE_MAX_CHARS}, so the cue is cut to a word boundary")
+    text = step_description(spec, bool(_name), spec.notes or '', 'Right' if spec.each_side else None)
+    if len(text) > STEP_NOTE_MAX_CHARS:
+        report.warn(path, (f"the step text is {len(text)} characters (\"{text}\"); the watch shows "
+                           f"about {STEP_NOTE_MAX_CHARS}, so it is cut to a word boundary"))
+    _check_counterpart(spec, path, catalogue, report)
+
+
+def _check_counterpart(spec: CircuitExercise, path: str, catalogue: dict | None, report: AuthoringReport) -> None:
+    """Garmin pairs a bodyweight movement with its loaded twin (SIDE_PLANK <->
+    WEIGHTED_SIDE_PLANK: `counterpart` + `is_bodyweight` in the catalogue).
+    The loaded key with no weight_kg is an error: the watch would announce a
+    weight the plan never stated. The bodyweight key with a load is a hint."""
+    entry = _catalogue_entry(catalogue, spec.name)
+    if not entry or entry.get('custom'):
+        return
+    counterpart = normalise_exercise_name(entry.get('counterpart') or '')
+    twin = _catalogue_entry(catalogue, counterpart) if counterpart else None
+    if twin is None:
+        return
+    if spec.weight_kg is None and twin.get('is_bodyweight') and not entry.get('is_bodyweight'):
+        report.error(path, (f"{spec.name} is the loaded version of {counterpart} but states no weight_kg: "
+                            f"the watch would show \"{readable_exercise_name(spec.name)}\" for a bodyweight "
+                            f"movement. Use {counterpart}, or state the load"))
+    elif spec.weight_kg is not None and entry.get('is_bodyweight') and not twin.get('is_bodyweight'):
+        report.warn(path, (f"{spec.name} is the bodyweight version; with weight_kg {spec.weight_kg:g} "
+                           f"Garmin has {counterpart}"))
 
 
 def _check_phase(item: Phase | RepeatBlock, path: str, family: str, report: AuthoringReport,
@@ -817,7 +1048,8 @@ def _check_phase(item: Phase | RepeatBlock, path: str, family: str, report: Auth
 
 
 def validate_session(session: dict, catalogue: dict | None = None,
-                     strength_baseline: dict | None = None) -> AuthoringReport:
+                     strength_baseline: dict | None = None,
+                     station_order: str = STATION_ORDER_DEFAULT) -> AuthoringReport:
     """Validate the authoring surface of ONE plan session.
 
     Checks `structure` (running, cycling) and `exercises` (strength) against
@@ -826,8 +1058,11 @@ def validate_session(session: dict, catalogue: dict | None = None,
     words outside the vocabulary. With `strength_baseline` (the athlete's
     `strength_baseline.exercises` mapping) it also warns when a loaded
     movement states no load although the baseline holds one — a fact about
-    the athlete's record, never a value the renderer would pick. Rest days
-    and families without structure pass through with an empty report.
+    the athlete's record, never a value the renderer would pick. `station_order`
+    (methodology.strength.station_order: off | warn | error) sets whether a
+    strength session that returns to a station it left, a circuit whose rounds
+    change spot, or unstated stations are warnings, errors or unchecked. Rest
+    days and families without structure pass through with an empty report.
     """
     report = AuthoringReport()
     if not isinstance(session, dict):
@@ -934,6 +1169,7 @@ def validate_session(session: dict, catalogue: dict | None = None,
             report.warn('skip_warmup', "skip_warmup is retired: no warm-up is inserted unless warmup_mins is set")
         if report.exercises:
             _check_athlete_facing(session, report, catalogue, strength_baseline)
+            _check_stations(report, station_order)
 
     return report
 
@@ -946,6 +1182,110 @@ def _iter_exercise_specs(items) -> list[tuple[str, CircuitExercise]]:
         else:
             out.append((f"exercises[{i}]", item))
     return out
+
+
+def _exercise_label(spec: CircuitExercise) -> str:
+    return f"{spec.name} {spec.weight_kg:g} kg" if spec.weight_kg is not None else spec.name
+
+
+def station_walk(items) -> dict:
+    """The stations a strength session walks through, from the stated labels.
+
+    {'blocks': [{'station', 'paths', 'exercises': ['NAME 10 kg', ...]}, ...]
+    — consecutive movements at one station form a block; a movement with no
+    station is transparent (it neither starts nor ends a block) and is listed
+    under 'unstated'; 'revisits': [{'path', 'station', 'between'}] — a block
+    at a station an earlier block already used, 'between' the stations since
+    it was left; 'circuits_spanning': [{'path', 'stations'}] — a circuit whose
+    members state different stations (a circuit's own station covers the
+    members that state none); 'stated': how many movements state one.
+    Pure: no catalogue, no clock.
+    """
+    blocks: list[dict] = []
+    revisits: list[dict] = []
+    spanning: list[dict] = []
+    unstated: list[str] = []
+    stated = 0
+
+    def visit(path: str, station: str | None, label: str) -> None:
+        nonlocal stated
+        if station is None:
+            unstated.append(path)
+            return
+        stated += 1
+        if blocks and blocks[-1]['station'] == station:
+            blocks[-1]['paths'].append(path)
+            blocks[-1]['exercises'].append(label)
+            return
+        earlier = [b['station'] for b in blocks]
+        if station in earlier:
+            last = len(earlier) - 1 - earlier[::-1].index(station)
+            revisits.append({'path': path, 'station': station, 'between': earlier[last + 1:]})
+        blocks.append({'station': station, 'paths': [path], 'exercises': [label]})
+
+    for i, item in enumerate(items or []):
+        path = f"exercises[{i}]"
+        if isinstance(item, Circuit):
+            members = [(f"{path}.exercises[{j}]", ex, ex.station or item.station)
+                       for j, ex in enumerate(item.exercises)]
+            stations: list[str] = []
+            for _p, _ex, st in members:
+                if st is not None and st not in stations:
+                    stations.append(st)
+            if len(stations) > 1:
+                spanning.append({'path': path, 'stations': stations})
+            for p, ex, st in members:
+                visit(p, st, _exercise_label(ex))
+        else:
+            visit(path, item.station, _exercise_label(item))
+    return {'blocks': blocks, 'revisits': revisits, 'circuits_spanning': spanning,
+            'unstated': unstated, 'stated': stated}
+
+
+def station_walk_line(walk: dict) -> str:
+    """'incline bench → cable → incline bench (again) → mat' — the line the
+    preview prints ahead of the steps; unstated movements are counted."""
+    seen: set[str] = set()
+    parts = []
+    for block in walk.get('blocks') or []:
+        station = block['station']
+        parts.append(f"{station} (again)" if station in seen else station)
+        seen.add(station)
+    line = ' → '.join(parts)
+    missing = len(walk.get('unstated') or [])
+    if missing:
+        line += f"; {missing} movement{'s' if missing != 1 else ''} with no station"
+    return line
+
+
+def _check_stations(report: AuthoringReport, level: str) -> None:
+    """The station walk and its problems, at the athlete's level: 'error'
+    rejects the save, 'warn' reports, 'off' only records the walk."""
+    walk = station_walk(report.exercises)
+    report.station_walk = walk
+    level = str(level or '').strip().lower()
+    if level not in STATION_ORDER_LEVELS:
+        level = STATION_ORDER_DEFAULT
+    if level == 'off':
+        return
+    say = report.error if level == 'error' else report.warn
+    for hit in walk['revisits']:
+        between = ', '.join(f"'{s}'" for s in hit['between'])
+        say(hit['path'], (f"returns to '{hit['station']}' after {between}: finish a station and the "
+                          "weights carried there before moving. Reorder the session, or state the "
+                          "station this movement is really done at"))
+    for hit in walk['circuits_spanning']:
+        stations = ', '.join(f"'{s}'" for s in hit['stations'])
+        say(hit['path'], (f"a circuit whose rounds change spot ({stations}): every round walks between "
+                          "them. Write the movements as straight sets at their stations, or keep a "
+                          "circuit to one station or to equipment that travels (band, mat)"))
+    if walk['unstated'] and len(_iter_exercise_specs(report.exercises)) >= 2:
+        shown = ', '.join(walk['unstated'][:6])
+        if len(walk['unstated']) > 6:
+            shown += f" and {len(walk['unstated']) - 6} more"
+        say('exercises', (f"no station on {shown}: the station walk cannot be checked there. State the "
+                          "spot on every movement ('incline bench', 'cable', 'mat'; one label per spot, "
+                          "reused verbatim; a circuit's station covers its members)"))
 
 
 def _baseline_load_for(category: str | None, baseline: dict | None) -> tuple[str, float] | None:
@@ -1117,30 +1457,32 @@ def contract_document(sport: str | None = None) -> str:
              "this contract is an error that names the allowed keys. Call preview_workout(session) "
              "to see the rendering before saving with update_weekly_plan.\n",
              "## Intensity vocabulary (all sports)\n",
-             "| word | HR zone | power zone (indoor rides) | pace zone (runs) |", "|---|---|---|---|"]
+             "| word | shape | HR zone | power zone (indoor rides) | pace zone (runs) |", "|---|---|---|---|---|"]
     for word, (hr, pw, pace) in INTENSITY_ZONES.items():
-        parts.append(f"| {word} | {hr} | {pw} | {pace} |")
+        shape = 'ceiling' if word in CEILING_INTENSITIES else 'band'
+        parts.append(f"| {word} | {shape} | {hr} | {pw} | {pace} |")
     parts.append("\nAliases: z1-z6, zone1-zone5, endurance/aerobic (easy), hard (threshold), "
                  "vo2max (vo2), anaerobic/sprint (max_effort); 'none' on a phase means no target "
                  "even when the session has an intensity. Any other word is an error inside "
                  "a phase and a warning at session level. A running step resolves intensity to a "
                  "pace zone when threshold pace is set, else HR; an indoor ride to a power zone "
                  "when power zones are set, else HR; an outdoor ride to HR.\n")
+    parts.append(targets_are_alerts_text() + "\n")
     if sport in (None, 'running', 'cycling'):
         parts += ["## Running and cycling: `structure`\n",
                   "A list of phases and repeat blocks. Each phase: exactly one end condition "
                   "(duration_secs, duration_mins or distance_m; a number, or \"open\" for a lap-button "
                   "step) and at most one numeric target (intensity may accompany it as a label). Repeat: {'phase': 'repeat', 'iterations': N, "
                   "'steps': [...]} (nests). Cycling steps take power_watts, power_pct (list, or one "
-                  "number for a ±5 % band of the athlete's FTP), hr_target, cadence or intensity; running "
-                  "steps take pace_sec_per_km, pace (m/s), hr_target, cadence or intensity. A session "
+                  "number for a ±5 % band of the athlete's FTP), hr_target, hr_max, cadence or intensity; running "
+                  "steps take pace_sec_per_km, pace (m/s), hr_target, hr_max, cadence or intensity. A session "
                   "without structure renders from duration_mins and intensity: a plain outdoor ride is "
                   "ONE block; " + plain_split_text() + " — "
                   "state warmup_mins / cooldown_mins on the session to replace those splits. A "
                   "description that reads like intervals without a structure list is a warning: the "
                   "watch shows one block. On a 'discretion' day the main block is untargeted and the "
                   "session's constraints are written on it.\n",
-                  "Plausibility (errors outside): hr_target 30-230 bpm, pace_sec_per_km 120-1200, "
+                  "Plausibility (errors outside): hr_target and hr_max 30-230 bpm, pace_sec_per_km 120-1200, "
                   "pace 0.5-10 m/s, power_watts 0-2000, power_pct 20-200 (a percentage, not a "
                   "fraction), cadence 20-250, distance_m >= 20. An ftp_test takes an optional "
                   "'protocol' (phases with duration_mins and cadence_min/max) and ignores structure.\n",
@@ -1151,12 +1493,26 @@ def contract_document(sport: str | None = None) -> str:
                   "of reps or duration_secs; optional category (required when the name is not in the "
                   "catalogue), each_side, weight_kg (only an explicit value is sent), rest_secs (a timed "
                   "rest step when given, lap button otherwise), notes (the cue on the watch). Circuit: "
-                  "{'rounds': N, 'exercises': [...], 'rest_secs': S}. Session-level warmup_mins adds a "
+                  "{'rounds': N, 'exercises': [...], 'rest_secs': S}. A hold is timed: a name ending in "
+                  "PLANK, HOLD, HANG or CARRY (or carrying L_SIT / WALL_SIT) takes duration_secs, and a rep "
+                  "count on it is an error (reps \"open\" is allowed: the lap button ends the hold). "
+                  "each_side renders a Left step and a Right step per set or round, each with the stated "
+                  "reps or time, so the estimate counts both. Session-level warmup_mins adds a "
                   "timed warm-up block; none is inserted otherwise. Sets and reps written in the "
                   "description without an exercises list are an error. Garmin keeps the exercise name "
-                  "only for catalogue entries whose category matches; otherwise the watch shows the "
-                  "category and the description (readable name + cue). When the plan gives no notes, "
-                  "the researched exercise-library cue is used and flagged as such.\n",
+                  "only for a catalogue entry filed under the step's category (a name without a stated "
+                  "category is sent under its primary catalogue category); otherwise the watch shows the "
+                  "category and the description (readable name + cue), cut at about 50 characters. A "
+                  "WEIGHTED_* key whose bodyweight counterpart exists is an error without weight_kg: write "
+                  "the counterpart (SIDE_PLANK, not WEIGHTED_SIDE_PLANK) or the load. When the plan gives "
+                  "no notes, the researched exercise-library cue is used and flagged as such. station: the "
+                  "spot in the gym where the movement is done ('incline bench', 'cable', 'mat'; one label "
+                  "per spot, reused verbatim; a circuit's station covers the members that state none). It "
+                  "is not sent to the watch: the preview prints the station walk (a 'Stations:' line ahead "
+                  "of the steps) and warns when the session returns to a station it left, when a circuit's "
+                  "rounds change spot, and when stations are unstated. methodology strength.station_order "
+                  "(off | warn | error, default warn; update_methodology) makes those save-time errors, "
+                  "or switches the check off.\n",
                   f"Allowed categories: {', '.join(sorted(VALID_WORKOUT_CATEGORIES))}\n",
                   "```json\n" + json.dumps(_schema(Exercise), indent=1) + "\n```\n",
                   "```json\n" + json.dumps(_schema(Circuit), indent=1) + "\n```\n"]

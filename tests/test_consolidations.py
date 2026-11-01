@@ -45,6 +45,12 @@ from coach.tools.race_tools import (
 
 from conftest import SAMPLE_PR_DATA, SAMPLE_RUNNING_ACTIVITY
 
+
+def _race_page(url='https://example.com/gravel-classic'):
+    """The untrusted page shape fetch_untrusted_page returns (text defined below)."""
+    return {'source_url': url, 'final_url': url, 'fetched_at': '2026-01-01T00:00:00+00:00',
+            'retrieved_text': RACE_PAGE_TEXT, 'truncated': False}
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 TODAY = date.today()
@@ -185,9 +191,9 @@ class TestRacesParity:
         assert 'error' in result
         assert 'name' in result['error']
 
-    @patch('coach.tools.race_tools.fetch_page_text')
+    @patch('coach.tools.race_tools.fetch_untrusted_page')
     def test_research_matches_old_impl(self, mock_fetch, race_env):
-        mock_fetch.return_value = RACE_PAGE_TEXT
+        mock_fetch.return_value = _race_page()
 
         via_dispatcher = races(action='research',
                                url='https://example.com/gravel-classic')
@@ -197,9 +203,9 @@ class TestRacesParity:
         assert via_dispatcher['detected_info']['distance_km'] == 120
         assert via_dispatcher['detected_info']['surface'] == 'gravel'
 
-    @patch('coach.tools.race_tools.fetch_page_text')
+    @patch('coach.tools.race_tools.fetch_untrusted_page')
     def test_research_resolves_url_from_race_name(self, mock_fetch, race_env):
-        mock_fetch.return_value = RACE_PAGE_TEXT
+        mock_fetch.return_value = _race_page()
         result = races(action='research', name='Gravel Classic')
         assert result['url'] == 'https://example.com/gravel-classic'
 

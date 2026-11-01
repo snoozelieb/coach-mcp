@@ -19,6 +19,7 @@ from ..garmin_client import (
     GarminAuthRequiredError,
 )
 from ..parsers import parse_activities, build_current_time_context, device_utc_offset_minutes
+from .. import weather
 from ..session_state import mark_snapshot_taken
 from ..claims import (verify_claims, unverified_claims_view, claim_anomaly,
                       pending_claims)
@@ -176,6 +177,23 @@ def _cached_garmin_fetch(key: tuple, fetch, force_refresh: bool = False):
         _garmin_fetch_cache.pop(stale_key, None)
     _garmin_fetch_cache[full_key] = (time.monotonic(), value)
     return value
+
+
+def _cached_garmin_fetch_meta(key: tuple, fetch, force_refresh: bool = False) -> tuple[object, dict]:
+    """_cached_garmin_fetch plus {'cache_hit': bool, 'age_secs': int}.
+
+    The snapshot reports a cache hit under data_quality.activities_cache so
+    a coach who hears "the watch has just synced" knows the payload may
+    predate the sync and passes force_refresh=True (activities used to go
+    missing until a manual refresh_fitness_history, which never caches).
+    """
+    full_key = (str(DATA_DIR),) + tuple(key)
+    now = time.monotonic()
+    if not force_refresh:
+        hit = _garmin_fetch_cache.get(full_key)
+        if hit is not None and (now - hit[0]) < GARMIN_CACHE_TTL_SECS:
+            return hit[1], {'cache_hit': True, 'age_secs': int(now - hit[0])}
+    return _cached_garmin_fetch(key, fetch, force_refresh=True), {'cache_hit': False, 'age_secs': 0}
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +953,36 @@ def _summarize_plan_adherence_by_pillar(plan: dict, activities: list,
     return result
 
 
+def _week_view_start(today: date, plan_start: date | None) -> date:
+    """First day the snapshot's week views need from Garmin: the earliest of
+    the current plan's week_start (planned vs actual), this calendar week's
+    Monday (activities_this_week) and six days ago (week_grid is a rolling
+    seven days ending today). Fetching from Monday alone showed the previous
+    Wednesday-to-Sunday as REST with source 'garmin' on a Monday while their
+    load sat in daily_loads (the 2026-10 padel-days-as-rest bug)."""
+    monday = today - timedelta(days=today.weekday())
+    start = min(monday, today - timedelta(days=6))
+    if plan_start is not None:
+        start = min(start, plan_start)
+    return start
+
+
+def _exercise_catalogue_format() -> str | None:
+    """'current' (entries carry every Garmin category in `categories`),
+    'legacy' (one category per name, the pre-2026-10 scripts/fetch_exercises.py
+    output that filed SIDE_PLANK under SUSPENSION) or None without a cache."""
+    try:
+        if not (DATA_DIR / 'exercises.json').exists():
+            return None
+        catalogue = (load_json_file('exercises.json') or {}).get('exercises') or {}  # locked read
+    except Exception:
+        return None
+    if not catalogue:
+        return None
+    current = any(isinstance(e, dict) and 'categories' in e for e in catalogue.values())
+    return 'current' if current else 'legacy'
+
+
 def _build_week_grid(activities: list, today: date,
                      daily_loads: dict | None = None, *,
                      source: str = 'garmin') -> dict:
@@ -1298,6 +1346,9 @@ def _assemble_snapshot_payload(full: dict, include: set) -> dict:
         # Demonstrated per-sport capacity — CORE by design: the grounding
         # data for VERIFY BEFORE PRESCRIBING must be impossible to miss.
         'capacity': full.get('capacity'),
+        # Wind, rain and daylight for the coming days (profile location) —
+        # CORE so a long outdoor session is never placed blind
+        'weather_outlook': full.get('weather_outlook'),
         'injuries': injuries,
         'coaching_memory': memory,
         'sleep_gate': full.get('sleep_gate'),
@@ -1516,7 +1567,7 @@ def get_compliance_report(days: int = 7) -> str:
     try:
         days = max(1, min(int(days), 365))
         today = date.today()
-        start_date = today - timedelta(days=days)
+        start_date = today - timedelta(days=days - 1)  # `days` calendar days ending today
 
         # Get activities for the period
         raw_activities = garmin_api_call(
@@ -1529,6 +1580,12 @@ def get_compliance_report(days: int = 7) -> str:
 
         # Check compliance against pillars, targets scaled to the window
         compliance = check_weekly_compliance(activities, window_days=days)
+        compliance['window'] = {
+            **(compliance.get('window') or {}),
+            'start': start_date.isoformat(), 'end': today.isoformat(),
+            'basis': (f'{days} days against {compliance["window"]["weeks"]:g} weeks of pillar targets '
+                      '(required = targets_per_week x weeks)'),
+        }
         if days > 7:
             # Weekly commitments week by week: a skipped week or a spike week
             # must be visible, not averaged away.
@@ -1899,13 +1956,19 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         auth_error = None
         activities_error = None
 
-        # 0. Activity ingestion. ALWAYS runs, regardless of sections — this
-        # write side effect keeps fitness_history (and therefore CTL/ACWR)
-        # alive. Re-ingests a trailing INGEST_TRAILING_DAYS window
-        # (idempotent — update_fitness_history overwrites by date, so a
-        # late-syncing watch still lands), extending back to the last
-        # actual ingest when ingestion has fallen behind.
+        # 0. Garmin activities: ONE fetch per snapshot feeds both the
+        # ingestion side effect and the week views. It starts at the earliest
+        # of the ingestion window (INGEST_TRAILING_DAYS, extended back to the
+        # last actual ingest), the current plan's week_start, this calendar
+        # week's Monday and six days ago (_week_view_start). Two separately
+        # cached fetches used to feed these: the week fetch started at Monday
+        # (padel days before it showed REST with source 'garmin') and a
+        # pre-sync payload cached under one key could outlive the other.
         #
+        # Ingestion ALWAYS runs, regardless of sections — this write side
+        # effect keeps fitness_history (and therefore CTL/ACWR) alive. It
+        # re-ingests the trailing window (idempotent — update_fitness_history
+        # overwrites by date, so a late-syncing watch still lands).
         # Staleness is tracked via the dedicated last_activity_ingest_date:
         # sleep/readiness persistence bumps last_updated on every snapshot,
         # which previously defeated this check and silently froze ingestion.
@@ -1925,24 +1988,51 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         else:
             ingest_start = today - timedelta(days=90)
 
+        # 1. Current Weekly Plan (its week_start widens the week views).
+        # Calendar week always starts Monday (for compliance checking).
+        current_plan = get_current_plan()
+        monday_this_week = today - timedelta(days=today.weekday())
+        plan_start = None
+        if current_plan and current_plan.get('week_start'):
+            try:
+                plan_start = date.fromisoformat(current_plan['week_start'])
+            except (ValueError, TypeError):
+                plan_start = None
+        week_view_start = _week_view_start(today, plan_start)
+        fetch_start = min(ingest_start, week_view_start)
+
+        fetched_activities: list | None = None
+        fetch_meta: dict = {}
         try:
-            raw_refresh = _cached_garmin_fetch(
-                ('activities_ingest', ingest_start.isoformat(), today.isoformat()),
+            raw_activities, fetch_meta = _cached_garmin_fetch_meta(
+                ('activities', fetch_start.isoformat(), today.isoformat()),
                 lambda: garmin_api_call(
                     lambda c: c.get_activities_by_date(
-                        ingest_start.isoformat(), today.isoformat())
+                        fetch_start.isoformat(), today.isoformat())
                 ),
                 force_refresh,
             )
-            from ..parsers import parse_activities as _pa
-            refreshed_activities = _pa(raw_refresh or [])
-            history = update_fitness_history(refreshed_activities, today,
-                                             window_start=ingest_start)
+            fetched_activities = parse_activities(raw_activities or [])
+            # The device clock decides Garmin's calendar day: expose it next
+            # to the server date so a mismatch (travel, a session after the
+            # server's midnight) is visible instead of becoming a false
+            # "Garmin doesn't show that".
+            current_time_context = build_current_time_context(
+                now, garmin_utc_offset_minutes=device_utc_offset_minutes(raw_activities))
         except GarminAuthRequiredError as e:
             auth_error = str(e)
-            logger.warning("Activity ingestion blocked: Garmin auth required")
-        except Exception:
-            logger.warning("Activity ingestion failed", exc_info=True)
+            activities_error = 'auth_required'
+            logger.warning("Activities fetch blocked: Garmin auth required")
+        except Exception as e:
+            logger.warning("Activities fetch failed", exc_info=True)
+            activities_error = str(e)
+
+        if fetched_activities is not None:
+            try:
+                history = update_fitness_history(fetched_activities, today,
+                                                 window_start=fetch_start)
+            except Exception:
+                logger.warning("Activity ingestion failed", exc_info=True)
 
         daily_loads = history.get('daily_loads', {})
 
@@ -1954,54 +2044,18 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             logger.warning("Claim verification failed", exc_info=True)
         await ctx.report_progress(1, 10, "Fitness history loaded")
 
-        # 1. Current Weekly Plan
-        current_plan = get_current_plan()
-
-        # 2. Activities this week (actual)
-        # Calendar week always starts Monday (for compliance checking)
-        monday_this_week = today - timedelta(days=today.weekday())
-
-        # Plan may start on a different date (e.g. mid-week)
-        if current_plan and current_plan.get('week_start'):
-            plan_start = date.fromisoformat(current_plan['week_start'])
-            # Fetch from whichever is earlier: plan start or this Monday
-            # This ensures we have activities for both:
-            # - Compliance checking (needs full calendar week)
-            # - Planned vs actual (needs plan period)
-            fetch_start = min(plan_start, monday_this_week)
+        # 2. Activities for the week views: the plan period (planned vs
+        # actual), the calendar week (compliance, intensity) and the rolling
+        # seven days of week_grid. A failed fetch degrades to locally
+        # persisted history (so week_grid can't falsely show REST days) +
+        # a data_quality flag, instead of aborting the whole snapshot.
+        week_view_start_iso = week_view_start.isoformat()
+        if fetched_activities is not None:
+            all_fetched_activities = [a for a in fetched_activities
+                                      if a.get('date') and a['date'] >= week_view_start_iso]
         else:
-            plan_start = None
-            fetch_start = monday_this_week
-
-        # Guarded: a failed fetch degrades to locally persisted history (so
-        # week_grid can't falsely show REST days) + a data_quality flag,
-        # instead of aborting the whole snapshot.
-        try:
-            raw_activities = _cached_garmin_fetch(
-                ('activities_range', fetch_start.isoformat(), today.isoformat()),
-                lambda: garmin_api_call(
-                    lambda c: c.get_activities_by_date(
-                        fetch_start.isoformat(), today.isoformat())
-                ),
-                force_refresh,
-            )
-            all_fetched_activities = parse_activities(raw_activities)
-            # The device clock decides Garmin's calendar day: expose it next
-            # to the server date so a mismatch (travel, a session after the
-            # server's midnight) is visible instead of becoming a false
-            # "Garmin doesn't show that".
-            current_time_context = build_current_time_context(
-                now, garmin_utc_offset_minutes=device_utc_offset_minutes(raw_activities))
-        except GarminAuthRequiredError as e:
-            auth_error = auth_error or str(e)
-            activities_error = 'auth_required'
             all_fetched_activities = _activities_from_history(
-                daily_loads, fetch_start.isoformat(), today.isoformat())
-        except Exception as e:
-            logger.warning("Activities fetch failed", exc_info=True)
-            activities_error = str(e)
-            all_fetched_activities = _activities_from_history(
-                daily_loads, fetch_start.isoformat(), today.isoformat())
+                daily_loads, week_view_start_iso, today.isoformat())
         await ctx.report_progress(3, 10, "Activities fetched")
 
         # Calendar week activities — for compliance, intensity distribution, etc.
@@ -2210,8 +2264,20 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
         except Exception:
             logger.warning("Training program summary failed", exc_info=True)
 
-        # 5. Compliance status
-        compliance = check_weekly_compliance(activities_this_week)
+        # 5. Compliance status: the trailing seven days against one week of
+        # targets — the frame week_grid uses and get_compliance_report(7)
+        # defaults to. The calendar week to date against a full week of
+        # targets read as a volume deficit every Monday to Thursday.
+        compliance_start = today - timedelta(days=6)
+        compliance = check_weekly_compliance([
+            a for a in all_fetched_activities
+            if a.get('date') and a['date'] >= compliance_start.isoformat()
+        ])
+        compliance['window'] = {
+            **(compliance.get('window') or {}),
+            'start': compliance_start.isoformat(), 'end': today.isoformat(),
+            'basis': 'trailing 7 days (the week_grid window) against one week of pillar targets',
+        }
 
         # 5b. Compliance diagnostics (4-week pattern from daily_loads)
         # Load athlete early — needed here and in section 8. load_athlete()
@@ -2479,6 +2545,11 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                     'load_increase_pcts': [10, 15, 25],
                 }
 
+        # Wind, gusts, rain and daylight for the planning horizon at the
+        # profile location — facts for placing outdoor work; never fails
+        # the snapshot (no location -> a hint, fetch failure -> unavailable)
+        weather_block = weather.snapshot_block(today, now)
+
         snapshot = {
             'current_time_context': current_time_context,
             'snapshot_date': today.isoformat(),
@@ -2518,6 +2589,8 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
             'acwr_warnings': acwr_warnings,
 
             'capacity': capacity,
+
+            'weather_outlook': weather_block,
 
             'training_program': training_program_summary,
 
@@ -2585,6 +2658,16 @@ async def get_coaching_snapshot(ctx: Context, sections: list[str] | None = None,
                 f'{activities_error} (week view rebuilt from locally '
                 f'persisted fitness_history)'
             )
+        if fetch_meta.get('cache_hit'):
+            data_quality['activities_cache'] = {
+                'age_secs': fetch_meta.get('age_secs'),
+                'note': ('Garmin activities came from the fetch cache, not from Garmin; '
+                         'pass force_refresh=True when the athlete says the watch synced since'),
+            }
+        if _exercise_catalogue_format() == 'legacy':
+            data_quality['exercise_catalogue'] = (
+                'one-category-per-name cache: run scripts/fetch_exercises.py to refresh it '
+                '(every Garmin category per name, bodyweight flags, counterparts)')
         if sleep_fetch_error:
             data_quality['sleep_fetch_error'] = sleep_fetch_error
         if auth_error:

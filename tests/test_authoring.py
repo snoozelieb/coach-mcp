@@ -31,7 +31,12 @@ TOMORROW = (TODAY + timedelta(days=1)).isoformat()
 
 CATALOGUE = {
     "GOBLET_SQUAT": {"category": "SQUAT"},
-    "PLANK": {"category": "SUSPENSION"},
+    # Garmin files PLANK and SIDE_PLANK under several categories (schema-2 cache)
+    "PLANK": {"category": "PLANK", "categories": ["BANDED_EXERCISES", "PLANK", "SUSPENSION"],
+              "is_bodyweight": True, "counterpart": "WEIGHTED_PLANK"},
+    "SIDE_PLANK": {"category": "PLANK", "categories": ["PLANK", "SUSPENSION"],
+                   "is_bodyweight": True, "counterpart": "WEIGHTED_SIDE_PLANK"},
+    "WEIGHTED_SIDE_PLANK": {"category": "PLANK", "categories": ["PLANK"], "counterpart": "SIDE_PLANK"},
     "ONE_ARM_BENT_OVER_ROW": {"category": "ROW"},
     "SIDE_LUNGE_JUMP_OFF": {"category": "LUNGE"},
     "BAND_PULL_APART": {"category": "CUSTOM", "custom": True},
@@ -101,7 +106,7 @@ class TestStrengthContract:
         messages = errors_of({"type": "strength", "exercises": [
             {"name": "GOBLET_SQUAT", "sets": 3, "reps": 10, "weight": 20}]})
         assert messages == ["unknown key 'weight'; allowed keys: name, category, reps, duration_secs, "
-                            "each_side, weight_kg, notes, sets, rest_secs"]
+                            "each_side, weight_kg, notes, station, sets, rest_secs"]
 
     def test_muscle_group_category_suggests_garmin_categories(self):
         (message,) = errors_of({"type": "strength", "exercises": [
@@ -152,28 +157,44 @@ class TestStrengthContract:
             {"name": "PLANK", "category": "CORE", "sets": 3, "duration_secs": 30}]})
         assert "SUSPENSION" in message and "strip" in message
 
-    def test_catalogue_corrections_apply_to_exact_or_misfiled_names_only(self):
-        """Red-team S3: a substring correction used to override 31 valid cached
-        categories silently (SIDE_LYING_LEG_RAISE: HIP_STABILITY -> LEG_RAISE)."""
+    def test_primary_category_comes_from_the_catalogue_not_a_correction_table(self):
+        """The cache carries every category Garmin files a name under; the
+        primary one is sent when the plan states none (SIDE_PLANK -> PLANK, not
+        the SUSPENSION cross-filing). A one-category entry is trusted as is."""
         catalogue = {"SIDE_LYING_LEG_RAISE": {"category": "HIP_STABILITY"},
-                     "SIDE_PLANK": {"category": "SUSPENSION"},
+                     "SIDE_PLANK": {"category": "PLANK", "categories": ["PLANK", "SUSPENSION"]},
                      "LEG_RAISE": {"category": "LEG_RAISE"}}
         report = validate_session({"type": "strength", "warmup_mins": 5, "exercises": [
             {"name": "SIDE_LYING_LEG_RAISE", "sets": 2, "reps": 12},
             {"name": "SIDE_PLANK", "sets": 2, "duration_secs": 30},
             {"name": "LEG_RAISE", "sets": 2, "reps": 12}]}, catalogue)
-        assert report.ok and report.warnings == []
+        assert report.ok
+        assert [w for w in report.warnings if 'no station' not in w['message']] == []   # only the station walk is unstated
         resolved = [authoring.resolve_exercise_category(ex, catalogue)[:2] for ex in report.exercises]
-        assert resolved == [("HIP_STABILITY", "SIDE_LYING_LEG_RAISE"),  # cache trusted
-                            ("PLANK", "SIDE_PLANK"),                    # SUSPENSION mis-filing corrected
+        assert resolved == [("HIP_STABILITY", "SIDE_LYING_LEG_RAISE"),
+                            ("PLANK", "SIDE_PLANK"),
                             ("LEG_RAISE", "LEG_RAISE")]
 
-    def test_catalogue_correction_keeps_the_plank_name(self):
-        """The cached catalogue lists PLANK under SUSPENSION; Garmin also has
-        PLANK/PLANK. Stating PLANK keeps the name, no warning."""
-        report = validate_session({"type": "strength", "exercises": [
-            {"name": "PLANK", "category": "PLANK", "sets": 3, "duration_secs": 30}]}, CATALOGUE)
-        assert report.ok and report.warnings == []
+    def test_any_listed_category_keeps_the_name(self):
+        """PLANK is filed under PLANK and SUSPENSION: stating either keeps the
+        name; a category Garmin does not list it under strips it."""
+        for category in ("PLANK", "SUSPENSION"):
+            report = validate_session({"type": "strength", "exercises": [
+                {"name": "PLANK", "category": category, "sets": 3, "duration_secs": 30}]}, CATALOGUE)
+            assert report.ok and report.warnings == [], category
+        (message,) = warnings_of({"type": "strength", "exercises": [
+            {"name": "PLANK", "category": "CORE", "sets": 3, "duration_secs": 30}]})
+        assert "PLANK, BANDED_EXERCISES, SUSPENSION" in message and "strip" in message
+
+    def test_legacy_one_category_entry_is_sent_as_cached(self):
+        """A pre-2026-10 cache (one category per name) has no correction table
+        any more: the cached category is sent and the name kept; the snapshot
+        flags the cache format under data_quality.exercise_catalogue."""
+        spec = authoring.CircuitExercise(name="PLANK", duration_secs=30)
+        assert authoring.resolve_exercise_category(spec, {"PLANK": {"category": "SUSPENSION"}}) == \
+            ("SUSPENSION", "PLANK", None)
+        assert "CATALOGUE_CATEGORY_CORRECTIONS" not in dir(authoring)
+        assert "MISFILED_CATEGORY" not in dir(authoring)
 
     def test_skip_warmup_is_retired(self):
         report = validate_session({"type": "strength", "skip_warmup": True, "warmup_mins": 5,
@@ -445,7 +466,7 @@ def data_env(data_dir, monkeypatch):
                                   'z3_tempo': [140, 155], 'z4_threshold': [156, 171], 'z5_max': [172, 188]},
                      'power_zones': {'z1_recovery': [0, 118], 'z2_endurance': [120, 162],
                                      'z4_threshold': [196, 226], 'z5_vo2max': [228, 259]},
-                     'ftp': 216, 'threshold_pace_sec_per_km': 330},
+                     'ftp': 216, 'threshold_pace_sec_per_km': 330, 'resting_hr': 50, 'max_hr': 188},
         'injury_history': [], 'life_constraints': {}, 'preferences': {},
     }), encoding='utf-8')
     (data_dir / 'exercises.json').write_text(json.dumps({'exercises': CATALOGUE}), encoding='utf-8')
@@ -473,14 +494,16 @@ class TestPreviewWorkoutTool:
             '1. [Warm Up] 5:00',
             '2. Rest lap button',
             '3. 2 x',
-            '   3.1. SIDE_LUNGE_JUMP_OFF 8 reps — "each side: No jump. Push off the left foot"',
-            '   3.2. Rest lap button',
+            '   3.1. SIDE_LUNGE_JUMP_OFF 8 reps — "Left: No jump. Push off the left foot"',
+            '   3.2. SIDE_LUNGE_JUMP_OFF 8 reps — "Right: No jump. Push off the left foot"',
+            '   3.3. Rest lap button',
             '4. 3 x',
             '   4.1. ONE_ARM_BENT_OVER_ROW 10 reps',   # no weight invented
             '   4.2. Rest 1:00',
             '5. 2 x',
-            '   5.1. [Banded Exercises] 20 reps — "Banded Ankle Eversion each side"',
-            '   5.2. Rest lap button',
+            '   5.1. [Banded Exercises] 20 reps — "Banded Ankle Eversion left"',
+            '   5.2. [Banded Exercises] 20 reps — "Banded Ankle Eversion right"',
+            '   5.3. Rest lap button',
         ]
         warnings = {w['field']: w['message'] for w in result['warnings']}
         assert 'custom catalogue entry' in warnings['exercises[2]']
@@ -526,7 +549,7 @@ class TestPreviewWorkoutTool:
                 {'phase': 'interval', 'distance_m': 1000, 'pace_sec_per_km': [330, 315]},
                 {'phase': 'interval', 'duration_mins': 3, 'intensity': 'vo2'}]})
         assert result['ok']
-        assert result['steps'][0].startswith('1. Warm-up 10:00 @ pace')  # inherits the session's easy
+        assert result['steps'][0] == '1. Warm-up 10:00'  # a warm-up the plan left untargeted stays untargeted
         assert result['steps'][1] == '2. Interval 1 km @ pace 5:30/km to 5:15/km'
         assert result['steps'][2] == '3. Interval 3:00 @ pace 5:13/km to 4:40/km'  # vo2 pace zone, not easy
 
@@ -560,9 +583,9 @@ class TestPreviewWorkoutTool:
     def test_plain_run_honours_explicit_warmup_and_cooldown(self, data_env):
         result = preview_workout({'type': 'running', 'duration_mins': 50, 'intensity': 'easy',
                                   'warmup_mins': 12, 'cooldown_mins': 8})
-        assert result['steps'][0].startswith('1. Warm-up 12:00 @ pace')
+        assert result['steps'][0] == '1. Warm-up 12:00'  # the plan stated no target for it
         assert result['steps'][1].startswith('2. Interval 30:00 @ pace')
-        assert result['steps'][2].startswith('3. Cool-down 8:00 @ pace')
+        assert result['steps'][2] == '3. Cool-down 8:00'
 
     def test_unknown_type_and_bad_input(self, data_env):
         assert 'no Garmin workout family' in preview_workout({'type': 'juggling', 'duration_mins': 10})['errors'][0]['message']

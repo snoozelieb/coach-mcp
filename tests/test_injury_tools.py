@@ -358,52 +358,58 @@ class TestExtractClinicalInfo:
 # _fetch_injury_research integration tests
 # ---------------------------------------------------------------------------
 
+def _page(text, url):
+    """The shape fetch_untrusted_page returns; final_url == url unless redirected."""
+    return {'source_url': url, 'final_url': url, 'fetched_at': '2026-01-01T00:00:00+00:00',
+            'retrieved_text': text, 'truncated': False}
+
+
 class TestFetchInjuryResearch:
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_tries_physiopedia_before_wikipedia(self, mock_fetch):
         """Physio-pedia is tried first; Wikipedia is fallback."""
         calls = []
         def track_calls(url):
             calls.append(url)
             if "physio-pedia.com" in url:
-                return (CLINICAL_CONTENT, url)
-            return ("irrelevant", url)
+                return _page(CLINICAL_CONTENT, url)
+            return _page("irrelevant", url)
 
         mock_fetch.side_effect = track_calls
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result["source"] == "physio-pedia"
         assert "physio-pedia.com" in calls[0]
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_falls_back_to_wikipedia(self, mock_fetch):
         """When physio-pedia fails, Wikipedia is tried."""
         def fallback(url):
             if "physio-pedia.com" in url:
                 raise Exception("404")
-            return (CLINICAL_CONTENT, url)
+            return _page(CLINICAL_CONTENT, url)
 
         mock_fetch.side_effect = fallback
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result["source"] == "wikipedia"
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_irrelevant_content_skipped(self, mock_fetch):
         """Content that fails relevance check is skipped."""
-        mock_fetch.return_value = ("short", "https://www.physio-pedia.com/Shin_Splints")
+        mock_fetch.return_value = _page("short", "https://www.physio-pedia.com/Shin_Splints")
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result == {}
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_complete_failure_returns_empty_dict(self, mock_fetch):
         """When all sources fail, returns empty dict."""
         mock_fetch.side_effect = Exception("Network error")
         result = _fetch_injury_research("shin", {"location_specific": ""})
         assert result == {}
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_redirect_rejected(self, mock_fetch):
         """Content from a significant redirect is rejected."""
-        mock_fetch.return_value = (
+        mock_fetch.return_value = _page(
             CLINICAL_CONTENT,
             "https://www.physio-pedia.com/Search?query=shin"  # Redirected!
         )
@@ -480,37 +486,37 @@ class TestSaveDiagnosisSchema:
 # ---------------------------------------------------------------------------
 
 class TestResearchInjury:
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_tries_physiopedia_before_wikipedia(self, mock_fetch):
         # Return relevant content on first call (physio-pedia)
-        mock_fetch.return_value = (CLINICAL_CONTENT, "https://www.physio-pedia.com/Shin_Splints")
+        mock_fetch.return_value = _page(CLINICAL_CONTENT, "https://www.physio-pedia.com/Shin_Splints")
         result = json.loads(research_injury("shin splints"))
 
         # Should have used physio-pedia URL
         assert any("physio-pedia" in s for s in result["sources"])
         assert "researched_info" in result
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_no_hardcoded_severity_guidance(self, mock_fetch):
-        mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
+        mock_fetch.side_effect = lambda url: _page(CLINICAL_CONTENT, url)
         result = json.loads(research_injury("shin splints", severity="moderate"))
         assert "severity_context" not in result
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_no_hardcoded_activity_guidance(self, mock_fetch):
-        mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
+        mock_fetch.side_effect = lambda url: _page(CLINICAL_CONTENT, url)
         result = json.loads(research_injury("shin splints"))
         assert "activity_guidance" not in result
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_uses_provided_url_first(self, mock_fetch):
-        mock_fetch.return_value = (CLINICAL_CONTENT, "https://custom.com/injury")
+        mock_fetch.return_value = _page(CLINICAL_CONTENT, "https://custom.com/injury")
         result = json.loads(research_injury(
             "shin splints", url="https://custom.com/injury"
         ))
         assert "https://custom.com/injury" in result["sources"]
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_handles_all_fetch_failures(self, mock_fetch):
         mock_fetch.side_effect = Exception("Network error")
         result = json.loads(research_injury("shin splints"))
@@ -526,19 +532,19 @@ class TestResearchInjury:
         assert "moderate" in result["error"]
         assert "severe" in result["error"]
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_structured_extraction_in_researched_info(self, mock_fetch):
         # Return same URL to avoid redirect rejection
-        mock_fetch.side_effect = lambda url: (CLINICAL_CONTENT, url)
+        mock_fetch.side_effect = lambda url: _page(CLINICAL_CONTENT, url)
         result = json.loads(research_injury("shin splints"))
         info = result["researched_info"]
         # Should have structured categories from _extract_clinical_info
         assert any(k in info for k in ["treatment", "rehabilitation", "recovery_timeline"])
 
-    @patch('coach.tools.injury_tools.fetch_page_text_validated')
+    @patch('coach.tools.injury_tools.fetch_untrusted_page')
     def test_redirect_rejected_in_research(self, mock_fetch):
         """Significant redirects are rejected in research_injury too."""
-        mock_fetch.return_value = (
+        mock_fetch.return_value = _page(
             CLINICAL_CONTENT,
             "https://www.physio-pedia.com/Search?query=shin"
         )

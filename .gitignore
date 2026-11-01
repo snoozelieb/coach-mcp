@@ -77,3 +77,7 @@ garmin_tokens.json
 
 # Authoring eval runs (owner-run, cost money; the cases and goldens are committed)
 evals/authoring/results/
+
+# Internal review documents: name a practitioner, a city and unfixed findings
+docs/MCP_AI_REVIEW_2026-10.md
+docs/WORKOUT_AUTHORING_REVIEW_2026-10.md

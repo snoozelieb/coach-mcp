@@ -182,6 +182,20 @@ RACE_TEMPLATE_WINDOW_DAYS = 56  # 8 weeks - races within this window get templat
 
 # Web scraping limits
 PAGE_TEXT_MAX_CHARS = 8000
+
+# Weather for planning (coach/weather.py): Open-Meteo, no API key, attribution
+# required. The limit is a default; methodology.json `weather` holds the athlete's own.
+WEATHER_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+WEATHER_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+WEATHER_CACHE_FILE = "weather_forecast.json"   # last fetched forecast, in the data dir
+WEATHER_CACHE_TTL_MINUTES = 60
+WEATHER_MAX_FORECAST_DAYS = 16                 # the API's horizon
+WEATHER_HTTP_TIMEOUT_SECONDS = 8               # the snapshot waits at most this long for weather
+WEATHER_DEFAULTS = {
+    # Daylight gusts above this make an outdoor ride impractical: the ride
+    # goes indoors or moves to a calmer day. Runs carry no wind limit.
+    'outdoor_ride_gust_limit_kmh': 50,
+}
 ELEVATION_SIGNIFICANCE_THRESHOLD = 1000
 HIGH_ALTITUDE_THRESHOLD = 1500
 

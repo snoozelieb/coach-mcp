@@ -91,7 +91,7 @@ under the 4,096-char upfront cap, and gate contracts sit in the first 4,096
 chars of every gated tool's description because tool search indexes only that
 window.
 
-- **52 tools** across 11 modules in `coach/tools/`; every tool declares
+- **54 tools** across 12 modules in `coach/tools/`; every tool declares
   readOnly/destructive/idempotent/openWorld annotations — `tests/test_annotations.py`
   is the contract (unclassified tools fail the suite by design).
 - **7 prompts** (`coach/prompts.py`), **7 resources** (`coach/resources.py`,
@@ -100,7 +100,10 @@ window.
 - Planning tools return structured dicts; `update_weekly_plan` takes a typed `plan`
   dict validated by pydantic (`coach/schemas.py`; `plan_json` is a deprecated alias).
 - Transports: stdio (default), `http`/`streamable-http`; `sse` accepted for legacy
-  setups only (spec-deprecated since MCP 2026-07-28 — don't use).
+  setups only (spec-deprecated since MCP 2026-07-28 — don't use). The HTTP
+  transports need `COACH_HTTP_TOKEN` (bearer, 16+ chars) and run FastMCP's
+  Host/Origin checks in strict mode (`coach/http_security.py`);
+  `COACH_HTTP_INSECURE=1` waives the token on a loopback bind only.
 - Never build on `ctx.elicit()`/`ctx.sample()` — MCP spec 2026-07-28 removed
   server-initiated elicitation/sampling (MRTR pattern replaces them).
 
@@ -125,11 +128,13 @@ coach/
 │                          #   nothing defaulted) + the preview step tree
 ├── mcp_app.py             # Shared FastMCP instance + SERVER_INSTRUCTIONS
 ├── prompts.py, resources.py
-├── web_utils.py           # HTML fetch/strip for the research tools
+├── web_utils.py           # Research fetch: public https only, DNS-pinned, untrusted envelope
+├── http_security.py       # HTTP transports: bearer token, Host/Origin checks, loopback waiver
+├── weather.py             # Open-Meteo outlook (wind, gusts, rain, daylight): cache, grounding
 ├── defaults/              # methodology.json shipped with the package
-└── tools/                 # 52 MCP tools: data, fitness, athlete, planning,
+└── tools/                 # 54 MCP tools: data, fitness, athlete, planning,
                            # coaching (snapshot), strength, injury, research,
-                           # decision, race, interactive
+                           # decision, race, interactive, weather
 scripts/                   # daily_loop, garmin_login, capture_fixtures,
                            # recompute_acwr_history, setup_wizard, ... (non-exhaustive)
 tests/                     # pytest suite (see Testing below)
@@ -157,7 +162,8 @@ with the package (seeded on first run, never overwritten).
 | `fitness_history.json` | Daily loads (source of `snapshot.capacity`), CTL/ATL snapshots, sleep history |
 | `coaching_log.json` | MEMORY — decisions, patterns, approvals, anomalies |
 | `exercise_library.json` | Cached exercise form cues for Garmin notes |
-| `exercises.json` | Exercise catalogue used by strength/research tools and the workout builder |
+| `weather_forecast.json` | CACHE — last Open-Meteo forecast for `personal.location` (60-min TTL; no key) |
+| `exercises.json` | Exercise catalogue used by strength/research tools and the workout builder (`python scripts/fetch_exercises.py` refreshes it from Garmin: every category per name, bodyweight flags, counterparts; custom entries survive) |
 
 `backfill_history` (tool and script) copies `fitness_history.json` into a sibling
 `backups/` folder inside the data dir before applying. Like `data/`, it holds personal data and
@@ -168,7 +174,9 @@ must never be committed.
 Requires `GARMIN_EMAIL` and `GARMIN_PASSWORD` (`.env` in a checkout, or the MCP
 client's `env` block).
 Optional: `COACH_DATA_DIR`, `COACH_TOKEN_DIR`, `COACH_TRANSPORT`, `COACH_CODE_MODE`
-(needs the `code-mode` extra), `FASTMCP_HOST`/`FASTMCP_PORT`. The morning audit
+(needs the `code-mode` extra), `FASTMCP_HOST`/`FASTMCP_PORT`, and for the HTTP
+transports `COACH_HTTP_TOKEN` (`COACH_HTTP_INSECURE`, `COACH_HTTP_ALLOWED_HOSTS`,
+`COACH_HTTP_ALLOWED_ORIGINS`). The morning audit
 (`scripts/daily_loop.py`) has no LLM path: it ingests, audits yesterday against
 the plan (writing `unverified`, never fiction, when Garmin is unreachable),
 re-checks the last 3 days, and exits non-zero on failure.
@@ -191,7 +199,7 @@ garminconnect call shape so dependency breaks fail CI loudly.
 
 ## Testing
 
-1,763 tests across 52 files (CI: GitHub Actions on push/PR + weekly cron —
+1,984 tests across 59 files (CI: GitHub Actions on push/PR + weekly cron —
 a `ruff check .` lint job plus the suite on Python 3.12/3.13/3.14; both install
 `requirements-dev.txt`). Four patterns are THE way tests are written:
 
@@ -250,7 +258,15 @@ models with teaching errors (unknown keys name the allowed keys; nothing the
 plan states is defaulted — no 3x10, no category weights, no library cue or
 baseline load without a flag; plain runs and indoor rides split warm-up and
 cool-down by documented percentages unless `warmup_mins`/`cooldown_mins` are
-stated, and the contract document says so). The injury gate also reads
+stated, and the contract document says so). A target is an alert both ways:
+`easy`/`recovery` render as ceilings above the athlete's aerobic floor
+(resting HR + 30 % of heart-rate reserve), the other words and `hr_target`
+as bands, `hr_max` as an explicit ceiling; only an `interval` phase inherits
+the session intensity and plain warm-ups/cool-downs carry no target; an HR
+band on a timed step under 3 minutes is a warning. A gym exercise states its
+`station` (the spot); the preview prints the walk ahead of the steps and warns
+when a session returns to a station it left (`methodology.strength.
+station_order`: off | warn | error). The injury gate also reads
 strength exercises on the sessions exactly as the push expands them: every
 content word of a free-text restriction, stemmed, with negations and
 qualifiers dropped, must appear in the exercise's Garmin key or category
@@ -262,8 +278,9 @@ the session type; `coach/authoring.py` holds the vocabulary and
 lists `unrenderable` sessions (never uploaded), and `preview_workout(session)`
 renders one session for the authoring loop (`preview_workout()` returns the
 contract). Garmin facts that are data, not judgment (the 35 workout categories,
-the catalogue categories the API rejects, the one-category-per-name cache
-corrections) stay in `coach/authoring.py`.
+the catalogue categories the API rejects, the primary category for the names
+Garmin files under several categories, the hold-name rule) stay in
+`coach/authoring.py`.
 
 ## Known Issues / TODO
 

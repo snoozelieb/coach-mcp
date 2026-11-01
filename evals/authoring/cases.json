@@ -1,5 +1,5 @@
 {
-  "_readme": "Authoring eval cases (see scripts/authoring_eval.py). Each case: a coaching brief in the shape the workout-author agent demands (PURPOSE, SESSION, RESTRICTIONS, CAPACITY, ATHLETE FACTS), the checks its rendering must satisfy (regexes over the preview step tree, case-insensitive; a steps_match entry may be {pattern, min}), and a golden session that satisfies them. The athlete is synthetic (evals/authoring/athlete.json): FTP 260 W, threshold pace 5:00/km, HR zones Z2 125-140, baseline goblet squat 20 kg and Bulgarian split squat 10 kg.",
+  "_readme": "Authoring eval cases (see scripts/authoring_eval.py). Each case: a coaching brief in the shape the workout-author agent demands (PURPOSE, SESSION, RESTRICTIONS, CAPACITY, ATHLETE FACTS), the checks its rendering must satisfy (regexes over the preview step tree, case-insensitive; a steps_match entry may be {pattern, min}; steps_order lists patterns whose first matching lines must come in that order), and a golden session that satisfies them. The athlete is synthetic (evals/authoring/athlete.json): FTP 260 W, threshold pace 5:00/km, HR zones Z2 125-140, baseline goblet squat 20 kg and Bulgarian split squat 10 kg.",
   "cases": [
     {
       "id": "run_easy_hr",
@@ -401,8 +401,9 @@
         "workout_type": "strength",
         "steps_match": [
           "^1\\. \\[Warm Up\\] 5:00",
-          "BULGARIAN_SPLIT_SQUAT 8 reps @ 10 kg .*each side: knee over toe",
-          "ROMANIAN_DEADLIFT.* 10 reps @ 8 kg .*each side: hips square",
+          "BULGARIAN_SPLIT_SQUAT 8 reps @ 10 kg .*Left: knee over toe",
+          "BULGARIAN_SPLIT_SQUAT 8 reps @ 10 kg .*Right: knee over toe",
+          "ROMANIAN_DEADLIFT.* 10 reps @ 8 kg .*Left: hips square",
           "CALF_RAISE 15 reps @ 20 kg .*full range",
           {
             "pattern": "Rest 1:00",
@@ -463,7 +464,8 @@
         "workout_type": "strength",
         "steps_match": [
           "PLANK 0:45",
-          "SIDE_PLANK 0:30 .*each side",
+          "SIDE_PLANK 0:30 .*Left",
+          "SIDE_PLANK 0:30 .*Right",
           "DEAD_BUG 10 reps .*low back flat",
           {
             "pattern": "Rest lap button",
@@ -607,7 +609,8 @@
         "workout_type": "strength",
         "steps_match": [
           "lunge.* 8 reps",
-          "0:30 .*each side",
+          "0:30 .*left: toe down",
+          "0:30 .*right: toe down",
           "no jump"
         ],
         "steps_absent": [
@@ -741,6 +744,128 @@
         "duration_mins": 15,
         "intensity": "none",
         "notes": "Quads, hip flexors, calves: 60 s each side"
+      }
+    },
+    {
+      "id": "gym_upper_stations",
+      "sport": "strength",
+      "brief": "PURPOSE: posterior-chain strength for the forward hunch; the press stays light.\nSESSION: 5-minute warm-up block first. Movements, as the physio listed them: bench-supported single-arm neutral-grip dumbbell row 3 x 10 each side at 12.5 kg, cue 'Chest on the bench, pull to the hip'; face pull with external rotation 3 x 15 at the cable, cue 'Cable at chest height, pull to the face'; weighted incline Y raise 3 x 10 at 1 kg on the incline bench, cue 'Chest on the bench, Y then T, below 90 deg'; band pull-apart 3 x 12, done at the cable stack, cue 'Band, at the cable stack, slow'; incline dumbbell bench press 2 x 10 at 10 kg (the main lift), cue '2 sets only, no heavy overhead'; dead bug 3 x 10 on the mat, cue 'Slow, low back flat'; side plank 3 rounds of 30 seconds each side on the mat with a 30-second rest after each round, cue 'Straight line, hips up'; hanging knee raise 3 x 10 on the pull-up bar, cue 'No swinging'. Timed rests: 90 s after the press, 60 s after the row, 45 s after the Y raise and the face pull, 30 s after the pull-apart; lap-button rests on the mat and bar work. The gym is a busy commercial gym: order the session by station so the athlete visits each station once, and state the station on every movement with these labels: 'incline bench', 'cable', 'mat', 'pull-up bar'. Name it 'Upper body posture'.\nRESTRICTIONS: none (no active or improving injuries).\nCAPACITY (demonstrated, last 28 days): strength 2 gym sessions a week of 40-45 min; running 6 sessions; cycling 8 rides.\nATHLETE FACTS: commercial gym with a free-weights area, adjustable benches, a cable stack and a pull-up bar (preferences.gym_access); strength baseline (get_strength_baseline): goblet squat 20 kg, Bulgarian split squat 10 kg; FTP 260 W; threshold pace 5:00/km; max HR 185.",
+      "checks": {
+        "ok": true,
+        "workout_type": "strength",
+        "steps_match": [
+          "^Stations: incline bench \u2192 cable \u2192 mat \u2192 pull-up bar$",
+          "^1\\. \\[Warm Up\\] 5:00"
+        ],
+        "steps_order": [
+          "INCLINE_DUMBBELL_BENCH_PRESS 10 reps @ 10 kg",
+          "DUMBBELL_ROW 10 reps @ 12.5 kg .*Left",
+          "Y_RAISE 10 reps @ 1 kg",
+          "FACE_PULL.* 15 reps",
+          "PULL_APART 12 reps",
+          "DEAD_BUG 10 reps",
+          "SIDE_PLANK 0:30 .*Left",
+          "HANGING_KNEE_RAISE 10 reps"
+        ],
+        "steps_absent": [
+          "again",
+          "no station"
+        ],
+        "warnings_absent": [
+          "returns to",
+          "no station",
+          "rounds change spot"
+        ]
+      },
+      "golden": {
+        "type": "strength",
+        "name": "Upper body posture",
+        "description": "Posture: incline bench block, cable, core",
+        "purpose": "Posterior-chain strength for the forward hunch; the press stays light",
+        "duration_mins": 40,
+        "intensity": "easy",
+        "warmup_mins": 5,
+        "exercises": [
+          {
+            "name": "INCLINE_DUMBBELL_BENCH_PRESS",
+            "category": "BENCH_PRESS",
+            "sets": 2,
+            "reps": 10,
+            "weight_kg": 10,
+            "rest_secs": 90,
+            "station": "incline bench",
+            "notes": "2 sets only, no heavy overhead"
+          },
+          {
+            "name": "SINGLE_ARM_NEUTRAL_GRIP_DUMBBELL_ROW",
+            "category": "ROW",
+            "sets": 3,
+            "reps": 10,
+            "each_side": true,
+            "weight_kg": 12.5,
+            "rest_secs": 60,
+            "station": "incline bench",
+            "notes": "Chest on the bench, pull to the hip"
+          },
+          {
+            "name": "WEIGHTED_INCLINE_Y_RAISE",
+            "category": "SHOULDER_STABILITY",
+            "sets": 3,
+            "reps": 10,
+            "weight_kg": 1,
+            "rest_secs": 45,
+            "station": "incline bench",
+            "notes": "Chest on the bench, Y then T, below 90 deg"
+          },
+          {
+            "name": "FACE_PULL_WITH_EXTERNAL_ROTATION",
+            "category": "ROW",
+            "sets": 3,
+            "reps": 15,
+            "rest_secs": 45,
+            "station": "cable",
+            "notes": "Cable at chest height, pull to the face"
+          },
+          {
+            "name": "PULL_APART",
+            "category": "BANDED_EXERCISES",
+            "sets": 3,
+            "reps": 12,
+            "rest_secs": 30,
+            "station": "cable",
+            "notes": "Band, at the cable stack, slow"
+          },
+          {
+            "name": "DEAD_BUG",
+            "category": "HIP_STABILITY",
+            "sets": 3,
+            "reps": 10,
+            "station": "mat",
+            "notes": "Slow, low back flat"
+          },
+          {
+            "rounds": 3,
+            "rest_secs": 30,
+            "station": "mat",
+            "exercises": [
+              {
+                "name": "SIDE_PLANK",
+                "category": "PLANK",
+                "duration_secs": 30,
+                "each_side": true,
+                "notes": "Straight line, hips up"
+              }
+            ]
+          },
+          {
+            "name": "HANGING_KNEE_RAISE",
+            "category": "LEG_RAISE",
+            "sets": 3,
+            "reps": 10,
+            "station": "pull-up bar",
+            "notes": "No swinging"
+          }
+        ]
       }
     }
   ]

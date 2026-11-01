@@ -178,6 +178,7 @@ class TestCheckWeeklyCompliance:
         assert result['mobility']['completed'] == 50
         assert result['mobility']['deficit'] == 40
         assert result['mobility']['compliant'] is False
+        assert result['targets_per_week']['mobility_mins'] == 90  # the unscaled weekly target
 
     def test_detects_long_effort_compliance(self):
         activities = [

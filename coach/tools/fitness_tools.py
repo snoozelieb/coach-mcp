@@ -26,7 +26,9 @@ from ..fitness import (
                      update_fitness_history, _extract_total_loads, calculate_sport_fitness_metrics,
                      backfill_fitness_history, capacity_by_sport, derive_sport_capacity)
 from ..taxonomy import capacity_bucket_for, CAPACITY_BUCKETS
-from ..config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE
+from ..config import DATA_DIR, PROFILE_HISTORY_DAYS, ATHLETE_BASELINE_FILE, ATHLETE_FILE, FITNESS_HISTORY_FILE
+from ..workout_builder import get_aerobic_floor_bpm, target_rules
+from ..fitness import walking_hr_evidence
 from datetime import date, timedelta
 import json
 import logging
@@ -805,6 +807,28 @@ def get_athlete() -> str:
     """
     try:
         athlete = load_athlete()
+        # Derived, never stored: the aerobic floor every easy/recovery
+        # ceiling starts at, beside the athlete's own walking HR so the
+        # coach can tune personal.aerobic_floor_pct_hrr from evidence.
+        try:
+            rules = target_rules()
+            personal = athlete.get('personal', {}) or {}
+            history = load_json_file(FITNESS_HISTORY_FILE) or {}
+            evidence = walking_hr_evidence(history.get('daily_loads') or {})
+            athlete['derived'] = {
+                'aerobic_floor_bpm': get_aerobic_floor_bpm(),
+                'aerobic_floor_pct_hrr': personal.get('aerobic_floor_pct_hrr', rules['aerobic_floor_pct_hrr']),
+                'walking_hr_median_bpm': evidence['median_bpm'],
+                'walking_sessions_counted': evidence['count'],
+                'walking_hr_window_days': evidence['window_days'],
+                'target_rules': rules,
+                'note': ('aerobic_floor_bpm = resting_hr + aerobic_floor_pct_hrr % of (max_hr - resting_hr): '
+                         'the low bound of every easy/recovery ceiling on the watch. Compare it with '
+                         'walking_hr_median_bpm after run/walk sessions and tune the share '
+                         "(update_athlete('personal', {\"aerobic_floor_pct_hrr\": ..}))."),
+            }
+        except Exception:
+            logger.warning("get_athlete: derived block skipped", exc_info=True)
         return json.dumps(athlete, indent=2)
     except Exception as e:
         logger.exception("get_athlete failed")

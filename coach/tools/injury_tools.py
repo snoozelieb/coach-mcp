@@ -6,7 +6,7 @@ severity assessment, and research content for the LLM to reason about.
 """
 
 from ..mcp_app import mcp
-from ..web_utils import fetch_page_text_validated, untrusted_envelope_from_text, UNTRUSTED_NOTICE
+from ..web_utils import fetch_untrusted_page, untrusted_envelope, UNTRUSTED_NOTICE
 from ..planner import save_json_file, load_athlete, update_json_file, append_decision, load_json_file
 from ..rules import normalize_injury
 from ..authoring import exercise_matches_restriction
@@ -19,7 +19,7 @@ from datetime import date
 import json
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +202,10 @@ def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
 
     # Try physio-pedia first
     for article_name in search_terms:
-        url = f"{PHYSIOPEDIA_BASE_URL}/{article_name}"
+        url = f"{PHYSIOPEDIA_BASE_URL}/{quote(article_name, safe='')}"
         try:
-            content, final_url = fetch_page_text_validated(url)
+            page = fetch_untrusted_page(url)
+            content, final_url = page['retrieved_text'], page['final_url']
             if _is_significant_redirect(url, final_url):
                 continue
             if _is_relevant_content(content, body_region, article_name):
@@ -215,15 +216,17 @@ def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
                     "url": final_url,
                     "clinical_info": clinical_info,
                     "notice": UNTRUSTED_NOTICE,
+                    "untrusted_content": untrusted_envelope(page),
                 }
         except Exception:
             continue
 
     # Fallback: Wikipedia
     wiki_term = search_terms[0] if search_terms else body_region
-    wiki_url = f"https://en.wikipedia.org/wiki/{wiki_term}"
+    wiki_url = f"https://en.wikipedia.org/wiki/{quote(wiki_term, safe='')}"
     try:
-        content, final_url = fetch_page_text_validated(wiki_url)
+        page = fetch_untrusted_page(wiki_url)
+        content, final_url = page['retrieved_text'], page['final_url']
         if _is_significant_redirect(wiki_url, final_url):
             return {}
         if _is_relevant_content(content, body_region, wiki_term):
@@ -234,6 +237,7 @@ def _fetch_injury_research(body_region: str, clinical_picture: dict) -> dict:
                 "url": final_url,
                 "clinical_info": clinical_info,
                 "notice": UNTRUSTED_NOTICE,
+                "untrusted_content": untrusted_envelope(page),
             }
     except Exception:
         pass
@@ -464,7 +468,7 @@ def diagnose_injury(location: str, answers: str = None) -> str:
             }
         else:
             # No research found — honest signal for LLM to follow up
-            physio_urls = [f"{PHYSIOPEDIA_BASE_URL}/{t}" for t in search_terms[:2]]
+            physio_urls = [f"{PHYSIOPEDIA_BASE_URL}/{quote(t, safe='')}" for t in search_terms[:2]]
             wiki_term = search_terms[0] if search_terms else body_region
             research_section = {
                 "research_status": "needs_research",
@@ -555,28 +559,28 @@ def research_injury(injury_type: str, severity: str = "moderate", url: str = Non
         # Physio-pedia: predictable article URLs
         sources_to_try.append({
             "name": "Physio-pedia",
-            "url": f"{PHYSIOPEDIA_BASE_URL}/{injury_physio}",
+            "url": f"{PHYSIOPEDIA_BASE_URL}/{quote(injury_physio, safe='')}",
         })
 
         # Wikipedia fallback
         sources_to_try.append({
             "name": "Wikipedia",
-            "url": f"https://en.wikipedia.org/wiki/{injury_wiki}",
+            "url": f"https://en.wikipedia.org/wiki/{quote(injury_wiki, safe='')}",
         })
 
         # Try to fetch from sources
         fetched_content = None
         for source in sources_to_try:
             try:
-                content, final_url = fetch_page_text_validated(source["url"])
+                page = fetch_untrusted_page(source["url"])
+                content, final_url = page['retrieved_text'], page['final_url']
                 # Reject significant redirects (page probably redirected to search/home)
                 if _is_significant_redirect(source["url"], final_url):
                     continue
                 if _is_relevant_content(content, "", injury_physio):
                     fetched_content = content
                     research_result["sources"].append(final_url)
-                    research_result["untrusted_content"] = untrusted_envelope_from_text(
-                        source["url"], content, final_url)
+                    research_result["untrusted_content"] = untrusted_envelope(page)
                     break
             except Exception:
                 continue

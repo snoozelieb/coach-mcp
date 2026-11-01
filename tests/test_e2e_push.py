@@ -60,6 +60,7 @@ HR_ZONES = {
     'z5_max': [172, 188],
 }
 THRESHOLD_PACE = 330  # 5:30/km -> z2_easy [379, 409] sec/km
+AEROBIC_FLOOR = 93  # resting 52 + 30 % of (188 - 52): the low bound of every easy/recovery ceiling
 
 RUN_STRUCTURE = [
     {'phase': 'warmup', 'duration_secs': 180, 'intensity': 'recovery',
@@ -256,10 +257,11 @@ class TestPushHappyPath:
         assert step.stepType['stepTypeKey'] == 'interval'
         assert step.endCondition['conditionTypeKey'] == 'time'
         assert step.endConditionValue == 90 * 60
-        # The prescription reaches the wrist: z2 HR band from the profile
+        # The prescription reaches the wrist: easy is a ceiling, from the
+        # aerobic floor to the top of z2 (the alert says slow down, never speed up)
         assert step.targetType['workoutTargetTypeKey'] == 'heart.rate.zone'
-        assert (step.targetValueOne, step.targetValueTwo) == tuple(
-            HR_ZONES['z2_aerobic'])
+        assert (step.targetValueOne, step.targetValueTwo) == (
+            AEROBIC_FLOOR, HR_ZONES['z2_aerobic'][1])
         assert workout.estimatedDurationInSecs == 90 * 60
 
     def test_running_payload_repeat_block_with_pace_targets(self, push_env):
@@ -285,10 +287,10 @@ class TestPushHappyPath:
         assert recovery.stepType['stepTypeKey'] == 'recovery'
         assert recovery.endConditionValue == 120
 
-        # 'easy' resolves to the pace band derived from threshold pace
-        # (z2_easy = [379, 409] sec/km -> slow/fast m/s)
+        # 'easy' resolves to a pace ceiling: the slow bound is twice the
+        # threshold pace (660 s/km, a walk), the fast bound the top of z2_easy
         assert interval.targetType['workoutTargetTypeKey'] == 'pace.zone'
-        assert interval.targetValueOne == pytest.approx(1000 / 409, rel=1e-3)
+        assert interval.targetValueOne == pytest.approx(1000 / 660, rel=1e-3)
         assert interval.targetValueTwo == pytest.approx(1000 / 379, rel=1e-3)
 
         # Estimated duration: 180 + 4*(240+120) + 180 = 1800s
@@ -469,8 +471,8 @@ class TestPreviewAndToken:
         by_type = {s['workout_type']: s for s in preview['sessions']}
 
         ride = by_type['cycling']
-        lo, hi = HR_ZONES['z2_aerobic']
-        assert ride['steps'] == [f'1. Interval 1:30:00 @ HR {lo}-{hi} bpm — "HR {lo}-{hi} bpm"']
+        hi = HR_ZONES['z2_aerobic'][1]
+        assert ride['steps'] == [f'1. Interval 1:30:00 @ HR {AEROBIC_FLOOR}-{hi} bpm — "HR under {hi} bpm"']
         assert ride['estimated_mins'] == 90
 
         run = by_type['running']
@@ -485,9 +487,11 @@ class TestPreviewAndToken:
         assert gym['steps'][:5] == [
             '1. [Warm Up] 5:00', '2. Rest lap button',
             '3. 3 x', '   3.1. GOBLET_SQUAT 10 reps @ 24 kg', '   3.2. Rest 1:00']
-        # Two short lifts cannot fill 45 planned minutes — the preview says so
-        assert [w['field'] for w in gym['warnings']] == ['duration_mins']
-        assert 'planned 45 min' in gym['warnings'][0]['message']
+        # Two short lifts cannot fill 45 planned minutes — the preview says so;
+        # the session states no stations, so the walk is unchecked and says so too
+        assert sorted(w['field'] for w in gym['warnings']) == ['duration_mins', 'exercises']
+        assert any('planned 45 min' in w['message'] for w in gym['warnings'])
+        assert any('no station on' in w['message'] for w in gym['warnings'])
 
     def test_contract_errors_are_previewed_and_never_pushed(self, push_env):
         """A session that breaks the contract on disk (e.g. written before the
@@ -581,7 +585,7 @@ class TestPreviewAndToken:
         assert pull['workoutSteps'][0]['endCondition']['conditionTypeKey'] == 'lap.button'
         assert pull['workoutSteps'][1]['endConditionValue'] == 90.5
         assert plank['workoutSteps'][0]['endConditionValue'] == 45.0
-        assert [s['exerciseName'] for s in circuit['workoutSteps'][:2]] == ['DEAD_BUG', 'PUSH_UP']
+        assert [s['exerciseName'] for s in circuit['workoutSteps'][:3]] == ['DEAD_BUG', 'DEAD_BUG', 'PUSH_UP']  # each_side: Left + Right
         assert workout['exercise_count'] == 4
 
     def test_token_is_single_use(self, push_env):

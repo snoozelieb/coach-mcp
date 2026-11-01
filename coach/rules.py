@@ -349,6 +349,8 @@ def check_weekly_compliance(
             long_effort: {required: 1, completed: 1, deficit: 0, compliant: True},
             volume: {target_hrs: 6.0, actual_hrs: 5.5, percent: 92, compliant: True, over_volume: False},
             window: {days: 7, weeks: 1.0},
+            targets_per_week: {strength_sessions: 2, mobility_mins: 90,
+                               long_efforts: 1, volume_hrs: 6.0},
             per_week: {strength_sessions: 1.0, mobility_mins: 45.0,
                        long_efforts: 1.0, volume_hrs: 5.5},
             overall_compliant: False,
@@ -403,6 +405,7 @@ def check_weekly_compliance(
     strength_required = _scale_requirement(pillars.get('strength_sessions_per_week', 0), weeks)
     mobility_required = _scale_requirement(pillars.get('mobility_minutes_per_week', 0), weeks)
     long_effort_required = _scale_requirement(pillars.get('long_effort_per_week', 0), weeks)
+    volume_target_per_week = volume_target
     volume_target = _scale_requirement(volume_target, weeks)
 
     # Build compliance report
@@ -451,6 +454,15 @@ def check_weekly_compliance(
             'over_volume': over_volume,
         },
         'window': {'days': window_days, 'weeks': round(weeks, 2)},
+        # The configured weekly targets, unscaled, next to the scaled
+        # `required` figures so a 28-day report cannot be read as "360
+        # minutes of mobility a week"
+        'targets_per_week': {
+            'strength_sessions': pillars.get('strength_sessions_per_week', 0),
+            'mobility_mins': pillars.get('mobility_minutes_per_week', 0),
+            'long_efforts': pillars.get('long_effort_per_week', 0),
+            'volume_hrs': volume_target_per_week,
+        },
         'per_week': {
             'strength_sessions': round(strength_count / weeks, 1),
             'mobility_mins': round(mobility_mins / weeks, 1),

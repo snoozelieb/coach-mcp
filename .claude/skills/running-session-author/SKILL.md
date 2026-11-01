@@ -17,31 +17,49 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
    grid and plan adherence.
 2. `query_metrics(kind='sport_history', sport='running')` when the capacity
    numbers need the session list behind them (VERIFY BEFORE PRESCRIBING).
-3. Targets: pace targets need `threshold_pace_sec_per_km` on the profile
-   (`set_threshold_pace`). Without it an intensity word resolves to the HR
-   zone, which is honest but lags on short reps; for 1-minute efforts prefer a
-   cue in `notes` or an explicit `pace_sec_per_km`.
+3. Targets are alerts: the watch sounds whenever the athlete is outside the
+   target, in both directions. `easy` and `recovery` render as ceilings — the
+   alert fires only above the zone top; the low bound is the athlete's aerobic
+   floor (resting HR + 30 % of heart-rate reserve, so a brisk walk stays inside
+   it and standing still drops out). `tempo`, `threshold`, `vo2`, `max_effort`
+   and `hr_target` are bands the athlete must hit; `hr_max` is an explicit
+   ceiling. HR lags 1–2 minutes: give an HR band only to blocks of 5 minutes or
+   more. Shorter reps take `pace_sec_per_km` (needs `threshold_pace_sec_per_km`
+   on the profile, `set_threshold_pace`), `hr_max`, or a cue in `notes` with
+   `"intensity": "none"`. The preview warns about an HR band on a step under
+   3 minutes.
 4. Coaching memory: `adaptation_patterns` and the last `record_athlete_response`
    for this kind of session, and the snapshot's sleep and readiness signals.
    Size today's session from how the athlete responded last time, not from
    what the plan intended.
+5. Weather: rain and wind do not move a run. Daylight does — check the
+   training window in `snapshot.weather_outlook` and say so when the athlete
+   hesitates.
 
 ## Composition judgment
 
 - A plain run is `duration_mins` + `intensity` (easy, recovery, tempo,
-  threshold, vo2, max_effort; z1–z5 accepted): the renderer draws a warm-up and
-  cool-down of 10 % each (up to 5 minutes) around the main block. Use this for
-  easy and long runs; anything with reps needs `structure`.
+  threshold, vo2, max_effort; z1–z5 accepted): the renderer draws an untargeted
+  warm-up and cool-down of 10 % each (up to 5 minutes) around the main block,
+  which carries the intensity. Use this for easy and long runs; anything with
+  reps needs `structure`.
 - Structured work is a list of phases and repeat blocks: `warmup`, then
   `{"phase": "repeat", "iterations": N, "steps": [work, recovery]}`, then
   `cooldown`. Each phase has ONE end condition (`duration_secs`,
   `duration_mins`, `distance_m`, or `"open"` for a lap-button step) and at most
   one numeric target (`pace_sec_per_km` [slow, fast], `hr_target` [low, high],
-  `cadence`); an `intensity` word can label the phase or be its target. A
-  phase with no target inherits the session intensity.
+  `cadence`, `hr_max`); an `intensity` word can label the phase or be its
+  target. An `interval` phase with no target inherits the session intensity;
+  warm-ups, cool-downs, recoveries and rests render untargeted unless they
+  state one.
 - Return to running is a ladder of run/walk repeats (a level is one shape,
   e.g. R4/W2 × 4), every step cued (`"notes": "Run 4 min, land soft"`),
-  recoveries as `recovery` phases so the watch separates them. The one
+  recoveries as `recovery` phases so the watch separates them. Run reps take
+  `easy` (a ceiling: the alert says "slow down", never "speed up"). A walk
+  step with no target is silent; `"intensity": "recovery"` on it gives a
+  keep-walking band from the aerobic floor to the top of z1 — the alert fires
+  when the athlete stops, not while they walk. A warm-up with drills stays
+  untargeted. The one
   progression rule: advance a level only when the current level was completed
   pain-free AND the recorded response to it was good (`record_athlete_response`,
   `adaptation_patterns`) — never on the calendar, and never past demonstrated
@@ -54,9 +72,10 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
   comparable session in `sport_history`. The shape is the coach's; the numbers
   are the athlete's. A number you cannot trace to the history is a template.
 - Strides: `{"phase": "repeat", "iterations": 6, "steps": [{"phase":
-  "interval", "duration_secs": 20, "intensity": "max_effort", "notes":
+  "interval", "duration_secs": 20, "intensity": "none", "notes":
   "Stride, tall, relaxed"}, {"phase": "recovery", "duration_secs": 60}]}` after
-  an easy run's main block.
+  an easy run's main block. A 20-second effort has no steady state: an HR band
+  there only beeps, so the cue is the target.
 - Session `name` is the Garmin workout name (40 characters); keep audit notes
   out of `description`.
 
@@ -71,7 +90,7 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
   "duration_mins": 30,
   "intensity": "easy",
   "structure": [
-    {"phase": "warmup", "duration_secs": 180, "intensity": "recovery", "notes": "300m walk + 4 heel + 4 toe steps"},
+    {"phase": "warmup", "duration_secs": 180, "notes": "300m walk + 4 heel + 4 toe steps"},
     {"phase": "repeat", "iterations": 4, "steps": [
       {"phase": "interval", "duration_secs": 240, "intensity": "easy", "notes": "Run 4 min, land soft"},
       {"phase": "recovery", "duration_secs": 120, "intensity": "recovery", "notes": "Walk 2 min"}
@@ -80,6 +99,10 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
   ]
 }
 ```
+
+On the watch: the warm-up is silent, each run alerts only above the top of
+z2, each walk and the cool-down alert only when the athlete stops (below the
+aerobic floor) or breaks into a run (above the top of z1).
 
 ## Worked example — threshold with a distance finisher
 
@@ -106,13 +129,14 @@ mistyped key is an error that names the allowed keys. Your job is the judgment
 
 1. `preview_workout(session)` — read `steps`: every rep block present with its
    count, each phase with the end condition and target you meant (pace shows as
-   min/km, HR as bpm). Fix every `errors` entry; weigh every `warnings` entry
-   (an untargeted interval, a cue over 50 characters, a session intensity
-   outside the vocabulary).
+   min/km, HR as bpm; a ceiling shows as aerobic floor to zone top). Fix every
+   `errors` entry; weigh every `warnings` entry (an untargeted interval, an HR
+   band on a step under 3 minutes, a cue over 50 characters, a session
+   intensity outside the vocabulary).
 2. `update_weekly_plan(plan=...)`, then `push_plan_to_garmin()` and show the
    athlete the `steps` before confirming.
 
 Checklist: one end condition per phase; `"open"` only where the athlete should
 press lap; intensity words from the vocabulary (`preview_workout()` lists it);
-recoveries as `recovery` phases; `name` set; the ladder level or rep scheme
+recoveries as `recovery` phases; no HR band on a step under 3 minutes; `name` set; the ladder level or rep scheme
 visible in `notes` on the watch.

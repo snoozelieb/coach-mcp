@@ -26,6 +26,11 @@ ride for this athlete today — written in the contract.
    for this kind of session, and the snapshot's sleep and readiness signals.
    Size today's session from how the athlete responded last time, not from
    what the plan intended.
+5. Weather: `snapshot.weather_outlook` (or `get_weather_outlook()`) for the
+   day. Outdoors needs daylight gusts under the athlete's limit
+   (`methodology.weather.outdoor_ride_gust_limit_kmh`, default 50) for the
+   whole ride; otherwise compose the same purpose indoors, or move the ride
+   to the calmest day. The long ride takes the calmest daylight day.
 
 ## Composition judgment
 
@@ -39,7 +44,12 @@ ride for this athlete today — written in the contract.
   lap-button step) and at most one numeric target: `power_pct` [low, high] as
   % of FTP (a single number means ±5 %), `power_watts` [low, high], `cadence`
   [low, high] rpm, `hr_target`; an `intensity` word may label the phase or be
-  its target. A phase without a target inherits the session intensity.
+  its target. An `interval` phase without a target inherits the session
+  intensity; warm-ups, cool-downs, recoveries and rests render untargeted
+  unless they state one. Outdoors, `easy` and `recovery` are HR ceilings (the
+  alert fires above the zone top only; the low bound is the athlete's aerobic
+  floor, resting HR + 30 % of heart-rate reserve); power targets are always
+  bands.
 - Intensity words render to the athlete's own `power_zones` on the profile;
   those zones win over any textbook band. When you write an explicit
   `power_pct` band, the usual FTP fractions are: recovery 45–55 %, endurance

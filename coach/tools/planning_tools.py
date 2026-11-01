@@ -22,7 +22,8 @@ from ..taxonomy import workout_family_for, types_match, capacity_bucket_for, CAP
 from ..config import DATA_DIR, TRAINING_CONFIG_FILE, TRAINING_PROGRAM_FILE, SAFE_WEEKLY_PROGRESSION_PCT
 from ..authoring import contract_document, exercise_matches_restriction
 from ..workout_builder import build_workout_report, get_workout_type_name
-from datetime import date, timedelta
+from .. import weather
+from datetime import date, datetime, timedelta
 from pydantic import ValidationError
 import copy
 import hashlib
@@ -984,7 +985,7 @@ def update_weekly_plan(plan: dict | None = None,
         cadence [lo,hi]; notes} and repeat blocks {phase: 'repeat',
         iterations, steps}. 'exercises': {name (Garmin key), category,
         sets, reps or duration_secs, each_side, weight_kg, rest_secs,
-        notes} or circuits {rounds, exercises, rest_secs}. Without
+        notes, station} or circuits {rounds, exercises, rest_secs, station}. Without
         structure a session is one block (runs/indoor rides: warm-up, main,
         cool-down). preview_workout() returns the full contract.
 
@@ -1158,6 +1159,9 @@ def update_weekly_plan(plan: dict | None = None,
         # VERIFY BEFORE PRESCRIBING: longest planned session per sport vs
         # the athlete's demonstrated capacity. Warn-only by design.
         grounding_warnings = _grounding_warnings(plan.get('days', {}), today)
+        # Outdoor rides on days whose daylight gusts exceed the athlete's
+        # limit (methodology weather.outdoor_ride_gust_limit_kmh). Warn-only.
+        grounding_warnings += weather.grounding_warnings(plan.get('days', {}), today, datetime.now())
         result = {
             'status': 'success',
             'message': 'Weekly plan saved',
@@ -1489,7 +1493,8 @@ def push_plan_to_garmin(override_injury_gate: bool = False,
                 'unrenderable': unrenderable,
                 'skipped': skipped,
                 'workouts_to_delete': to_delete,
-                'grounding_warnings': _grounding_warnings(plan.get('days', {}), today),
+                'grounding_warnings': (_grounding_warnings(plan.get('days', {}), today)
+                                       + weather.grounding_warnings(plan.get('days', {}), today, datetime.now())),
                 'injury_violations': violations,
                 'confirm_token': _issue_push_token(digest, manifest),
                 'expires_in_minutes': PUSH_TOKEN_TTL_SECS // 60,
@@ -1679,7 +1684,9 @@ def preview_workout(session: dict | None = None, include_payload: bool = False) 
 
     Returns:
         {'ok', 'errors', 'warnings', 'workout_type', 'name', 'sport',
-        'estimated_mins', 'steps'} — or {'contract': markdown} when no
+        'estimated_mins', 'steps'} — plus 'station_walk' (one line per
+        station block; the 'Stations:' line heads steps) for a strength
+        session that states stations — or {'contract': markdown} when no
         session was given.
     """
     try:
@@ -1763,6 +1770,10 @@ def get_week_constraints() -> dict:
         except Exception:
             logger.warning("Could not attach capacity to week constraints",
                            exc_info=True)
+
+        # Wind, gusts, rain and daylight for the coming days at the profile
+        # location — the long ride goes on the calmest daylight day
+        constraints['weather_outlook'] = weather.snapshot_block(today, datetime.now())
 
         return constraints
 

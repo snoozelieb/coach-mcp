@@ -57,6 +57,10 @@ The server needs two environment variables: `GARMIN_EMAIL` and
 [Security & Privacy](#security--privacy) and [Advanced](#advanced).
 From a source checkout, a `.env` file works too.
 
+After one successful login the server runs from the stored Garmin tokens
+(`garmin-coach-login` performs that login, MFA included), so a client that
+cannot expand variables in its config can leave `GARMIN_PASSWORD` out.
+
 To run the server or the helpers from a terminal, set the two variables in
 that shell first. PowerShell and bash quote differently:
 
@@ -110,14 +114,18 @@ In `claude_desktop_config.json` (Settings → Developer → Edit Config):
       "command": "uvx",
       "args": ["garmin-coach-mcp"],
       "env": {
-        "GARMIN_EMAIL": "you@example.com",
-        "GARMIN_PASSWORD": "your_garmin_password",
         "COACH_DATA_DIR": "/path/to/your/coach-data"
       }
     }
   }
 }
 ```
+
+Claude Desktop reads this file as written (no variable expansion), so keep
+the Garmin password out of it: run `garmin-coach-login` once in a terminal
+with `GARMIN_EMAIL` and `GARMIN_PASSWORD` set for that command, and the
+server logs in from the stored tokens from then on. When they expire the
+tools say so; run the login again.
 
 ### Cursor
 
@@ -131,7 +139,7 @@ In `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
       "args": ["garmin-coach-mcp"],
       "env": {
         "GARMIN_EMAIL": "you@example.com",
-        "GARMIN_PASSWORD": "your_garmin_password",
+        "GARMIN_PASSWORD": "${env:GARMIN_PASSWORD}",
         "COACH_DATA_DIR": "/path/to/your/coach-data"
       }
     }
@@ -212,7 +220,7 @@ If you installed with `pip install garmin-coach-mcp` instead of uvx, use
 
 ## MCP surface
 
-52 tools — you don't call them directly; the coach uses them during
+54 tools — you don't call them directly; the coach uses them during
 conversation:
 
 | Category | Tools |
@@ -228,6 +236,7 @@ conversation:
 | **Research** | `research_exercise`, `list_exercises`, `research_sport` |
 | **Memory** | `log_coaching_decision`, `get_active_decisions`, `update_decision_status`, `record_athlete_response`, `get_response_patterns`, `resolve_anomaly` |
 | **Approvals** | `propose_coaching_action`, `list_pending_approvals`, `approve_proposal`, `reject_proposal` |
+| **Weather** | `get_weather_outlook` (wind, gusts, rain and daylight at the profile location — Open-Meteo, no key), `set_location` |
 | **Interactive** | `generate_smart_brief`, `interactive_check_in` |
 
 Every tool carries MCP annotations (read-only / destructive / idempotent /
@@ -256,6 +265,10 @@ Everything stays on your machine:
   its LLM as part of the conversation; optional public web-page fetches when
   the coach researches a race, injury, or exercise. Nothing else: the
   FastMCP startup banner that would check PyPI for updates is disabled.
+- **Network exposure**: stdio by default, nothing listens. The HTTP
+  transports need `COACH_HTTP_TOKEN` and validate `Host`/`Origin` on every
+  request; research fetches go only to public `https` addresses, pinned to
+  the address that passed the check.
 - **Single athlete per data directory** by design. For multiple athletes, run
   separate server instances with separate `COACH_DATA_DIR`s.
 
@@ -272,8 +285,11 @@ committed.
 ## Advanced
 
 ```bash
-# HTTP transport (streamable-http) instead of stdio
-COACH_TRANSPORT=streamable-http FASTMCP_PORT=8000 garmin-coach-mcp
+# HTTP transport instead of stdio: a bearer token is required (clients send
+# "Authorization: Bearer <token>"); Host and Origin headers are checked on
+# every request. COACH_HTTP_INSECURE=1 waives the token on 127.0.0.1 only.
+COACH_HTTP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+COACH_TRANSPORT=http FASTMCP_PORT=8000 garmin-coach-mcp
 
 # Code Mode (search/execute meta-tools instead of 52 individual tools)
 pip install fastmcp[code-mode]

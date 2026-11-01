@@ -156,3 +156,8 @@ def test_apply_checks_semantics(harness):
     assert harness.apply_checks(report, {"max_warnings": 0})
     assert harness.apply_checks(report, {"warnings_absent": ["library cue"]})
     assert harness.apply_checks(report, {"estimated_mins": [50, 60]})
+    assert harness.apply_checks(report, {"steps_order": ["Warm-up", "Interval", "Cool-down"]}) == []
+    assert harness.apply_checks(report, {"steps_order": ["Cool-down", "Warm-up"]}) == [
+        "step /Warm-up/ out of order: line 1 comes before line 5"]
+    assert harness.apply_checks(report, {"steps_order": ["Warm-up", "Sprint"]}) == [
+        "missing ordered step /Sprint/"]

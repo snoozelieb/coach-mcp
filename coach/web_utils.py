@@ -9,9 +9,12 @@ context. Two things must hold:
 1. SSRF: the fetch never reaches the loopback, private, link-local or any
    other non-public address space — the coach server itself on FASTMCP_PORT,
    local LLM ports, cloud metadata endpoints — on the first request or on
-   any redirect hop. https only; every hop is validated; the connected peer
-   is re-checked after connect (narrows DNS rebinding); the body is read
-   with a size cap and a wall-clock deadline; only text content types.
+   any redirect hop. https only; every hop is validated; the request is then
+   sent to the address that passed validation while TLS still verifies the
+   hostname (PinnedAdapter: DNS pinning, so an answer that changes between
+   the check and the connect cannot steer the fetch); the connected peer is
+   re-checked after connect; no proxy from the environment is used; the body
+   is read with a size cap and a wall-clock deadline; only text content types.
 2. The text is UNTRUSTED DATA. fetch_untrusted_page returns one shape so
    callers label it, size-cap it and never copy it into plan notes or Garmin
    workout text unedited (sanitize_text).
@@ -26,6 +29,7 @@ from io import StringIO
 from urllib.parse import urljoin, urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .config import HTTP_TIMEOUT_SECONDS, PAGE_TEXT_MAX_CHARS
 
@@ -136,9 +140,10 @@ def resolve_public_host(host: str) -> list[str]:
     return addresses
 
 
-def validate_url(url: str) -> str:
-    """Return the URL when it is https, has a host, carries no credentials and
-    resolves only to public addresses. Raises UnsafeURLError otherwise."""
+def validated_target(url: str) -> tuple[str, str, list[str]]:
+    """(url, hostname, public addresses) when the URL is https, has a host,
+    carries no credentials and resolves only to public addresses. Raises
+    UnsafeURLError otherwise. The addresses are what the fetch connects to."""
     parsed = urlparse(str(url or '').strip())
     if parsed.scheme != 'https':
         raise UnsafeURLError(f"only https URLs are fetched, got {parsed.scheme or 'none'!r}")
@@ -146,8 +151,80 @@ def validate_url(url: str) -> str:
         raise UnsafeURLError('URL has no host')
     if parsed.username or parsed.password:
         raise UnsafeURLError('credentials in URLs are not fetched')
-    resolve_public_host(parsed.hostname)
-    return parsed.geturl()
+    return parsed.geturl(), parsed.hostname, resolve_public_host(parsed.hostname)
+
+
+def validate_url(url: str) -> str:
+    """Return the URL when validated_target accepts it (see there)."""
+    return validated_target(url)[0]
+
+
+# ---------------------------------------------------------------------------
+# DNS pinning: connect to the address that passed validation
+# ---------------------------------------------------------------------------
+
+def _format_ip_for_url(address: str) -> str:
+    return f"[{address}]" if ':' in address else address
+
+
+class PinnedAdapter(HTTPAdapter):
+    """Sends each request to ONE validated address while TLS still verifies the
+    certificate for the hostname (SNI and the hostname check both use it).
+
+    The address policy runs on the DNS answer before the request; without
+    pinning, urllib3 would resolve the name again at connect time and a second
+    answer (DNS rebinding) could point the fetch at a private address.
+    """
+
+    def __init__(self, hostname: str, address: str):
+        self.hostname = hostname
+        self.address = address
+        super().__init__(max_retries=0)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        # server_hostname is the SNI name AND the name the certificate is checked
+        # against: urllib3 keeps the SSL context's check_hostname on when no
+        # assert_hostname is given, and Python's ssl matches the certificate
+        # against the server_hostname it was handed. (A string assert_hostname
+        # would turn check_hostname off on the SSL context requests shares
+        # process-wide and verify through urllib3's own matcher instead.)
+        pool_kwargs['server_hostname'] = self.hostname
+        super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def send(self, request, **kwargs):
+        parsed = urlparse(request.url)
+        port = f":{parsed.port}" if parsed.port else ''
+        request.url = parsed._replace(netloc=f"{_format_ip_for_url(self.address)}{port}").geturl()
+        request.headers['Host'] = f"{self.hostname}{port}"
+        return super().send(request, **kwargs)
+
+
+def _pinned_session(hostname: str, address: str) -> requests.Session:
+    """A session whose https requests go to ``address`` with TLS for ``hostname``.
+    trust_env is off: no proxy from the environment sits between the policy and
+    the connection (a proxy would resolve the name itself)."""
+    session = requests.Session()
+    session.trust_env = False
+    session.mount('https://', PinnedAdapter(hostname, address))
+    return session
+
+
+def _connect(url: str, hostname: str, addresses: list[str]):
+    """GET ``url`` at the first validated address that accepts a connection.
+    Returns (response, session); the caller closes both."""
+    error = None
+    for address in addresses:
+        session = _pinned_session(hostname, address)
+        try:
+            response = session.get(url, headers=DEFAULT_HEADERS, timeout=HTTP_TIMEOUT_SECONDS,
+                                   allow_redirects=False, stream=True)
+            return response, session
+        except requests.ConnectionError as exc:
+            session.close()
+            error = exc
+    if error is None:
+        raise UnsafeURLError(f"{hostname} has no address to connect to")
+    raise error
 
 
 def _peer_is_public(response) -> bool:
@@ -189,7 +266,8 @@ def fetch_untrusted_page(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> dict
         {'source_url', 'final_url', 'fetched_at', 'retrieved_text', 'truncated'}
 
     Redirects are followed by hand (at most MAX_REDIRECTS), each hop
-    validated like the first URL. Raises UnsafeURLError for an unsafe URL,
+    validated like the first URL and connected at its validated address.
+    Raises UnsafeURLError for an unsafe URL,
     hop, content type or size/time; requests.RequestException on network
     errors; requests.HTTPError on 4xx/5xx.
 
@@ -197,25 +275,19 @@ def fetch_untrusted_page(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> dict
     allowlisted in tests/test_clock_discipline.py.
     """
     source_url = str(url or '').strip()
-    current = validate_url(source_url)
+    current, hostname, addresses = validated_target(source_url)
     deadline = time.monotonic() + FETCH_DEADLINE_SECONDS
     for _hop in range(MAX_REDIRECTS + 1):
-        response = requests.get(
-            current,
-            headers=DEFAULT_HEADERS,
-            timeout=HTTP_TIMEOUT_SECONDS,
-            allow_redirects=False,
-            stream=True,
-        )
+        response, session = _connect(current, hostname, addresses)
         try:
             location = response.headers.get('Location') if hasattr(response, 'headers') else None
             if 300 <= int(response.status_code) < 400 and location:
-                current = validate_url(urljoin(current, location))
+                current, hostname, addresses = validated_target(urljoin(current, location))
                 continue
             response.raise_for_status()
             content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
-            if content_type and not any(content_type.startswith(t) for t in ALLOWED_CONTENT_TYPES):
-                raise UnsafeURLError(f"unsupported content type {content_type!r}")
+            if not any(content_type.startswith(t) for t in ALLOWED_CONTENT_TYPES):
+                raise UnsafeURLError(f"unsupported content type {content_type or 'none'!r}")
             if not _peer_is_public(response):
                 raise UnsafeURLError('connected to a non-public address')
             raw, capped = _read_capped(response, deadline)
@@ -234,9 +306,10 @@ def fetch_untrusted_page(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> dict
                 'truncated': capped or len(text) > max_chars,
             }
         finally:
-            close = getattr(response, 'close', None)
-            if callable(close):
-                close()
+            for closeable in (response, session):
+                close = getattr(closeable, 'close', None)
+                if callable(close):
+                    close()
     raise UnsafeURLError(f"more than {MAX_REDIRECTS} redirects")
 
 
@@ -249,13 +322,6 @@ def fetch_page_text(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> str:
     return fetch_untrusted_page(url, max_chars)['retrieved_text']
 
 
-def fetch_page_text_validated(url: str, max_chars: int = PAGE_TEXT_MAX_CHARS) -> tuple[str, str]:
-    """(stripped_text, final_url) — the final URL lets callers detect a
-    redirect to a search or home page."""
-    page = fetch_untrusted_page(url, max_chars)
-    return page['retrieved_text'], page['final_url']
-
-
 def untrusted_envelope(page: dict, max_chars: int = 1500) -> dict:
     """The labelled shape research tools return fetched text in."""
     return {
@@ -265,12 +331,6 @@ def untrusted_envelope(page: dict, max_chars: int = 1500) -> dict:
         'retrieved_text': (page.get('retrieved_text') or '')[:max_chars],
         'notice': UNTRUSTED_NOTICE,
     }
-
-
-def untrusted_envelope_from_text(url: str, text: str, final_url: str | None = None,
-                                 max_chars: int = 1500) -> dict:
-    return untrusted_envelope({'source_url': url, 'final_url': final_url or url,
-                               'fetched_at': None, 'retrieved_text': text}, max_chars)
 
 
 def sanitize_text(text, max_chars: int) -> str:

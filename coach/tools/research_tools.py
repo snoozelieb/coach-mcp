@@ -1,6 +1,7 @@
 """Research tools - exercise library lookup, exercise research, sport research."""
 
 from ..mcp_app import mcp
+from ..authoring import key_words, normalise_exercise_name
 from ..web_utils import fetch_untrusted_page, untrusted_envelope, sanitize_text
 from ..config import DATA_DIR, EXERCISE_LIBRARY_FILE
 from ..planner import load_json_file, save_json_file
@@ -8,8 +9,28 @@ from datetime import date
 import json
 import logging
 import re
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+def _entry_categories(data: dict) -> set[str]:
+    """Every category a cached catalogue entry is filed under (upper-case)."""
+    cats = {str(c).upper() for c in (data.get("categories") or []) if c}
+    for key in ("category", "garmin_category"):
+        if data.get(key):
+            cats.add(str(data[key]).upper())
+    return cats
+
+
+def _name_matches(name: str, search: str) -> bool:
+    """'side plank' -> SIDE_PLANK substring; otherwise every word must appear."""
+    key = normalise_exercise_name(search)
+    upper = str(name or "").upper()
+    if key and key in upper:
+        return True
+    words = [w for w in key.split("_") if w]
+    return bool(words) and all(w in upper for w in words)
 
 
 @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
@@ -68,13 +89,13 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
         search_sources = [
             {
                 "name": "Muscle & Strength",
-                "url": f"https://www.muscleandstrength.com/exercises/{exercise_url_slug}.html",
+                "url": f"https://www.muscleandstrength.com/exercises/{quote(exercise_url_slug, safe='')}.html",
                 "type": "form",
                 "has_video": True
             },
             {
                 "name": "ExRx",
-                "url": f"https://exrx.net/WeightExercises/search?q={exercise_url_name}",
+                "url": f"https://exrx.net/WeightExercises/search?q={quote(exercise_url_name, safe='')}",
                 "type": "form",
                 "has_video": False
             },
@@ -138,6 +159,13 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
                     if any(kw in sentence_lower for kw in muscle_keywords):
                         muscle_findings.append(sentence_clean)
 
+            # Web sentences: control characters out, whitespace collapsed, capped
+            # (sanitize_text) before any of them is returned, cached or put on the watch.
+            setup_findings, execution_findings, cue_findings, mistake_findings, muscle_findings = (
+                [sanitize_text(sentence, 200) for sentence in findings]
+                for findings in (setup_findings, execution_findings, cue_findings,
+                                 mistake_findings, muscle_findings))
+
             result["form_cues"] = {
                 "setup": setup_findings[:3] if setup_findings else ["Set up with proper stance and alignment"],
                 "execution": execution_findings[:4] if execution_findings else ["Control the movement through full range of motion"],
@@ -167,7 +195,7 @@ def research_exercise(exercise_name: str, save_to_library: bool = True) -> str:
 
         else:
             # Couldn't fetch - provide fallback video URL and guidance
-            fallback_video = f"https://www.muscleandstrength.com/exercises/{exercise_url_slug}.html"
+            fallback_video = f"https://www.muscleandstrength.com/exercises/{quote(exercise_url_slug, safe='')}.html"
             result["form_cues"] = {
                 "note": f"Unable to fetch form guide for '{exercise_name}'.",
                 "suggested_searches": [
@@ -221,6 +249,11 @@ def list_exercises(
     """
     Browse the exercise library with optional filters.
 
+    A match carries key_words when its Garmin key spells equipment (CABLE,
+    INCLINE, DUMBBELL): words of the key, not Garmin data — DUMBBELL and BAND
+    travel, LAT_PULLDOWN spells nothing — a hint for the exercise's station
+    label in the plan, never a decision.
+
     Args:
         category: Filter by Garmin category (e.g., "DEADLIFT", "SQUAT", "PLANK")
         muscle: Filter by muscle group (e.g., "hamstrings", "glutes", "core")
@@ -258,10 +291,10 @@ def list_exercises(
         for name, data in exercises.items():
             include = True
 
-            # Category filter
-            if category:
-                if category.upper() != data.get("garmin_category", "").upper():
-                    include = False
+            # Category filter: every category Garmin files the name under
+            # (SIDE_PLANK is listed under PLANK and SUSPENSION)
+            if category and category.upper() not in _entry_categories(data):
+                include = False
 
             # Muscle filter
             if muscle and include:
@@ -275,23 +308,40 @@ def list_exercises(
                 if not any(injury_prevention.lower() in p.lower() for p in prevention):
                     include = False
 
-            # Text search
-            if search and include:
-                if search.lower() not in name.lower():
-                    include = False
+            # Text search: "side plank" finds SIDE_PLANK (spaces become
+            # underscores) and several words all have to appear
+            if search and include and not _name_matches(name, search):
+                include = False
 
             if include:
-                matches.append({
+                match = {
                     "name": name,
-                    "category": data.get("garmin_category"),
+                    "category": data.get("category") or data.get("garmin_category"),
                     "primary_muscles": data.get("primary_muscles", []),
                     "secondary_muscles": data.get("secondary_muscles", []),
                     "injury_prevention": data.get("injury_prevention", []),
-                })
+                }
+                listed = data.get("categories") or []
+                if len(listed) > 1:
+                    match["categories"] = listed
+                if data.get("is_bodyweight") is not None:
+                    match["is_bodyweight"] = bool(data.get("is_bodyweight"))
+                if data.get("counterpart"):
+                    match["counterpart"] = data.get("counterpart")
+                if data.get("custom"):
+                    match["custom"] = True
+                words = key_words(name)
+                if words:
+                    match["key_words"] = words
+                matches.append(match)
 
         # Apply limit (clamped to 1..200 — the payload goes into the model's context)
         result["matches"] = matches[:max(1, min(int(limit or 50), 200))]
         result["match_count"] = len(matches)
+        if exercises and not any(isinstance(e, dict) and 'categories' in e for e in exercises.values()):
+            result["catalogue_note"] = (
+                "one-category-per-name cache: run scripts/fetch_exercises.py to refresh it "
+                "(multi-category entries, bodyweight flags, counterparts)")
 
         # Record applied filters
         if category:
@@ -360,13 +410,13 @@ def research_sport(sport_name: str, url: str = None) -> str:
         search_sources.extend([
             {
                 "name": "Wikipedia",
-                "url": f"https://en.wikipedia.org/wiki/{sport_url_name}",
+                "url": f"https://en.wikipedia.org/wiki/{quote(sport_url_name, safe='')}",
                 "type": "general"
             },
             # Try with "_training" suffix for training-specific articles
             {
                 "name": "Wikipedia Training",
-                "url": f"https://en.wikipedia.org/wiki/{sport_url_name}_training",
+                "url": f"https://en.wikipedia.org/wiki/{quote(sport_url_name, safe='')}_training",
                 "type": "training"
             },
         ])

@@ -19,7 +19,9 @@ from coach.tools.coaching_tools import (
     _summarize_plan_adherence_by_pillar,
     _compute_coaching_score,
 )
-from conftest import FakeGarminClient, patch_garmin_everywhere
+import pytest
+
+from conftest import FakeGarminClient, make_garmin_activity, patch_garmin_everywhere
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +730,102 @@ class TestDataQuality:
         assert 'error' not in result
         assert result['week_grid']
 
+    async def test_legacy_exercise_catalogue_is_flagged(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """A one-category-per-name exercises.json (pre-2026-10 fetch script)
+        is flagged so the coach refreshes it; a current cache is silent."""
+        _seed_snapshot_env(sandbox_data_dir)
+        patch_garmin_everywhere(monkeypatch, FakeGarminClient())
+        (sandbox_data_dir / 'exercises.json').write_text(json.dumps(
+            {'exercises': {'PLANK': {'category': 'SUSPENSION'}}}), encoding='utf-8')
+
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
+        assert 'fetch_exercises' in result['data_quality']['exercise_catalogue']
+
+        (sandbox_data_dir / 'exercises.json').write_text(json.dumps(
+            {'exercises': {'PLANK': {'category': 'PLANK', 'categories': ['PLANK', 'SUSPENSION']}}}),
+            encoding='utf-8')
+        result = json.loads(await get_coaching_snapshot(mock_ctx, force_refresh=True))
+        assert 'exercise_catalogue' not in result['data_quality']
+
+
+class TestWeekViewFetch:
+    """ONE Garmin activities fetch per snapshot, wide enough for the rolling
+    week_grid, and visible in data_quality when it came from the cache."""
+
+    async def test_activity_six_days_ago_is_in_the_grid_as_garmin(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """Regression (2026-10): the week fetch started at this Monday, so on a
+        Monday the four padel days before it showed REST with source 'garmin'
+        while their load sat in daily_loads."""
+        today = _seed_snapshot_env(sandbox_data_dir, history_days=0)
+        six_ago = today - timedelta(days=6)
+        client = FakeGarminClient(activities=[
+            make_garmin_activity(six_ago, 'cycling'),
+            make_garmin_activity(today - timedelta(days=8), 'cycling'),  # outside the grid
+        ])
+        patch_garmin_everywhere(monkeypatch, client)
+
+        result = json.loads(await get_coaching_snapshot(mock_ctx))
+
+        day = result['week_grid'][six_ago.isoformat()]
+        assert day['source'] == 'garmin'
+        assert day['is_rest'] is False and day['types'] == ['cycling']
+        assert len(result['week_grid']) == 7
+        assert client.call_counts['get_activities_by_date'] == 1, "one fetch feeds ingestion and the grid"
+        # the fetch was ingested too: the day is in fitness history
+        history = json.loads((sandbox_data_dir / 'fitness_history.json').read_text(encoding='utf-8'))
+        assert six_ago.isoformat() in history['daily_loads']
+
+    async def test_cached_activities_are_flagged_until_force_refresh(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """A snapshot taken before the watch synced used to serve its payload
+        to every snapshot for five minutes with nothing saying so."""
+        _seed_snapshot_env(sandbox_data_dir)
+        client = FakeGarminClient()
+        patch_garmin_everywhere(monkeypatch, client)
+
+        first = json.loads(await get_coaching_snapshot(mock_ctx))
+        assert 'activities_cache' not in first['data_quality']
+
+        second = json.loads(await get_coaching_snapshot(mock_ctx))
+        assert 'force_refresh' in second['data_quality']['activities_cache']['note']
+        assert client.call_counts['get_activities_by_date'] == 1
+
+        third = json.loads(await get_coaching_snapshot(mock_ctx, force_refresh=True))
+        assert 'activities_cache' not in third['data_quality']
+        assert client.call_counts['get_activities_by_date'] == 2
+
+    async def test_compliance_is_the_trailing_week_against_one_week_of_targets(
+            self, sandbox_data_dir, mock_ctx, monkeypatch):
+        """The calendar week to date against a full week of targets read as a
+        volume deficit every Monday to Thursday; the snapshot now scores the
+        trailing seven days (the week_grid window) and says so."""
+        today = date.today()
+        _seed_snapshot_env(sandbox_data_dir, training_config={
+            'current_block': {'phase': 'build', 'weekly_volume_target_hrs': 7.0},
+            'pillars': {'strength_sessions_per_week': 1, 'mobility_minutes_per_week': 0,
+                        'long_effort_per_week': 0},
+            'events': [{'name': 'Test Race', 'date': (today + timedelta(days=45)).isoformat(),
+                        'type': 'gravel', 'priority': 'A'}],
+        })
+        client = FakeGarminClient(activities=[
+            make_garmin_activity(today - timedelta(days=d), 'cycling', duration_secs=3600)
+            for d in (0, 1, 2, 6, 8)   # 8 days ago is outside the window
+        ])
+        patch_garmin_everywhere(monkeypatch, client)
+
+        result = json.loads(await get_coaching_snapshot(mock_ctx, sections=['plan']))
+
+        compliance = result['compliance']
+        assert compliance['window']['days'] == 7
+        assert compliance['window']['start'] == (today - timedelta(days=6)).isoformat()
+        assert compliance['window']['end'] == today.isoformat()
+        assert 'trailing 7 days' in compliance['window']['basis']
+        assert compliance['volume']['actual_hrs'] == 4.0
+        assert compliance['volume']['target_hrs'] == 7.0
+        assert compliance['targets_per_week']['volume_hrs'] == 7.0
+
 
 # ---------------------------------------------------------------------------
 # Activity fetch window — mid-week plan start
@@ -846,22 +944,21 @@ class TestMidWeekPlanActivityFetch:
         assert activities_this_week[0]['date'] == '2026-02-09'
         assert activities_this_week[1]['date'] == '2026-02-10'
 
-    def test_fetch_start_uses_earlier_of_plan_and_monday(self):
-        """Fetch start date should be min(plan_start, monday_this_week)."""
-        today = date(2026, 2, 8)  # Saturday
-        monday_this_week = today - timedelta(days=today.weekday())  # Feb 2
-
-        # Case 1: Plan starts after Monday — fetch from Monday
-        plan_start_1 = date(2026, 2, 5)  # Thursday
-        assert min(plan_start_1, monday_this_week) == monday_this_week
-
-        # Case 2: Plan starts before Monday — fetch from plan start
-        plan_start_2 = date(2026, 1, 30)  # Friday of previous week
-        assert min(plan_start_2, monday_this_week) == plan_start_2
-
-        # Case 3: Plan starts on Monday — both are equal
-        plan_start_3 = date(2026, 2, 2)  # Monday
-        assert min(plan_start_3, monday_this_week) == monday_this_week
+    @pytest.mark.parametrize('weekday', range(7))
+    def test_week_view_start_covers_the_rolling_grid_every_weekday(self, weekday):
+        """The week views need the plan period, the calendar week AND the
+        rolling seven days of week_grid: a Monday fetch that started at Monday
+        showed the previous Wednesday-to-Sunday padel days as REST."""
+        from coach.tools.coaching_tools import _week_view_start
+        today = date(2026, 10, 26) + timedelta(days=weekday)  # a Monday, then each later weekday
+        monday = today - timedelta(days=today.weekday())
+        start = _week_view_start(today, None)
+        assert start <= today - timedelta(days=6)
+        assert start <= monday
+        assert start == min(monday, today - timedelta(days=6))
+        # a plan that started before both widens the window, a later one does not
+        assert _week_view_start(today, today - timedelta(days=12)) == today - timedelta(days=12)
+        assert _week_view_start(today, today) == start
 
 
 # ---------------------------------------------------------------------------

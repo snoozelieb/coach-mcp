@@ -432,6 +432,7 @@ class TestAddExercise:
         assert result['status'] == 'success'
         entry = result['exercise']
         assert entry['custom'] is True
+        assert entry['categories'] == ['HAMSTRING_CURL']  # schema-2 shape: every category listed
         assert entry['primary_muscles'] == ['hamstrings', 'glutes']
         assert entry['secondary_muscles'] == ['calves']
         assert entry['injury_prevention'] == ['hamstring']

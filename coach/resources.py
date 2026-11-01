@@ -225,7 +225,10 @@ week_grid[date].claims. A claim never counts in compliance, adherence or
 load. A claim unverified for 14 days becomes an anomaly — raise it with the
 athlete. When Garmin is fresh and contradicts a claim about an older day,
 ask what happened first and store the athlete's explanation as the claim's
-note.
+note. When the athlete says the watch has just synced, call
+get_coaching_snapshot(force_refresh=True): Garmin fetches are cached for
+about five minutes and data_quality.activities_cache says when the
+activities came from that cache instead of Garmin.
 
 ## Multi-Session Days
 
@@ -235,6 +238,29 @@ short strength set, long ride + upper body, gym day split into legs + UB).
 Each session in the list is pushed to Garmin as its own workout and counted
 independently in compliance and adherence. Do NOT cram multiple workouts into
 one description string — that loses per-session tracking.
+
+## Weather and Daylight (plan around the forecast)
+
+snapshot.weather_outlook (and get_weather_outlook(days) for the hourly
+training windows) carries wind, gusts, rain and daylight for the coming
+days at the athlete's profile location (set_location, once). The facts
+come from the forecast; the limit comes from methodology.weather
+(outdoor_ride_gust_limit_kmh, default 50) and the athlete's own words.
+- Running is fine in rain and wind. Daylight and visibility decide a run,
+  not weather. Say so when the athlete hesitates.
+- An outdoor ride needs daylight gusts under the limit for the whole ride.
+  Above it, make the ride an indoor session with the same purpose (power
+  targets), or move it to the calmest day. Never drop it silently.
+- The week's long ride goes on the calmest daylight day whose
+  calm_daylight_block is at least as long as the ride.
+- A session outside daylight needs the athlete's say-so (lit route,
+  trainer, gym). The windows in the outlook follow
+  life_constraints.preferred_training_times.
+- update_weekly_plan and the push preview add a grounding warning
+  ('wind_over_ride_limit') for an outdoor ride on a day over the limit.
+  Change the plan or state in the rationale why the ride stays outdoors.
+- A forecast beyond three days moves. Re-read the outlook the evening
+  before a long outdoor session; log a swap with log_coaching_decision.
 
 ## Session Contract (structure and exercises)
 
@@ -257,21 +283,52 @@ with the field and the allowed keys.
   [low, high] % of FTP); cadence [low, high]; or the intensity word
   recovery | easy | tempo | sweet_spot | threshold | vo2 | max_effort
   (z1-z6 accepted), which resolves to pace (runs, when threshold pace is
-  set), power (indoor rides) or HR. A phase without a target inherits the
-  session intensity.
+  set), power (indoor rides) or HR. A target is an alert in both
+  directions. easy and recovery render as ceilings: the alert fires only
+  above the zone top; the low bound is the athlete's aerobic floor (resting
+  HR + 30 % of heart-rate reserve, the ACSM boundary of light aerobic
+  activity; personal.aerobic_floor_pct_hrr changes the share). The other
+  words and hr_target are bands the athlete must hit; hr_max [bpm] is an
+  explicit ceiling. Only an interval phase with no target inherits the
+  session intensity; warm-up, cool-down, recovery and rest phases render
+  untargeted unless they state one. HR lags 1-2 minutes: no HR band on a
+  timed step under 3 minutes (the preview warns) — use pace, hr_max or a
+  cue with intensity 'none' there. A walk step takes 'recovery' for a
+  keep-walking band (aerobic floor to the top of z1) or no target for
+  silence. The floor is this athlete's, not a rule: get_athlete().derived
+  shows it beside the median HR of their recorded walks; after the first
+  run/walk sessions compare the two, tune personal.aerobic_floor_pct_hrr
+  (update_athlete) and log the decision. The share, the lag threshold, the
+  pace factor and the ceiling words live in methodology.targets
+  (update_methodology), never in code.
 - notes: the cue shown on the step (about 50 characters).
 - Strength sessions carry `exercises`: name (Garmin key), category (needed
-  when the name is off-catalogue), sets, reps or duration_secs, each_side,
-  weight_kg (explicit only), rest_secs (timed rest; lap button when
+  when the name is off-catalogue), sets, reps or duration_secs (a hold is
+  timed: a rep count on a PLANK, HOLD, HANG or CARRY name is rejected),
+  each_side (a Left step and a Right step, each with the stated reps or
+  time), weight_kg (explicit only), rest_secs (timed rest; lap button when
   omitted), notes (the cue); circuits are {'rounds': N, 'exercises':
   [...], 'rest_secs': S}. A session-level warmup_mins adds a warm-up block.
+- Gym order is by station, not by muscle. Every exercise states its
+  `station` (the spot: 'incline bench', 'cable', 'mat'; one label per spot,
+  reused verbatim; a circuit's station covers its members; not sent to the
+  watch). A practitioner's stated order wins. Otherwise the main lift's
+  station comes first, the remaining stations follow by contention (rack,
+  bench and dumbbells, machines and cables, bar, bands, mat), one load is
+  finished before the next inside a station, a movement that needs nothing
+  (dead bug, band) is done at the station it sits between, and a circuit
+  stays on one station or on equipment that travels. The preview prints the
+  walk ('Stations:' ahead of the steps) and warns on a return to a station
+  already left, a circuit whose rounds change spot, or unstated stations;
+  methodology.strength.station_order (off | warn | error,
+  update_methodology) makes a revisit reject the save.
 
 Worked example — a Level 2 run/walk protocol (R4/W2 x 4):
 
     {'type': 'running', 'duration_mins': 30, 'intensity': 'easy',
      'description': 'L2 R4/W2 x 4',
      'structure': [
-         {'phase': 'warmup', 'duration_secs': 180, 'intensity': 'recovery',
+         {'phase': 'warmup', 'duration_secs': 180,
           'notes': '300m walk + 4 heel + 4 toe steps'},
          {'phase': 'repeat', 'iterations': 4, 'steps': [
              {'phase': 'interval', 'duration_secs': 240, 'intensity': 'easy',

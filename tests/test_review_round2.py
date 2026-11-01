@@ -117,23 +117,27 @@ def test_interval_words_warn_but_a_negation_does_not():
 
 
 # ---------------------------------------------------------------------------
-# Catalogue corrections for names cached under SUSPENSION (one category per name)
+# Names Garmin files under several categories keep their name under any of them
 # ---------------------------------------------------------------------------
 
-CACHE = {'PULL_UP': {'category': 'SUSPENSION'}, 'FACE_PULL': {'category': 'SUSPENSION'},
-         'SQUAT_JUMP': {'category': 'SUSPENSION'}, 'SIDE_LUNGE': {'category': 'SUSPENSION'},
-         'TRX_ROW': {'category': 'SUSPENSION'}}
+CACHE = {'PULL_UP': {'category': 'PULL_UP', 'categories': ['PULL_UP', 'SUSPENSION']},
+         'FACE_PULL': {'category': 'ROW', 'categories': ['ROW', 'SUSPENSION']},
+         'SQUAT_JUMP': {'category': 'PLYO', 'categories': ['PLYO']},
+         'SIDE_LUNGE': {'category': 'LUNGE', 'categories': ['LUNGE', 'SANDBAG', 'SUSPENSION']},
+         'TRX_ROW': {'category': 'SUSPENSION', 'categories': ['SUSPENSION']}}
 
 
 @pytest.mark.parametrize('name, stated, expected_category, keeps_name', [
     ('PULL_UP', 'PULL_UP', 'PULL_UP', True),
-    ('PULL_UP', None, 'PULL_UP', True),
+    ('PULL_UP', 'SUSPENSION', 'SUSPENSION', True),   # any listed category keeps the name
+    ('PULL_UP', None, 'PULL_UP', True),              # the primary one is sent otherwise
     ('FACE_PULL', None, 'ROW', True),
     ('SQUAT_JUMP', None, 'PLYO', True),
     ('SIDE_LUNGE', 'LUNGE', 'LUNGE', True),
+    ('SIDE_LUNGE', None, 'LUNGE', True),
     ('TRX_ROW', None, 'SUSPENSION', True),
 ])
-def test_names_the_cache_files_under_suspension_keep_their_category(name, stated, expected_category, keeps_name):
+def test_names_filed_under_several_categories_keep_their_name_under_any(name, stated, expected_category, keeps_name):
     spec = authoring.CircuitExercise(name=name, category=stated, reps=10)
     category, sent_name, warning = authoring.resolve_exercise_category(spec, CACHE)
     assert category == expected_category
@@ -237,7 +241,7 @@ def test_placeholder_skip_reason_matches_the_save_warning(push_env):
 # ---------------------------------------------------------------------------
 
 def _profile(sandbox, with_zones: bool):
-    personal = {'name': 'T', 'max_hr': 185}
+    personal = {'name': 'T', 'max_hr': 185, 'resting_hr': 55}  # aerobic floor 55 + 30 % of 130 = 94
     if with_zones:
         personal['hr_zones'] = {'z1_recovery': [0, 125], 'z2_aerobic': [125, 140], 'z3_tempo': [140, 155],
                                 'z4_threshold': [155, 168], 'z5_max': [168, 185]}
@@ -253,7 +257,7 @@ def test_generic_hr_zones_are_flagged(sandbox_data_dir):
     assert any('no HR zones' in w['message'] for w in report['warnings']), report['warnings']
     _profile(sandbox_data_dir, with_zones=True)
     report = _report(session)
-    assert report['steps'][0].startswith('1. Interval 1:00:00 @ HR 125-140 bpm')
+    assert report['steps'][0].startswith('1. Interval 1:00:00 @ HR 94-140 bpm')  # easy: floor to the top of z2
     assert not any('no HR zones' in w['message'] for w in report['warnings'])
 
 

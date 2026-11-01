@@ -1833,6 +1833,54 @@ def get_athlete_hr_zones() -> dict[str, list[int]] | None:
     return (athlete or {}).get('personal', {}).get('hr_zones')
 
 
+def walking_hr_evidence(daily_loads: dict, window_days: int = 120,
+                        min_duration_mins: float = 15) -> dict:
+    """The athlete's own walking heart rate: the median avg_hr of their
+    recorded walking activities of at least `min_duration_mins`, over the
+    last `window_days` of recorded history (anchored on the latest recorded
+    day — no clock). This is the evidence an aerobic floor is checked
+    against: a floor above it would read 'HR too low' on every walk.
+
+    Returns {'median_bpm', 'count', 'window_days', 'min_duration_mins',
+    'latest_date'}; median_bpm is None without walks.
+    """
+    result = {'median_bpm': None, 'count': 0, 'window_days': window_days,
+              'min_duration_mins': min_duration_mins, 'latest_date': None}
+    if not isinstance(daily_loads, dict):
+        return result
+    dated = []
+    for key in daily_loads:
+        try:
+            dated.append((date.fromisoformat(str(key)), key))
+        except ValueError:
+            continue
+    if not dated:
+        return result
+    dated.sort()
+    latest = dated[-1][0]
+    result['latest_date'] = latest.isoformat()
+    start = latest - timedelta(days=window_days)
+    values = []
+    for day, key in dated:
+        if day < start:
+            continue
+        record = daily_loads.get(key)
+        for activity in (record.get('activities') or []) if isinstance(record, dict) else []:
+            kind = str(activity.get('type') or activity.get('sport') or '').lower()
+            if 'walk' not in kind:
+                continue
+            hr, mins = activity.get('avg_hr'), activity.get('duration_mins')
+            if isinstance(hr, (int, float)) and isinstance(mins, (int, float)) and hr > 0 and mins >= min_duration_mins:
+                values.append(float(hr))
+    if values:
+        values.sort()
+        mid = len(values) // 2
+        median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+        result['median_bpm'] = int(round(median))
+        result['count'] = len(values)
+    return result
+
+
 def parse_sleep_payload(payload: dict | None, day_iso: str) -> tuple[dict | None, dict | None]:
     """Parse one night's raw get_sleep_data payload into a sleep record.
 

@@ -210,14 +210,16 @@ class TestEntryPoints:
         monkeypatch.setattr(srv, 'check_setup', lambda: True)
         monkeypatch.setattr(
             srv.mcp, 'run',
-            lambda transport, show_banner=True: seen.update(t=transport, banner=show_banner))
+            lambda transport, show_banner=True, **kwargs: seen.update(t=transport, banner=show_banner, **kwargs))
         monkeypatch.setenv('COACH_TRANSPORT', ' HTTP ')
+        monkeypatch.setenv('COACH_HTTP_TOKEN', 'test-token-of-sufficient-length')
         monkeypatch.delenv('COACH_CODE_MODE', raising=False)
 
         srv.main()
 
         assert seen['t'] == 'http'
         assert seen['banner'] is False  # the PyPI update-check banner stays off
+        assert seen['host_origin_protection'] is True  # HTTP transports run the Host/Origin checks
 
 
 # ---------------------------------------------------------------------------

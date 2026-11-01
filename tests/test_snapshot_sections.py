@@ -353,7 +353,7 @@ CORE_MANDATED_KEYS = [
     'current_time_context', 'flags', 'week_grid', 'week_grid_today',
     'fitness_metrics', 'acwr_warnings', 'injuries', 'plan_adherence',
     'weekly_plan', 'planned_vs_actual', 'coaching_memory', 'sleep_gate',
-    'data_quality',
+    'data_quality', 'weather_outlook',
 ]
 
 HEAVY_SECTION_KEYS = [
@@ -694,6 +694,20 @@ class TestGarminFetchCache:
         await _snapshot(mock_ctx)
         assert client.total_calls() == calls_after_first, \
             "second back-to-back snapshot must reuse cached Garmin data"
+
+    async def test_one_activities_fetch_per_snapshot(self, data_env, mock_ctx, monkeypatch):
+        """Ingestion and the week views share one Garmin activities fetch (two
+        separately cached fetches could disagree with each other)."""
+        _seed_realistic_env(data_env)
+        client = _default_client()
+        _patch_garmin(monkeypatch, client)
+
+        result = await _snapshot(mock_ctx)
+
+        assert 'error' not in result
+        assert client.calls['get_activities_by_date'] == 1
+        ((start, end),) = client.activity_calls
+        assert start <= (TODAY - timedelta(days=6)).isoformat() and end == TODAY.isoformat()
 
     async def test_force_refresh_bypasses_cache(self, data_env, mock_ctx, monkeypatch):
         _seed_realistic_env(data_env)
