@@ -4,14 +4,26 @@ All notable changes to coach-mcp are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.4.0] - 2026-11-06
 
-What the plan says is what the watch shows. A review of the athlete's own
-pushed workouts (gym sets especially) found the renderer dropping the
-physio's cues, inventing sets, reps and weights the plan never stated, and
-collapsing cycling repeats. The renderer now draws the session exactly as
-written, a strict session contract rejects what it cannot draw with errors
-that teach, and the push preview shows the step tree before anything lands.
+Three batches in one release. A safety batch: the lost-update class is
+closed, the four mandates have code behind them, consent is enforced where
+protection is lifted, the push is a preview and a confirm, and two
+athlete-reported bugs are fixed (window-blind compliance; an activity that
+vanished from local history). A session-contract batch: a review of the
+athlete's own pushed workouts (gym sets especially) found the renderer
+dropping the physio's cues, inventing sets, reps and weights the plan never
+stated, and collapsing cycling repeats; the renderer now draws the session
+exactly as written, a strict contract rejects what it cannot draw with
+errors that teach, and the push preview shows the step tree before anything
+lands. A coaching batch: targets are alerts both ways, the weather sits in
+the plan, gym sessions are ordered by station, and seven bugs from a
+coaching session are fixed.
+
+Breaking for HTTP users: the HTTP transports refuse to start without
+`COACH_HTTP_TOKEN` (see Security); stdio, the default, is unchanged. A plan
+written in this release's vocabulary does not render on 1.3.0 (see the
+rollback note under Changed).
 
 ### Added
 - **Targets are alerts (2026-10-30).** The watch sounds whenever the athlete
@@ -51,38 +63,138 @@ that teach, and the push preview shows the step tree before anything lands.
   before the next, a movement that needs nothing done at the station it
   sits between, circuits on one station only. The authoring eval gains an
   order-sensitive `steps_order` check and a station-ordered golden.
+- **Authoring eval** (`scripts/authoring_eval.py`, `evals/authoring/`): 17
+  coaching briefs across running, cycling, strength and mobility, each with
+  the checks its rendering must satisfy and a golden session that does.
+  `--check` renders the goldens (CI runs it through
+  `tests/test_authoring_eval.py`, which also proves every check rejects the
+  other cases' renderings); `--run` has `claude -p --agent workout-author`
+  author each brief against a hermetic coach server (synthetic athlete, a
+  committed slice of the Garmin catalogue, dummy credentials, only preview
+  and lookup tools) and measures how often the step tree matches — the
+  probability claim is measured, not asserted.
+- **Session contract** (`coach/authoring.py`): strict pydantic models for
+  `structure` phases and repeat blocks (shared by runs and rides) and for
+  strength `exercises` and circuits, with teaching errors — an unknown key
+  names the allowed keys, a phase needs exactly one end condition and at most
+  one numeric target, an exercise needs `sets` and `reps` or `duration_secs`.
+  New keys: `pace_sec_per_km`, `each_side`, `reps: "open"`, circuits
+  `{rounds, exercises, rest_secs}`, session-level `warmup_mins`.
+- `update_weekly_plan` rejects contract violations (`authoring_error`, nothing
+  saved) and returns `authoring_warnings` (off-catalogue exercise names the
+  watch will strip, cues over 50 characters, session intensities outside the
+  vocabulary).
+- `push_plan_to_garmin` preview carries each session's rendered step tree
+  (`steps`) and warnings, lists `unrenderable` sessions with their errors
+  (never uploaded; reported under `errors` on confirm), and uploads exactly
+  the payload that was previewed.
+- `preview_workout(session)` (52nd tool): render one session without saving;
+  `preview_workout()` returns the contract and JSON schemas. Also published as
+  the `coach://authoring/contract` resource and the `author_session` prompt.
+- Four sport authoring skills (`.claude/skills/*-session-author`) carrying the
+  composition judgment in reviewable markdown, with worked examples validated
+  against the contract by `tests/test_skills.py`, and the `workout-author`
+  Claude Code agent that loops on `preview_workout` until the rendering matches
+  the brief.
+- **SNAPSHOT FIRST in code** (`coach/session_state.py`): `update_weekly_plan`,
+  `training_program(set)`, `push_plan_to_garmin`, `update_phase` and injury
+  status transitions return `snapshot_required` / `snapshot_stale` until
+  `get_coaching_snapshot` has run in this process today, under 2 hours ago
+  (`COACH_SNAPSHOT_GATE=0` disables, `COACH_SNAPSHOT_MAX_AGE_MIN` tunes).
+- **Setup mode.** Without `athlete.json` the same writes return
+  `setup_required` naming the data directory, the console scripts and the
+  in-chat path (`COACH_SETUP_GATE=0` disables).
+- **Athlete claims** (`record_activity_claim`, 51st tool): what the athlete
+  says they did when Garmin cannot confirm it. Stored as coaching memory,
+  checked against Garmin at once, re-verified on every snapshot and
+  morning audit, listed under `unverified_claims` and on `week_grid` days,
+  turned into an anomaly after 14 days. A claimed planned session is
+  `claimed`, not `missed`. Claims never count as training.
+- **Week-grid source.** Each day carries `source` (`garmin`, `persisted`,
+  `unavailable`); an unavailable day has `is_rest: null` and
+  `types_summary: "UNKNOWN"`, never a false REST. The instructions say to
+  challenge a claim only on a `garmin` day older than yesterday.
+- **Consent fields.** Resolving an injury or relaxing its restrictions
+  needs `athlete_statement` and `rationale` and logs a reviewable decision;
+  overriding the injury gate on a plan, program or push needs
+  `athlete_statement` and `override_rationale` and logs a `gate_override`
+  decision. `update_injury_status` can set `restricted_activities` /
+  `safe_activities`; the snapshot flags active injuries without
+  restrictions (`data_quality.injury_without_restrictions`).
+- **Two-step push.** `push_plan_to_garmin` previews (sessions, workouts to
+  delete, grounding warnings, violations) and writes only with the
+  single-use `confirm_token` it issued, valid 10 minutes and bound to the
+  planned sessions; `anthropic/requiresUserInteraction` on push and
+  `remove_race`.
+- **Device-day context.** `current_time_context` carries `garmin_date`,
+  `garmin_utc_offset_minutes`, `source` and `date_mismatch` from the device
+  clock of the newest activity.
+- **SSRF-safe research.** Only public https URLs are fetched, every
+  redirect hop validated, the connected peer re-checked, 2 MB and 20 s
+  caps, text content types only. Research tools return fetched text as
+  `untrusted_content` with a notice; web-derived exercise notes are
+  sanitised before caching and before Garmin.
+- Console scripts `garmin-coach-setup` and `garmin-coach-login`; the auth
+  error names both recovery commands; README shell snippets for PowerShell
+  and bash.
+- MCP Registry publish in CI (OIDC, pinned and signature-verified
+  publisher, retries while PyPI lags) — see `docs/PUBLISHING.md`.
 
-### Security
-- **HTTP transports are closed by default (2026-11-01).** `COACH_TRANSPORT=http`
-  (and `streamable-http`, legacy `sse`) now refuses to start without
-  `COACH_HTTP_TOKEN`, a bearer token of 16+ characters checked on every
-  request (FastMCP's static token verifier); `Host` and `Origin` headers are
-  validated on every request (FastMCP's guard in strict mode, its default is
-  off, so a page in the athlete's browser cannot reach the server through
-  DNS rebinding), with `COACH_HTTP_ALLOWED_HOSTS` / `COACH_HTTP_ALLOWED_ORIGINS`
-  for extra names and `COACH_HTTP_INSECURE=1` to waive the token on a
-  loopback bind only. The host and port checked are the ones FastMCP will
-  bind (its settings, which also read FastMCP's own `.env`), and the run call
-  binds exactly those, so the check and the bind cannot diverge. stdio is
-  unchanged.
-- **Research fetches are pinned to the address that passed the check.** The
-  page fetch resolved a hostname, checked every address against the
-  public-only policy, then let the HTTP library resolve the name again at
-  connect time; a DNS answer that changed in between could have pointed the
-  fetch at a private address. Each request now goes to the validated address
-  with TLS still verifying the hostname, each redirect hop the same, and no
-  proxy from the environment sits in between.
-- **Model-supplied names are URL-encoded** into the fixed research hosts'
-  paths (exercise, sport and injury lookups) instead of being spliced in raw,
-  and every sentence lifted from a page is sanitised (control characters out,
-  whitespace collapsed, capped) before it is returned, cached in the exercise
-  library or sent to the watch. Race and injury research return the same
-  untrusted envelope as the other research tools, with the fetch time and
-  final URL, and a page that declares no text content type is refused.
-- **Docs.** The Claude Desktop example no longer carries the Garmin password
-  (run `garmin-coach-login` once; the server logs in from the stored tokens),
-  the Cursor example uses `${env:GARMIN_PASSWORD}`, and SECURITY.md states
-  the transport rules.
+### Changed
+- The "10-15 % a week" progression figure lives in one place
+  (`SAFE_WEEKLY_PROGRESSION_PCT` in `coach/config.py`); the grounding warning,
+  the prescription note and the program-design prompt render it from there
+  instead of restating it. `CTL_TARGETS` are documented as advisory until
+  recalibrated to the Garmin load scale (CLAUDE.md, Known Issues).
+- CI and release workflows run the Node 24 action majors (checkout@v7,
+  setup-python@v7, upload-artifact@v7, download-artifact@v8); the Node 20
+  deprecation notices are gone before Node 20 actions stop running.
+- Strength warm-ups are explicit: `warmup_mins` renders a WARM_UP block; the
+  implicit 5-minute CARDIO warm-up and the `skip_warmup` flag are gone
+  (`skip_warmup` now only warns; the save warns when loaded compounds have
+  no warm-up stated). Plain runs and rides take explicit `warmup_mins` /
+  `cooldown_mins`; without them the documented percentage split applies.
+- The push confirm uploads the payloads rendered at preview time, bound to
+  the single-use token, instead of re-rendering: an FTP or zone edit between
+  preview and confirm can no longer change the targets the athlete approved.
+  A confirm with anything not pushed returns `status: 'partial'`.
+- The save gate renders every pushable session the way the push does (same
+  legacy nested-day expansion, same renderer), so a session the save accepts
+  cannot come back `unrenderable` at push; a malformed value in a lenient lane
+  (FTP-test `protocol`, swimming phases, rehab exercises) is a named error
+  instead of a crash that failed the whole push.
+- The injury gate also matches strength exercises: a restricted movement
+  word (`jump`, `overhead`, `shoulder_press`) in an exercise's Garmin key or
+  category rejects the save and the push, naming the exercise.
+- A description that reads like intervals on a run or ride without
+  `structure` warns; sets and reps in a strength description without
+  `exercises` are an error. A plain run or ride with no intensity warns that
+  its main block is untargeted. On a `discretion` day nothing is targeted and
+  the `constraints` are written on the main step.
+- Teaching warnings about the athlete, never values: a loaded movement with no
+  `weight_kg` while the strength baseline records one; a researched
+  exercise-library cue used because the plan gave no notes; an estimated
+  duration far from the planned one. Catalogue category corrections apply to
+  exact names (or names the cache files under SUSPENSION) only; phase targets
+  carry plausibility ranges; `intensity: 'none'` makes a step untargeted.
+- Rollback note: a plan written in the new vocabulary (`reps: "open"`,
+  circuits, `duration_secs` holds, `warmup_mins`) does not render on the
+  previous release's renderer — revert the code and re-author, or keep this
+  release.
+- Muscle-group words as categories (`GLUTE`, `CALF`, ...) are rejected with
+  Garmin-category suggestions instead of being mapped silently; a missing or
+  unknown category is an error instead of a nameless CARDIO step.
+- `update_weekly_plan`'s description fits Claude Code's 4,096-character
+  upfront cap (test-enforced), so a coach-only session sees the whole
+  contract summary.
+- `override_purpose_gate` is deprecated and no longer bypasses the purpose
+  gate.
+- `get_activities_range` pages at 92 days (`next_start`), `list_exercises`
+  clamps its limit, large payloads drop indentation.
+- Fitness backups live in `<data_dir>/backups/`; the morning audit
+  re-checks 7 days.
+- The Garmin login path is serialised; a forced refresh skips the re-login
+  when another thread already replaced the failed client.
 
 ### Fixed
 - **Seven bugs from a coaching session (2026-10-29).** Holds are timed by
@@ -169,98 +281,6 @@ that teach, and the push preview shows the step tree before anything lands.
 - The session `name` is the Garmin workout name when given (audit notes in
   `description` no longer become the title); structured sessions without
   `duration_mins` are no longer skipped.
-
-### Added
-- **Authoring eval** (`scripts/authoring_eval.py`, `evals/authoring/`): 17
-  coaching briefs across running, cycling, strength and mobility, each with
-  the checks its rendering must satisfy and a golden session that does.
-  `--check` renders the goldens (CI runs it through
-  `tests/test_authoring_eval.py`, which also proves every check rejects the
-  other cases' renderings); `--run` has `claude -p --agent workout-author`
-  author each brief against a hermetic coach server (synthetic athlete, a
-  committed slice of the Garmin catalogue, dummy credentials, only preview
-  and lookup tools) and measures how often the step tree matches — the
-  probability claim is measured, not asserted.
-- **Session contract** (`coach/authoring.py`): strict pydantic models for
-  `structure` phases and repeat blocks (shared by runs and rides) and for
-  strength `exercises` and circuits, with teaching errors — an unknown key
-  names the allowed keys, a phase needs exactly one end condition and at most
-  one numeric target, an exercise needs `sets` and `reps` or `duration_secs`.
-  New keys: `pace_sec_per_km`, `each_side`, `reps: "open"`, circuits
-  `{rounds, exercises, rest_secs}`, session-level `warmup_mins`.
-- `update_weekly_plan` rejects contract violations (`authoring_error`, nothing
-  saved) and returns `authoring_warnings` (off-catalogue exercise names the
-  watch will strip, cues over 50 characters, session intensities outside the
-  vocabulary).
-- `push_plan_to_garmin` preview carries each session's rendered step tree
-  (`steps`) and warnings, lists `unrenderable` sessions with their errors
-  (never uploaded; reported under `errors` on confirm), and uploads exactly
-  the payload that was previewed.
-- `preview_workout(session)` (52nd tool): render one session without saving;
-  `preview_workout()` returns the contract and JSON schemas. Also published as
-  the `coach://authoring/contract` resource and the `author_session` prompt.
-- Four sport authoring skills (`.claude/skills/*-session-author`) carrying the
-  composition judgment in reviewable markdown, with worked examples validated
-  against the contract by `tests/test_skills.py`, and the `workout-author`
-  Claude Code agent that loops on `preview_workout` until the rendering matches
-  the brief.
-
-### Changed
-- The "10-15 % a week" progression figure lives in one place
-  (`SAFE_WEEKLY_PROGRESSION_PCT` in `coach/config.py`); the grounding warning,
-  the prescription note and the program-design prompt render it from there
-  instead of restating it. `CTL_TARGETS` are documented as advisory until
-  recalibrated to the Garmin load scale (CLAUDE.md, Known Issues).
-- CI and release workflows run the Node 24 action majors (checkout@v7,
-  setup-python@v7, upload-artifact@v7, download-artifact@v8); the Node 20
-  deprecation notices are gone before Node 20 actions stop running.
-- Strength warm-ups are explicit: `warmup_mins` renders a WARM_UP block; the
-  implicit 5-minute CARDIO warm-up and the `skip_warmup` flag are gone
-  (`skip_warmup` now only warns; the save warns when loaded compounds have
-  no warm-up stated). Plain runs and rides take explicit `warmup_mins` /
-  `cooldown_mins`; without them the documented percentage split applies.
-- The push confirm uploads the payloads rendered at preview time, bound to
-  the single-use token, instead of re-rendering: an FTP or zone edit between
-  preview and confirm can no longer change the targets the athlete approved.
-  A confirm with anything not pushed returns `status: 'partial'`.
-- The save gate renders every pushable session the way the push does (same
-  legacy nested-day expansion, same renderer), so a session the save accepts
-  cannot come back `unrenderable` at push; a malformed value in a lenient lane
-  (FTP-test `protocol`, swimming phases, rehab exercises) is a named error
-  instead of a crash that failed the whole push.
-- The injury gate also matches strength exercises: a restricted movement
-  word (`jump`, `overhead`, `shoulder_press`) in an exercise's Garmin key or
-  category rejects the save and the push, naming the exercise.
-- A description that reads like intervals on a run or ride without
-  `structure` warns; sets and reps in a strength description without
-  `exercises` are an error. A plain run or ride with no intensity warns that
-  its main block is untargeted. On a `discretion` day nothing is targeted and
-  the `constraints` are written on the main step.
-- Teaching warnings about the athlete, never values: a loaded movement with no
-  `weight_kg` while the strength baseline records one; a researched
-  exercise-library cue used because the plan gave no notes; an estimated
-  duration far from the planned one. Catalogue category corrections apply to
-  exact names (or names the cache files under SUSPENSION) only; phase targets
-  carry plausibility ranges; `intensity: 'none'` makes a step untargeted.
-- Rollback note: a plan written in the new vocabulary (`reps: "open"`,
-  circuits, `duration_secs` holds, `warmup_mins`) does not render on the
-  previous release's renderer — revert the code and re-author, or keep this
-  release.
-- Muscle-group words as categories (`GLUTE`, `CALF`, ...) are rejected with
-  Garmin-category suggestions instead of being mapped silently; a missing or
-  unknown category is an error instead of a nameless CARDIO step.
-- `update_weekly_plan`'s description fits Claude Code's 4,096-character
-  upfront cap (test-enforced), so a coach-only session sees the whole
-  contract summary.
-
-## [1.4.0] - 2026-10-26
-
-A safety release: the lost-update class is closed, the four mandates have
-code behind them, and consent is enforced where protection is lifted. Two
-athlete-reported bugs are fixed (window-blind compliance; an activity that
-vanished from local history).
-
-### Fixed
 - **Compliance scaled to its window.** A 28-day report compared four weeks
   of training with a one-week target ("280 % of target, overtraining risk"
   for 22.4 h against 8 h/week). Requirements now scale to the window, the
@@ -288,60 +308,37 @@ vanished from local history).
 - Plan resends no longer wipe the morning audit's per-day verdicts, and a
   pruned day leaves the plan only after its archive write succeeded.
 
-### Added
-- **SNAPSHOT FIRST in code** (`coach/session_state.py`): `update_weekly_plan`,
-  `training_program(set)`, `push_plan_to_garmin`, `update_phase` and injury
-  status transitions return `snapshot_required` / `snapshot_stale` until
-  `get_coaching_snapshot` has run in this process today, under 2 hours ago
-  (`COACH_SNAPSHOT_GATE=0` disables, `COACH_SNAPSHOT_MAX_AGE_MIN` tunes).
-- **Setup mode.** Without `athlete.json` the same writes return
-  `setup_required` naming the data directory, the console scripts and the
-  in-chat path (`COACH_SETUP_GATE=0` disables).
-- **Athlete claims** (`record_activity_claim`, 51st tool): what the athlete
-  says they did when Garmin cannot confirm it. Stored as coaching memory,
-  checked against Garmin at once, re-verified on every snapshot and
-  morning audit, listed under `unverified_claims` and on `week_grid` days,
-  turned into an anomaly after 14 days. A claimed planned session is
-  `claimed`, not `missed`. Claims never count as training.
-- **Week-grid source.** Each day carries `source` (`garmin`, `persisted`,
-  `unavailable`); an unavailable day has `is_rest: null` and
-  `types_summary: "UNKNOWN"`, never a false REST. The instructions say to
-  challenge a claim only on a `garmin` day older than yesterday.
-- **Consent fields.** Resolving an injury or relaxing its restrictions
-  needs `athlete_statement` and `rationale` and logs a reviewable decision;
-  overriding the injury gate on a plan, program or push needs
-  `athlete_statement` and `override_rationale` and logs a `gate_override`
-  decision. `update_injury_status` can set `restricted_activities` /
-  `safe_activities`; the snapshot flags active injuries without
-  restrictions (`data_quality.injury_without_restrictions`).
-- **Two-step push.** `push_plan_to_garmin` previews (sessions, workouts to
-  delete, grounding warnings, violations) and writes only with the
-  single-use `confirm_token` it issued, valid 10 minutes and bound to the
-  planned sessions; `anthropic/requiresUserInteraction` on push and
-  `remove_race`.
-- **Device-day context.** `current_time_context` carries `garmin_date`,
-  `garmin_utc_offset_minutes`, `source` and `date_mismatch` from the device
-  clock of the newest activity.
-- **SSRF-safe research.** Only public https URLs are fetched, every
-  redirect hop validated, the connected peer re-checked, 2 MB and 20 s
-  caps, text content types only. Research tools return fetched text as
-  `untrusted_content` with a notice; web-derived exercise notes are
-  sanitised before caching and before Garmin.
-- Console scripts `garmin-coach-setup` and `garmin-coach-login`; the auth
-  error names both recovery commands; README shell snippets for PowerShell
-  and bash.
-- MCP Registry publish in CI (OIDC, pinned and signature-verified
-  publisher, retries while PyPI lags) — see `docs/PUBLISHING.md`.
-
-### Changed
-- `override_purpose_gate` is deprecated and no longer bypasses the purpose
-  gate.
-- `get_activities_range` pages at 92 days (`next_start`), `list_exercises`
-  clamps its limit, large payloads drop indentation.
-- Fitness backups live in `<data_dir>/backups/`; the morning audit
-  re-checks 7 days.
-- The Garmin login path is serialised; a forced refresh skips the re-login
-  when another thread already replaced the failed client.
+### Security
+- **HTTP transports are closed by default (2026-11-01).** `COACH_TRANSPORT=http`
+  (and `streamable-http`, legacy `sse`) now refuses to start without
+  `COACH_HTTP_TOKEN`, a bearer token of 16+ characters checked on every
+  request (FastMCP's static token verifier); `Host` and `Origin` headers are
+  validated on every request (FastMCP's guard in strict mode, its default is
+  off, so a page in the athlete's browser cannot reach the server through
+  DNS rebinding), with `COACH_HTTP_ALLOWED_HOSTS` / `COACH_HTTP_ALLOWED_ORIGINS`
+  for extra names and `COACH_HTTP_INSECURE=1` to waive the token on a
+  loopback bind only. The host and port checked are the ones FastMCP will
+  bind (its settings, which also read FastMCP's own `.env`), and the run call
+  binds exactly those, so the check and the bind cannot diverge. stdio is
+  unchanged.
+- **Research fetches are pinned to the address that passed the check.** The
+  page fetch resolved a hostname, checked every address against the
+  public-only policy, then let the HTTP library resolve the name again at
+  connect time; a DNS answer that changed in between could have pointed the
+  fetch at a private address. Each request now goes to the validated address
+  with TLS still verifying the hostname, each redirect hop the same, and no
+  proxy from the environment sits in between.
+- **Model-supplied names are URL-encoded** into the fixed research hosts'
+  paths (exercise, sport and injury lookups) instead of being spliced in raw,
+  and every sentence lifted from a page is sanitised (control characters out,
+  whitespace collapsed, capped) before it is returned, cached in the exercise
+  library or sent to the watch. Race and injury research return the same
+  untrusted envelope as the other research tools, with the fetch time and
+  final URL, and a page that declares no text content type is refused.
+- **Docs.** The Claude Desktop example no longer carries the Garmin password
+  (run `garmin-coach-login` once; the server logs in from the stored tokens),
+  the Cursor example uses `${env:GARMIN_PASSWORD}`, and SECURITY.md states
+  the transport rules.
 
 ## [1.3.0] - 2026-10-26
 

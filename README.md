@@ -242,12 +242,13 @@ conversation:
 Every tool carries MCP annotations (read-only / destructive / idempotent /
 open-world), enforced by tests.
 
-**6 prompts**: `weekly_planning`, `morning_brief`, `injury_assessment`,
-`week_review`, `onboarding`, `race_program`.
+**7 prompts**: `weekly_planning`, `morning_brief`, `injury_assessment`,
+`week_review`, `onboarding`, `race_program`, `author_session`.
 
-**6 resources**: `coach://athlete/profile`, `coach://plan/current`,
+**7 resources**: `coach://athlete/profile`, `coach://plan/current`,
 `coach://config/training`, `coach://coaching/decisions`, `coach://context/now`,
-`coach://coaching/doctrine` (the long-form coaching doctrine).
+`coach://coaching/doctrine` (the long-form coaching doctrine),
+`coach://authoring/contract` (the generated session contract).
 
 ## Security & Privacy
 
@@ -298,7 +299,7 @@ COACH_CODE_MODE=1 garmin-coach-mcp
 # Standalone morning audit
 python scripts/daily_loop.py          # ingest + audit yesterday + template brief (exit 1 if unverified)
 
-# Tests (1,546 tests; clean checkouts use committed sanitized fixtures)
+# Tests (1,984 tests; clean checkouts use committed sanitized fixtures)
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
